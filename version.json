@@ -1,7 +1,7 @@
 {
-  "version": "05.04.2",
+  "version": "05.04.3",
   "date": "2026-04-10",
-  "note": "Fix auto-update con riavvio automatico",
+  "note": "Fix confronto versioni auto-update",
   "files": {
     "retrodb.py": "root"
   }
