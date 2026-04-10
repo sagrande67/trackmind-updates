@@ -1,8 +1,8 @@
 {
-  "versione": "05.04.4",
-  "dati": "10/04/2026",
-  "nota": "Aggiorna automaticamente tutti gli accessi",
-  "file": {
-    "retrodb.py": "radice"
+  "version": "05.04.4",
+  "date": "2026-04-10",
+  "note": "Auto-update al login",
+  "files": {
+    "retrodb.py": "root"
   }
 }
