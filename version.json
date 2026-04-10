@@ -1,7 +1,7 @@
 {
-  "version": "05.04.1",
+  "version": "05.04.2",
   "date": "2026-04-10",
-  "note": "Nuovo sistema licenze, aggiornamento automatico, fix editor",
+  "note": "Fix auto-update con riavvio automatico",
   "files": {
     "retrodb.py": "root"
   }
