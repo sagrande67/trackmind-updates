@@ -1,6 +1,8 @@
 {
-  "version": "05.04.0",
+  "version": "05.04.1",
   "date": "2026-04-10",
-  "note": "Versione corrente",
-  "files": {}
+  "note": "Nuovo sistema licenze, aggiornamento automatico, fix editor",
+  "files": {
+    "retrodb.py": "root"
+  }
 }
