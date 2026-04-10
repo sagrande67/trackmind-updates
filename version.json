@@ -1,8 +1,8 @@
 {
-  "version": "05.04.3",
-  "date": "2026-04-10",
-  "note": "Fix confronto versioni auto-update",
-  "files": {
-    "retrodb.py": "root"
+  "versione": "05.04.4",
+  "dati": "10/04/2026",
+  "nota": "Correggi l'aggiornamento automatico della versione di Confronto",
+  "file": {
+    "retrodb.py": "radice"
   }
 }
