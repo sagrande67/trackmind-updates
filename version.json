@@ -1,8 +1,6 @@
 {
-  "version": "05.04.4",
+  "version": "05.04.0",
   "date": "2026-04-10",
-  "note": "Auto-update al login",
-  "files": {
-    "retrodb.py": "root"
-  }
+  "note": "Versione corrente - nessun aggiornamento",
+  "files": {}
 }

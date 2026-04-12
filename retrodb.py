@@ -40,10 +40,11 @@ for _sub_key in ("core", "addons"):
 del _cc, _gp, _conf_tmp, _percorsi_tmp
 
 from tm_field import RetroField, set_scala, get_scala, set_cell_params
-from config_colori import carica_colori, salva_colori, DEFAULT_COLORS, NIGHT_COLORS
+from config_colori import carica_colori, salva_colori, DEFAULT_COLORS, NIGHT_COLORS, FONT_MONO
 from conf_manager import (carica_conf, salva_conf, verifica_licenza, get_percorsi,
                           verifica_attivazione, attiva_licenza, get_codice_macchina,
-                          ha_opzione_laptimer, genera_token_laptimer)
+                          ha_opzione_laptimer, genera_token_laptimer,
+                          crediti_ia_rimasti, applica_ricarica_ia)
 from auth import (carica_utenti, salva_utenti, verifica_login,
                   get_utente, is_admin, get_display_name,
                   username_esiste, cripta_password, decripta_password,
@@ -67,6 +68,19 @@ try:
     _HAS_EDITOR = True
 except ImportError:
     _HAS_EDITOR = False
+
+# Gestione bottoni centralizzata
+try:
+    from ui_bottoni import (setup_bottoni as _ui_setup_bottoni,
+                             setup_griglia as _ui_setup_griglia,
+                             flash_btn as _ui_flash_btn,
+                             flash_key as _ui_flash_key,
+                             focus_evidenzia as _ui_focus_evidenzia,
+                             init_focus_globale as _ui_init_focus,
+                             pulisci_cache, sospendi_focus)
+    _HAS_UI_BTN = True
+except ImportError:
+    _HAS_UI_BTN = False
 
 # LapTimer (usato dal modulo Crono)
 try:
@@ -109,6 +123,13 @@ try:
     _HAS_WEBSYNC = True
 except ImportError:
     _HAS_WEBSYNC = False
+
+# Prompt Editor (editor system prompt IA)
+try:
+    from prompt_editor import _get_prompt_path, PROMPT_DEFAULT
+    _HAS_PROMPT_EDITOR = True
+except ImportError:
+    _HAS_PROMPT_EDITOR = False
 
 MAX_VISIBLE_FIELDS = 15
 
@@ -447,6 +468,17 @@ class RetroDBApp:
         scala = 1.0
         try: scala = float(self.conf.get("scala", 1.0))
         except: pass
+        # Scala 0 = auto-detect dalla risoluzione schermo
+        if scala == 0:
+            try:
+                sw = root.winfo_screenwidth()
+                if sw <= 1280:
+                    scala = 1.5  # uConsole 1280x720
+                elif sw <= 1920:
+                    scala = 1.0  # Full HD
+                else:
+                    scala = 0.8  # 4K
+            except: scala = 1.0
         set_scala(scala)
         set_cell_params(
             size=self.conf.get("cella_dimensione", 16),
@@ -459,6 +491,14 @@ class RetroDBApp:
         self.root.title(_nome_base(self.conf.get("nome_database", "RetroDB")) + "  v" + __version__)
         self.root.configure(bg=c["sfondo"])
         self.root.minsize(_S(500), _S(300))
+
+        # Focus visivo globale: bordo highlight su TUTTI i bottoni quando ricevono focus via Tab
+        if _HAS_UI_BTN:
+            _ui_init_focus(self.root, c)
+        else:
+            self.root.option_add("*Button.highlightThickness", 2)
+            self.root.option_add("*Button.highlightColor", c["dati"])
+            self.root.option_add("*Button.highlightBackground", c["sfondo"])
 
         if self.conf.get("fullscreen", 0) in (1, "1", True, "True"):
             self.root.attributes("-fullscreen", True)
@@ -505,14 +545,14 @@ class RetroDBApp:
         self.root.geometry("%dx%d" % (int(self.conf.get("larghezza_max", 900)),
                                        int(self.conf.get("altezza_max", 700))))
 
-        self._f_title  = tkfont.Font(family="Consolas", size=_S(11), weight="bold")
-        self._f_label  = tkfont.Font(family="Consolas", size=_S(9))
-        self._f_btn    = tkfont.Font(family="Consolas", size=_S(8), weight="bold")
-        self._f_small  = tkfont.Font(family="Consolas", size=_S(8))
-        self._f_status = tkfont.Font(family="Consolas", size=_S(8))
-        self._f_nav    = tkfont.Font(family="Consolas", size=_S(10), weight="bold")
-        self._f_list   = tkfont.Font(family="Consolas", size=_S(8))
-        self._f_login  = tkfont.Font(family="Consolas", size=_S(14), weight="bold")
+        self._f_title  = tkfont.Font(family=FONT_MONO, size=_S(11), weight="bold")
+        self._f_label  = tkfont.Font(family=FONT_MONO, size=_S(9))
+        self._f_btn    = tkfont.Font(family=FONT_MONO, size=_S(8), weight="bold")
+        self._f_small  = tkfont.Font(family=FONT_MONO, size=_S(8))
+        self._f_status = tkfont.Font(family=FONT_MONO, size=_S(8))
+        self._f_nav    = tkfont.Font(family=FONT_MONO, size=_S(10), weight="bold")
+        self._f_list   = tkfont.Font(family=FONT_MONO, size=_S(8))
+        self._f_login  = tkfont.Font(family=FONT_MONO, size=_S(14), weight="bold")
 
         # Dimensione finestra dalla configurazione
         self._win_w = int(self.conf.get("larghezza_max", 900))
@@ -533,12 +573,8 @@ class RetroDBApp:
         self.root.bind_class("Button", "<ButtonRelease-1>",
             lambda e: self._btn_flash(e.widget), add="+")
 
-        # Focus visivo globale: su Linux non si vede il focus ring nativo come su Windows
-        # Inversione colori su OGNI bottone quando riceve/perde focus
-        self.root.bind_class("Button", "<FocusIn>",
-            lambda e: self._kb_focus_evidenzia(e.widget, True), add="+")
-        self.root.bind_class("Button", "<FocusOut>",
-            lambda e: self._kb_focus_evidenzia(e.widget, False), add="+")
+        # Focus visivo globale: gestito da init_focus_globale() in ui_bottoni.py
+        # (bind_class su tutti i Button per inversione colori al focus)
 
         # Binding globali rimossi (CONF accessibile solo da login)
         self.root.bind("<Control-q>", lambda e: self.root.destroy())  # Ctrl+Q = ESCI da qualsiasi schermata
@@ -653,113 +689,52 @@ class RetroDBApp:
         except (tk.TclError, AttributeError):
             pass
 
-    _kb_original_colors = {}  # {widget_id: (bg, fg)}
-
     def _kb_focus_evidenzia(self, widget, on=True):
-        """Evidenzia focus: sfondo chiaro + testo scuro (con focus),
-        sfondo scuro + testo chiaro (senza focus)."""
+        """Evidenzia focus bottone (delega a core/ui_bottoni)."""
+        if _HAS_UI_BTN:
+            _ui_focus_evidenzia(widget, on)
+            return
+        # Fallback inline (se ui_bottoni non disponibile)
         try:
             if str(widget.cget("state")) == "disabled":
                 return
         except (tk.TclError, AttributeError):
             return
-        wid = id(widget)
-        try:
-            if on:
-                # Salva colori originali
-                if wid not in self._kb_original_colors:
-                    self._kb_original_colors[wid] = (
-                        widget.cget("bg"), widget.cget("fg"),
-                        widget.cget("relief"), str(widget.cget("bd")),
-                    )
-                orig_bg, orig_fg = self._kb_original_colors[wid][:2]
-                # Focus: sfondo CHIARO (era il colore del testo) + testo SCURO (era lo sfondo)
-                widget.config(bg=orig_fg, fg=orig_bg,
-                              activebackground=orig_fg, activeforeground=orig_bg,
-                              relief="solid", bd=2)
-            else:
-                # Senza focus: ripristina sfondo scuro + testo chiaro
-                if wid in self._kb_original_colors:
-                    orig_bg, orig_fg, orig_rel, orig_bd = self._kb_original_colors[wid]
-                    widget.config(bg=orig_bg, fg=orig_fg,
-                                  activebackground=orig_bg, activeforeground=orig_fg,
-                                  relief=orig_rel, bd=int(orig_bd))
-        except (tk.TclError, AttributeError):
-            pass
 
     def _kb_setup_bottoni(self, bottoni, orizzontale=True):
         """Configura navigazione frecce + Enter + focus visivo su lista bottoni.
-        orizzontale=True: Left/Right navigano, orizzontale=False: Up/Down navigano."""
+        Delega a core/ui_bottoni per logica centralizzata."""
+        if _HAS_UI_BTN:
+            _ui_setup_bottoni(bottoni, orizzontale)
+            return
+        # Fallback minimo
         attivi = [b for b in bottoni if str(b["state"]) != "disabled"]
         if not attivi: return
-
         for btn in attivi:
-            # Enter invoca
             btn.bind("<Return>", self._kb_enter_invoca)
-            # Focus visivo
-            btn.bind("<FocusIn>", lambda e, b=btn: self._kb_focus_evidenzia(b, True))
-            btn.bind("<FocusOut>", lambda e, b=btn: self._kb_focus_evidenzia(b, False))
-
-        # Frecce per spostarsi
         tasto_avanti = "<Right>" if orizzontale else "<Down>"
         tasto_indietro = "<Left>" if orizzontale else "<Up>"
-
         for i, btn in enumerate(attivi):
             if i < len(attivi) - 1:
-                next_btn = attivi[i + 1]
-                btn.bind(tasto_avanti, lambda e, b=next_btn: (b.focus_set(), "break")[-1])
+                btn.bind(tasto_avanti, lambda e, b=attivi[i+1]: (b.focus_set(), "break")[-1])
             if i > 0:
-                prev_btn = attivi[i - 1]
-                btn.bind(tasto_indietro, lambda e, b=prev_btn: (b.focus_set(), "break")[-1])
+                btn.bind(tasto_indietro, lambda e, b=attivi[i-1]: (b.focus_set(), "break")[-1])
 
     def _kb_setup_griglia(self, bottoni, colonne):
         """Configura navigazione frecce 4 direzioni su griglia di bottoni.
-        bottoni = lista piatta, colonne = numero colonne della griglia."""
+        Delega a core/ui_bottoni per logica centralizzata."""
+        if _HAS_UI_BTN:
+            _ui_setup_griglia(bottoni, colonne)
+            # Focus iniziale sul primo attivo
+            attivi = [b for b in bottoni if str(b["state"]) != "disabled"]
+            if attivi:
+                attivi[0].focus_set()
+            return
+        # Fallback (se ui_bottoni non disponibile)
         attivi = [(i, b) for i, b in enumerate(bottoni) if str(b["state"]) != "disabled"]
         if not attivi: return
-
-        # Mappa indice_griglia -> bottone attivo
-        idx_map = {i: b for i, b in attivi}
-        righe_tot = (len(bottoni) + colonne - 1) // colonne
-
-        for grid_idx, btn in attivi:
+        for _, btn in attivi:
             btn.bind("<Return>", self._kb_enter_invoca)
-            btn.bind("<FocusIn>", lambda e, b=btn: self._kb_focus_evidenzia(b, True))
-            btn.bind("<FocusOut>", lambda e, b=btn: self._kb_focus_evidenzia(b, False))
-
-            riga = grid_idx // colonne
-            col = grid_idx % colonne
-
-            # Right
-            for dc in range(1, colonne):
-                next_c = col + dc
-                next_idx = riga * colonne + next_c
-                if next_c < colonne and next_idx in idx_map:
-                    btn.bind("<Right>", lambda e, b=idx_map[next_idx]: (b.focus_set(), "break")[-1])
-                    break
-            # Left
-            for dc in range(1, colonne):
-                prev_c = col - dc
-                prev_idx = riga * colonne + prev_c
-                if prev_c >= 0 and prev_idx in idx_map:
-                    btn.bind("<Left>", lambda e, b=idx_map[prev_idx]: (b.focus_set(), "break")[-1])
-                    break
-            # Down
-            for dr in range(1, righe_tot):
-                next_r = riga + dr
-                next_idx = next_r * colonne + col
-                if next_r < righe_tot and next_idx in idx_map:
-                    btn.bind("<Down>", lambda e, b=idx_map[next_idx]: (b.focus_set(), "break")[-1])
-                    break
-            # Up
-            for dr in range(1, righe_tot):
-                prev_r = riga - dr
-                prev_idx = prev_r * colonne + col
-                if prev_r >= 0 and prev_idx in idx_map:
-                    btn.bind("<Up>", lambda e, b=idx_map[prev_idx]: (b.focus_set(), "break")[-1])
-                    break
-
-        # Focus iniziale sul primo attivo
         attivi[0][1].focus_set()
 
     def _kb_setup_listbox(self, listbox, on_enter=None):
@@ -806,11 +781,11 @@ class RetroDBApp:
         canvas.pack(fill="both", expand=True)
 
         # ─── Font ───
-        F_TINY  = ("Consolas", _S(7))
-        F_SMALL = ("Consolas", _S(9))
-        F_MED   = ("Consolas", _S(11))
-        F_BIG   = ("Consolas", _S(14), "bold")
-        F_TITLE = ("Consolas", _S(18), "bold")
+        F_TINY  = (FONT_MONO, _S(7))
+        F_SMALL = (FONT_MONO, _S(9))
+        F_MED   = (FONT_MONO, _S(11))
+        F_BIG   = (FONT_MONO, _S(14), "bold")
+        F_TITLE = (FONT_MONO, _S(18), "bold")
 
         # ─── Pioggia Matrix ───
         GLYPHS = "01234567890ABCDEF<>{}[]|/\\:;+=*#@$%&!?~^"
@@ -1042,17 +1017,25 @@ class RetroDBApp:
         import time
         c = carica_colori()
         now = time.time()
+        # Trova label di stato (login o menu) - verifica che esista ancora
+        _lbl = None
+        for attr in ('_login_status', '_menu_status'):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    if w.winfo_exists():
+                        _lbl = w; break
+                except: pass
         if not hasattr(self, '_spegni_ts') or now - self._spegni_ts > 3:
             self._spegni_ts = now
-            if hasattr(self, '_login_status'):
-                self._login_status.config(
-                    text="Premi SPEGNI di nuovo per confermare!",
-                    fg=c["stato_errore"])
+            if _lbl:
+                _lbl.config(text="Premi SPEGNI di nuovo per confermare!",
+                            fg=c["stato_errore"])
             return
         # Confermato: backup + spegni
         del self._spegni_ts
-        if hasattr(self, '_login_status'):
-            self._login_status.config(text="Backup in corso...", fg=c["stato_avviso"])
+        if _lbl:
+            _lbl.config(text="Backup e spegnimento...", fg=c["stato_avviso"])
             self.root.update()
         # Backup automatico pre-spegnimento
         try:
@@ -1246,6 +1229,25 @@ class RetroDBApp:
         tk.Label(centro, text=cod_macchina, bg=c["sfondo"], fg=c["label"],
                  font=self._f_label).pack(pady=(_S(2), 0))
 
+        # ── Crediti IA ──
+        _cr_rimasti = crediti_ia_rimasti(self.conf)
+        _cr_colore = c["stato_ok"] if _cr_rimasti > 50 else (c.get("cerca_testo", "#ffcc00") if _cr_rimasti > 0 else c["stato_errore"])
+        ia_frame = tk.Frame(centro, bg=c["sfondo"])
+        ia_frame.pack(pady=(_S(4), 0))
+        self._lbl_crediti = tk.Label(ia_frame, text="Crediti IA: %d" % _cr_rimasti,
+                                      bg=c["sfondo"], fg=_cr_colore, font=self._f_small)
+        self._lbl_crediti.pack(side="left")
+        # Bottone ricarica (apre mini-form inline)
+        self._btn_ricarica = tk.Button(ia_frame, text="RICARICA", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._mostra_ricarica_ia)
+        self._btn_ricarica.pack(side="left", padx=(_S(6), 0))
+
+        # Frame per il form ricarica (inizialmente nascosto)
+        self._ricarica_frame = tk.Frame(centro, bg=c["sfondo"])
+        # Non packato, verra' mostrato da _mostra_ricarica_ia
+
         # Status menu (backup/ripristino)
         self._menu_status = tk.Label(centro, text="", bg=c["sfondo"], fg=c["testo_dim"],
                                       font=self._f_small)
@@ -1340,6 +1342,14 @@ class RetroDBApp:
                       command=lambda: self._lancia_crono_scouting())
             _bb.append(btn_crono)
 
+        # Bottone PROMPT IA (editor system prompt)
+        if _HAS_PROMPT_EDITOR:
+            btn_prompt = tk.Button(bottom_bar, text="PROMPT IA", font=self._f_small, width=_S(9),
+                      bg=c["pulsanti_sfondo"], fg=c["cerca_testo"],
+                      relief="ridge", bd=1, cursor="hand2",
+                      command=self._apri_prompt_editor)
+            _bb.append(btn_prompt)
+
         night_label = "GIORNO" if self._is_night_mode() else "NOTTE"
         night_fg = "#39ff14" if self._is_night_mode() else "#ff3333"
         btn_night = tk.Button(bottom_bar, text=night_label, font=self._f_small, width=_S(7),
@@ -1360,6 +1370,14 @@ class RetroDBApp:
                   command=self._schermata_login)
         _bb.append(btn_esci)
 
+        # Solo Linux: bottone SPEGNI sistema
+        if sys.platform != "win32":
+            btn_spegni = tk.Button(bottom_bar, text="SPEGNI", font=self._f_small, width=_S(7),
+                      bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
+                      relief="ridge", bd=1, cursor="hand2",
+                      command=self._spegni_console)
+            _bb.append(btn_spegni)
+
         # Pack in ordine inverso (side=right)
         for b in reversed(_bb):
             b.pack(side="right", padx=_S(3))
@@ -1371,7 +1389,7 @@ class RetroDBApp:
         self.root.bind("<Escape>", lambda e: self._schermata_login())
         self._rimuovi_coperta()
 
-        # Auto-sync web cataloghi (controlla !sync_date, agisce solo se > 24h)
+        # Auto-sync piste SpeedHive (controlla !sync_date, agisce solo se > 24h)
         if _HAS_WEBSYNC:
             self.root.after(2000, self._auto_sync_cataloghi)
 
@@ -2693,6 +2711,325 @@ class RetroDBApp:
 
 
     # =========================================================================
+    #  PROMPT EDITOR (editor system prompt IA) - schermata inline
+    # =========================================================================
+    def _apri_prompt_editor(self):
+        """Editor system prompt IA come schermata inline (niente Toplevel).
+        Usa _pulisci/_vista come tutte le altre schermate RetroDB."""
+        if not _HAS_PROMPT_EDITOR:
+            self._status("Prompt Editor non disponibile!", "stato_errore")
+            return
+
+        self._pulisci(); c = carica_colori()
+        prompt_path = _get_prompt_path()
+        pe_modificato = [False]  # lista per closure
+
+        # ── HEADER ──
+        header = tk.Frame(self._vista, bg=c["sfondo"])
+        header.pack(fill="x", padx=_S(10), pady=(_S(6), 0))
+        tk.Button(header, text="< MENU", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=lambda: _chiudi_editor()).pack(side="left")
+        tk.Label(header, text="[ PROMPT IA ]", bg=c["sfondo"], fg=c["dati"],
+                 font=self._f_title).pack(side="left", padx=(_S(10), 0))
+        lbl_stato = tk.Label(header, text="Salvato", bg=c["sfondo"],
+                             fg=c["stato_ok"], font=self._f_small)
+        lbl_stato.pack(side="right")
+
+        tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(4), 0))
+
+        # ── FEEDBACK BANNER (nascosto inizialmente) ──
+        feedback_frame = tk.Frame(self._vista, bg=c["sfondo"])
+        lbl_feedback = tk.Label(feedback_frame, text="", bg=c["sfondo"],
+                                fg=c["stato_ok"],
+                                font=tkfont.Font(family=FONT_MONO, size=_S(10), weight="bold"))
+        lbl_feedback.pack(fill="x", pady=(_S(4), _S(4)))
+        feedback_attivo = [False]
+
+        def _mostra_feedback(msg, colore, durata=2500):
+            lbl_feedback.config(text=msg, fg=colore)
+            if not feedback_attivo[0]:
+                feedback_frame.pack(fill="x", padx=_S(10), after=self._vista.winfo_children()[1])
+                feedback_attivo[0] = True
+            feedback_frame.config(bg=colore)
+            lbl_feedback.config(bg=colore, fg=c["sfondo"])
+            def _fade():
+                try:
+                    feedback_frame.config(bg=c["sfondo"])
+                    lbl_feedback.config(bg=c["sfondo"], fg=colore)
+                except Exception: pass
+            def _nascondi():
+                try:
+                    feedback_frame.pack_forget()
+                    feedback_attivo[0] = False
+                except Exception: pass
+            try:
+                self.root.after(350, _fade)
+                self.root.after(durata, _nascondi)
+            except Exception: pass
+            lbl_stato.config(text=msg, fg=colore)
+
+        # ── AREA TESTO ──
+        txt_frame = tk.Frame(self._vista, bg=c["linee"], bd=0)
+        txt_frame.pack(fill="both", expand=True, padx=_S(10), pady=(_S(6), _S(4)))
+        txt_inner = tk.Frame(txt_frame, bg=c["sfondo_celle"])
+        txt_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        scroll = tk.Scrollbar(txt_inner, orient="vertical",
+                              bg=c["sfondo"], troughcolor=c["sfondo"],
+                              activebackground=c["pulsanti_sfondo"])
+        scroll.pack(side="right", fill="y")
+        pe_txt = tk.Text(txt_inner, bg=c["sfondo_celle"], fg=c["dati"],
+                         insertbackground=c["cursore"], insertwidth=_S(8),
+                         selectbackground=c["cursore"], selectforeground=c["sfondo"],
+                         font=self._f_label, wrap="word", undo=True, maxundo=-1,
+                         padx=_S(8), pady=_S(6), relief="flat", bd=0,
+                         yscrollcommand=scroll.set)
+        pe_txt.pack(fill="both", expand=True)
+        scroll.config(command=pe_txt.yview)
+
+        # Tag cursore a blocco
+        pe_txt.tag_configure("cursore_blocco",
+                             background=c["cursore"], foreground=c["sfondo"])
+
+        # ── INFO RIGA ──
+        info_bar = tk.Frame(self._vista, bg=c["sfondo"])
+        info_bar.pack(fill="x", padx=_S(10), pady=(_S(2), _S(2)))
+        lbl_info = tk.Label(info_bar, text="", bg=c["sfondo"],
+                            fg=c["testo_dim"], font=self._f_status, anchor="w")
+        lbl_info.pack(side="left")
+        lbl_file = tk.Label(info_bar, text=os.path.basename(prompt_path),
+                            bg=c["sfondo"], fg=c["testo_dim"],
+                            font=self._f_status, anchor="e")
+        lbl_file.pack(side="right")
+
+        # ── BARRA BOTTONI ──
+        tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10))
+        btn_bar = tk.Frame(self._vista, bg=c["sfondo"])
+        btn_bar.pack(fill="x", padx=_S(10), pady=(_S(4), _S(4)))
+
+        pe_btns = []
+        btn_salva = tk.Button(btn_bar, text="SALVA [Ctrl+S]", font=self._f_btn,
+                              bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                              relief="ridge", bd=1, cursor="hand2",
+                              command=lambda: _salva(), width=14)
+        btn_salva.pack(side="left", padx=(0, _S(4)))
+        pe_btns.append(btn_salva)
+
+        btn_default = tk.Button(btn_bar, text="DEFAULT [Ctrl+R]", font=self._f_btn,
+                                bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
+                                relief="ridge", bd=1, cursor="hand2",
+                                command=lambda: _ripristina_default(), width=16)
+        btn_default.pack(side="left", padx=(0, _S(4)))
+        pe_btns.append(btn_default)
+
+        btn_ricarica = tk.Button(btn_bar, text="RICARICA", font=self._f_btn,
+                                 bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                                 relief="ridge", bd=1, cursor="hand2",
+                                 command=lambda: _ricarica(), width=10)
+        btn_ricarica.pack(side="left")
+        pe_btns.append(btn_ricarica)
+
+        btn_chiudi = tk.Button(btn_bar, text="< MENU [Esc]", font=self._f_btn,
+                               bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                               relief="ridge", bd=1, cursor="hand2",
+                               command=lambda: _chiudi_editor(), width=12)
+        btn_chiudi.pack(side="right")
+        pe_btns.append(btn_chiudi)
+
+        # Navigazione tastiera tra bottoni
+        for i, b in enumerate(pe_btns):
+            if i < len(pe_btns) - 1:
+                nxt = pe_btns[i + 1]
+                b.bind("<Right>", lambda e, n=nxt: (n.focus_set(), "break")[-1])
+                b.bind("<Tab>", lambda e, n=nxt: (n.focus_set(), "break")[-1])
+            else:
+                b.bind("<Tab>", lambda e: (pe_txt.focus_set(), "break")[-1])
+            if i > 0:
+                prv = pe_btns[i - 1]
+                b.bind("<Left>", lambda e, p=prv: (p.focus_set(), "break")[-1])
+                b.bind("<Shift-Tab>", lambda e, p=prv: (p.focus_set(), "break")[-1])
+            else:
+                b.bind("<Left>", lambda e: (pe_btns[-1].focus_set(), "break")[-1])
+                b.bind("<Shift-Tab>", lambda e: (pe_txt.focus_set(), "break")[-1])
+
+        # Help
+        self._help_bar(self._vista,
+            "Ctrl+S = Salva  |  Ctrl+R = Default  |  Ctrl+Z = Annulla  |  Esc = Menu")
+
+        # ── FUNZIONI ──
+        def _aggiorna_stato():
+            if pe_modificato[0]:
+                lbl_stato.config(text="* MODIFICATO *", fg=c["stato_avviso"])
+            else:
+                lbl_stato.config(text="Salvato", fg=c["stato_ok"])
+
+        def _on_modify(event=None):
+            if pe_txt.edit_modified():
+                pe_modificato[0] = True
+                _aggiorna_stato()
+
+        def _aggiorna_info():
+            try:
+                pos = pe_txt.index("insert")
+                riga, col = pos.split(".")
+                contenuto = pe_txt.get("1.0", "end-1c")
+                n_righe = contenuto.count("\n") + 1
+                n_car = len(contenuto)
+                lbl_info.config(text="Riga %s  Col %s  |  %d righe  %d car." % (
+                    riga, col, n_righe, n_car))
+            except Exception: pass
+            try:
+                self.root.after(500, _aggiorna_info)
+            except Exception: pass
+
+        def _carica():
+            contenuto = ""
+            if os.path.exists(prompt_path):
+                try:
+                    with open(prompt_path, "r", encoding="utf-8") as f:
+                        contenuto = f.read()
+                except Exception as e:
+                    contenuto = "# ERRORE lettura: %s" % e
+            else:
+                contenuto = PROMPT_DEFAULT
+            pe_txt.delete("1.0", "end")
+            pe_txt.insert("1.0", contenuto)
+            pe_txt.edit_modified(False)
+            pe_modificato[0] = False
+            _aggiorna_stato()
+
+        def _salva():
+            contenuto = pe_txt.get("1.0", "end-1c")
+            try:
+                with open(prompt_path, "w", encoding="utf-8") as f:
+                    f.write(contenuto)
+                pe_modificato[0] = False
+                pe_txt.edit_modified(False)
+                _aggiorna_stato()
+                _mostra_feedback(">>> PROMPT SALVATO! <<<", c["stato_ok"], 3000)
+            except Exception as e:
+                _mostra_feedback("!!! ERRORE: %s !!!" % e, c["stato_errore"], 4000)
+
+        def _ricarica():
+            _carica()
+            _mostra_feedback(">>> RICARICATO DA DISCO <<<", c["cerca_testo"], 2500)
+
+        def _ripristina_default():
+            pe_txt.delete("1.0", "end")
+            pe_txt.insert("1.0", PROMPT_DEFAULT)
+            pe_txt.edit_modified(True)
+            pe_modificato[0] = True
+            _aggiorna_stato()
+            _mostra_feedback("DEFAULT CARICATO - Premi SALVA per confermare",
+                             c["stato_avviso"], 3500)
+
+        def _chiudi_editor():
+            if pe_modificato[0]:
+                _chiedi_salvataggio()
+            else:
+                self._schermata_menu()
+
+        def _chiedi_salvataggio():
+            """Mini-dialog inline per salvataggio."""
+            # Overlay centrato
+            dialog = tk.Frame(self._vista, bg=c["sfondo"], bd=0)
+            dialog.place(relx=0.5, rely=0.5, anchor="center",
+                         width=_S(380), height=_S(140))
+            border = tk.Frame(dialog, bg=c["cursore"])
+            border.pack(fill="both", expand=True)
+            content = tk.Frame(border, bg=c["sfondo"])
+            content.pack(fill="both", expand=True, padx=2, pady=2)
+            tk.Label(content, text="!!! MODIFICHE NON SALVATE !!!",
+                     bg=c["sfondo"], fg=c["stato_avviso"],
+                     font=tkfont.Font(family=FONT_MONO, size=_S(10), weight="bold")
+                     ).pack(pady=(_S(14), _S(10)))
+            btn_row = tk.Frame(content, bg=c["sfondo"])
+            btn_row.pack(pady=(_S(0), _S(12)))
+            dlg_btns = []
+            def _salva_e_chiudi():
+                dialog.destroy()
+                _salva()
+                self._schermata_menu()
+            def _chiudi_senza():
+                dialog.destroy()
+                self._schermata_menu()
+            def _annulla():
+                dialog.destroy()
+                pe_txt.focus_set()
+            b1 = tk.Button(btn_row, text="SALVA", font=self._f_btn,
+                      bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                      relief="ridge", bd=1, command=_salva_e_chiudi, width=10)
+            b1.pack(side="left", padx=_S(5))
+            dlg_btns.append(b1)
+            b2 = tk.Button(btn_row, text="NON SALVARE", font=self._f_btn,
+                      bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
+                      relief="ridge", bd=1, command=_chiudi_senza, width=14)
+            b2.pack(side="left", padx=_S(5))
+            dlg_btns.append(b2)
+            b3 = tk.Button(btn_row, text="ANNULLA", font=self._f_btn,
+                      bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                      relief="ridge", bd=1, command=_annulla, width=10)
+            b3.pack(side="left", padx=_S(5))
+            dlg_btns.append(b3)
+            # Navigazione tastiera dialog
+            for i, b in enumerate(dlg_btns):
+                if i < len(dlg_btns) - 1:
+                    nxt = dlg_btns[i + 1]
+                    b.bind("<Right>", lambda e, n=nxt: (n.focus_set(), "break")[-1])
+                    b.bind("<Tab>", lambda e, n=nxt: (n.focus_set(), "break")[-1])
+                else:
+                    b.bind("<Tab>", lambda e: (dlg_btns[0].focus_set(), "break")[-1])
+                if i > 0:
+                    prv = dlg_btns[i - 1]
+                    b.bind("<Left>", lambda e, p=prv: (p.focus_set(), "break")[-1])
+                else:
+                    b.bind("<Left>", lambda e: (dlg_btns[-1].focus_set(), "break")[-1])
+                b.bind("<Escape>", lambda e: _annulla())
+            dlg_btns[0].focus_set()
+
+        # ── CURSORE A BLOCCO LAMPEGGIANTE ──
+        cursore_vis = [True]
+        def _aggiorna_cursore():
+            pe_txt.tag_remove("cursore_blocco", "1.0", "end")
+            if cursore_vis[0]:
+                try:
+                    pos = pe_txt.index("insert")
+                    ch = pe_txt.get(pos, pos + "+1c")
+                    if ch != "\n" and ch != "":
+                        # Carattere normale: evidenzia col tag blocco
+                        pe_txt.tag_add("cursore_blocco", pos, pos + "+1c")
+                    # Su righe vuote/newline: il cursore nativo (insertwidth)
+                    # mostra gia' la barra verde, nessun tag necessario
+                except Exception: pass
+
+        def _blink():
+            try:
+                if not self._vista.winfo_exists(): return
+            except Exception: return
+            cursore_vis[0] = not cursore_vis[0]
+            _aggiorna_cursore() if cursore_vis[0] else pe_txt.tag_remove("cursore_blocco", "1.0", "end")
+            try: self.root.after(530, _blink)
+            except Exception: pass
+
+        # ── BIND ──
+        pe_txt.bind("<<Modified>>", _on_modify)
+        pe_txt.bind("<KeyRelease>", lambda e: _aggiorna_cursore())
+        self.root.bind("<Control-s>", lambda e: _salva())
+        self.root.bind("<Control-r>", lambda e: _ripristina_default())
+        self.root.bind("<Escape>", lambda e: _chiudi_editor())
+
+        # Tab da testo ai bottoni
+        pe_txt.bind("<Tab>", lambda e: (pe_btns[0].focus_set(), "break")[-1])
+
+        # Carica contenuto e avvia
+        _carica()
+        _aggiorna_info()
+        _blink()
+        pe_txt.focus_set()
+
+
+    # =========================================================================
     #  CRONO (modulo esterno)
     # =========================================================================
     def _lancia_crono(self):
@@ -2906,8 +3243,19 @@ class RetroDBApp:
                     citta = str(pr.get("Citta", "")).strip()
                     nazione = str(pr.get("Nazione", "")).strip()
                     break
+        # Fallback: se non c'e' indirizzo/citta, usa Nome_Pista + Nazione
         if not indirizzo and not citta:
-            return
+            if "piste" in self.ref_dbs:
+                pista_db = self.ref_dbs["piste"]
+                for idx in range(len(pista_db.records)):
+                    pr = pista_db.leggi(idx)
+                    if pr and str(pr.get("Codice_Pista", "")) == str(codice_pista):
+                        nome_pista = str(pr.get("Nome_Pista", "")).strip()
+                        if nome_pista:
+                            indirizzo = nome_pista
+                        break
+            if not indirizzo:
+                return
         def _fetch():
             try:
                 result = meteo_da_indirizzo(indirizzo, citta, nazione)
@@ -3051,8 +3399,22 @@ class RetroDBApp:
             if not td.links:
                 continue
 
+            # Se il file dati non esiste o e' vuoto, forza sync
+            dati_dir = self.percorsi.get("dati", "")
+            json_path = os.path.join(dati_dir, "%s.json" % nome_tab) if dati_dir else ""
+            dati_vuoti = not json_path or not os.path.exists(json_path)
+            if not dati_vuoti:
+                try:
+                    with open(json_path, "r", encoding="utf-8") as _jf:
+                        _jdata = json.load(_jf)
+                    if not _jdata.get("records"):
+                        dati_vuoti = True
+                except Exception:
+                    dati_vuoti = True
+
             # Controlla ultimo sync (letto da !sync_date nel .def)
-            if td.sync_date:
+            # Se dati vuoti, forza sync anche se < 24h
+            if not dati_vuoti and td.sync_date:
                 if (oggi - td.sync_date) < timedelta(hours=24):
                     continue
 
@@ -3365,7 +3727,7 @@ class RetroDBApp:
             ("nome_database", "Nome Database", "S", 30),
             ("larghezza_max", "Larghezza Max", "N", 5),
             ("altezza_max", "Altezza Max", "N", 5),
-            ("scala", "Scala (1.0=PC 1.5=uConsole)", "N", 4),
+            ("scala", "Scala (0=Auto 1.0=PC 1.5=uCons)", "N", 4),
             ("fullscreen", "Fullscreen (0/1)", "N", 1),
             ("cella_dimensione", "Dim.Cella (def.16)", "N", 3),
             ("cella_spaziatura", "Spazio Celle (def.1)", "N", 2),
@@ -3477,6 +3839,12 @@ class RetroDBApp:
         if val_ai: rf_ai.set(val_ai)
         self._conf_fields["anthropic_api_key"] = rf_ai
 
+        rf_crediti = RetroField(frame, label="Crediti IA (iniziali)", tipo="N", lunghezza=5, label_width=28)
+        rf_crediti.pack(pady=_S(1), anchor="w")
+        val_crediti = str(self.conf.get("crediti_ia", 500))
+        if val_crediti: rf_crediti.set(val_crediti)
+        self._conf_fields["crediti_ia"] = rf_crediti
+
         tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(15), pady=(_S(10), _S(5)))
         btn_bar = tk.Frame(self._vista, bg=c["sfondo"]); btn_bar.pack(pady=_S(5))
         tk.Button(btn_bar, text="SALVA CONF", font=self._f_btn, width=_S(14),
@@ -3513,7 +3881,7 @@ class RetroDBApp:
                 val = widget.get()
             if chiave in ("larghezza_max", "altezza_max", "fullscreen",
                           "cella_dimensione", "cella_spaziatura", "font_campi", "font_label",
-                          "smtp_port"):
+                          "smtp_port", "crediti_ia"):
                 try: val = int(val)
                 except: val = 700 if "max" in chiave else 0
             elif chiave == "scala":
@@ -3562,6 +3930,150 @@ class RetroDBApp:
             os.makedirs(p, exist_ok=True)
         if self.sessione: self._schermata_menu()
         else: self._schermata_login()
+
+    def _mostra_ricarica_ia(self):
+        """Mostra/nasconde il mini-form ricarica IA con RICHIEDI e APPLICA CODICE."""
+        c = carica_colori()
+        # Toggle: se gia' visibile, nascondi
+        if self._ricarica_frame.winfo_ismapped():
+            self._ricarica_frame.pack_forget()
+            return
+        # Pulisci e popola il frame
+        for w in self._ricarica_frame.winfo_children():
+            w.destroy()
+
+        # Riga 1: bottone RICHIEDI RICARICA (manda email allo sviluppatore)
+        row1 = tk.Frame(self._ricarica_frame, bg=c["sfondo"])
+        row1.pack(pady=(_S(2), _S(2)))
+        tk.Button(row1, text="RICHIEDI RICARICA", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._richiedi_ricarica_ia).pack(side="left")
+        tk.Label(row1, text=" Invia richiesta allo sviluppatore",
+                 bg=c["sfondo"], fg=c["puntini"], font=self._f_small).pack(side="left")
+
+        # Separatore
+        tk.Frame(self._ricarica_frame, bg=c["linee"], height=1).pack(fill="x", pady=(_S(2), _S(2)))
+
+        # Riga 2: campo codice + bottone APPLICA
+        row2 = tk.Frame(self._ricarica_frame, bg=c["sfondo"])
+        row2.pack(pady=(_S(2), 0))
+        tk.Label(row2, text="Hai gia' un codice?", bg=c["sfondo"],
+                 fg=c["puntini"], font=self._f_small).pack(side="left", padx=(0, _S(4)))
+        self._rf_ricarica = RetroField(row2, label="Codice", tipo="S",
+                                        lunghezza=20, label_width=10)
+        self._rf_ricarica.pack(side="left")
+        tk.Button(row2, text="APPLICA", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._applica_ricarica_ia).pack(side="left", padx=(_S(4), 0))
+
+        # Label esito (usata sia da richiedi che da applica)
+        self._lbl_esito_ricarica = tk.Label(self._ricarica_frame, text="",
+                                             bg=c["sfondo"], fg=c["puntini"], font=self._f_small)
+        self._lbl_esito_ricarica.pack(pady=(_S(1), 0))
+
+        # Pack il frame nel menu
+        self._ricarica_frame.pack(after=self._lbl_crediti.master, pady=(_S(2), 0))
+
+    def _richiedi_ricarica_ia(self):
+        """Invia email di richiesta ricarica crediti IA allo sviluppatore."""
+        c = carica_colori()
+        # Verifica connessione
+        connesso, _ = self._wifi_stato()
+        if not connesso:
+            self._lbl_esito_ricarica.config(text="Nessuna connessione internet!",
+                                             fg=c["stato_errore"])
+            return
+        # Dati SMTP da conf
+        email_dev = self.conf.get("email_sviluppatore", "").strip()
+        smtp_srv = self.conf.get("smtp_server", "").strip()
+        smtp_usr = self.conf.get("smtp_user", "").strip()
+        smtp_pwd = self.conf.get("smtp_password", "").strip()
+        smtp_port = int(self.conf.get("smtp_port", 587))
+        if not email_dev or not smtp_srv or not smtp_usr or not smtp_pwd:
+            self._lbl_esito_ricarica.config(text="Configurazione email non completa!",
+                                             fg=c["stato_errore"])
+            return
+        # Dati admin corrente
+        nome_admin = get_display_name(self.sessione)
+        codice_utente = self.sessione.get("codice", "") if self.sessione else ""
+        email_admin = ""
+        if codice_utente:
+            rec_utente = get_utente(codice_utente)
+            if rec_utente:
+                email_admin = str(rec_utente.get("Email", "")).strip()
+        if not email_admin:
+            self._lbl_esito_ricarica.config(
+                text="Inserisci la tua Email in UTENTI prima di richiedere!",
+                fg=c["stato_errore"])
+            return
+        # Dati macchina
+        codice_macchina = get_codice_macchina()
+        rimasti = crediti_ia_rimasti(self.conf)
+        ora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        nome_db = self.conf.get("nome_database", "RetroDB")
+
+        # Feedback immediato
+        self._lbl_esito_ricarica.config(text="Invio in corso...", fg=c["testo_dim"])
+
+        def _invia():
+            try:
+                import smtplib
+                from email.mime.text import MIMEText
+                corpo = (
+                    "RICHIESTA RICARICA CREDITI IA\n"
+                    "====================================\n\n"
+                    "Applicazione: %s v%s\n"
+                    "Codice macchina: %s\n"
+                    "Data richiesta: %s\n\n"
+                    "Admin: %s\n"
+                    "Email Admin: %s\n"
+                    "Crediti rimasti: %d\n"
+                    "Piattaforma: %s\n\n"
+                    "---\n"
+                    "Rispondere a questa email con il codice\n"
+                    "di ricarica dopo aver ricevuto il pagamento.\n"
+                ) % (nome_db, __version__, codice_macchina, ora,
+                     nome_admin, email_admin, rimasti, sys.platform)
+                msg = MIMEText(corpo, "plain", "utf-8")
+                msg["Subject"] = "[%s] Richiesta Ricarica IA - %s" % (nome_db, codice_macchina)
+                msg["From"] = smtp_usr
+                msg["To"] = email_dev
+                msg["Reply-To"] = email_admin
+                with smtplib.SMTP(smtp_srv, smtp_port, timeout=15) as s:
+                    s.starttls()
+                    s.login(smtp_usr, smtp_pwd)
+                    s.send_message(msg)
+                # Successo - aggiorna UI dal thread principale
+                self.root.after(0, lambda: self._lbl_esito_ricarica.config(
+                    text="Richiesta inviata! Riceverai il codice via email.",
+                    fg=c["stato_ok"]))
+            except Exception as e:
+                self.root.after(0, lambda: self._lbl_esito_ricarica.config(
+                    text="Errore invio: %s" % str(e)[:60],
+                    fg=c["stato_errore"]))
+
+        threading.Thread(target=_invia, daemon=True).start()
+
+    def _applica_ricarica_ia(self):
+        """Applica un codice di ricarica crediti IA."""
+        c = carica_colori()
+        codice = self._rf_ricarica.get().strip()
+        if not codice:
+            self._lbl_esito_ricarica.config(text="Inserisci un codice ricarica",
+                                             fg=c["stato_errore"])
+            return
+        ok, msg, _ = applica_ricarica_ia(self.conf, codice)
+        if ok:
+            self._lbl_esito_ricarica.config(text=msg, fg=c["stato_ok"])
+            # Aggiorna label crediti nel menu
+            rimasti = crediti_ia_rimasti(self.conf)
+            _cr_col = c["stato_ok"] if rimasti > 50 else (c.get("cerca_testo", "#ffcc00") if rimasti > 0 else c["stato_errore"])
+            self._lbl_crediti.config(text="Crediti IA: %d" % rimasti, fg=_cr_col)
+            self._rf_ricarica.set("")
+        else:
+            self._lbl_esito_ricarica.config(text=msg, fg=c["stato_errore"])
 
     # =========================================================================
     #  SETUP COLORI
@@ -3774,11 +4286,11 @@ class RetroDBApp:
         style.theme_use("clam")
         style.configure("Retro.Treeview",
             background=c["sfondo_celle"], foreground=c["dati"],
-            fieldbackground=c["sfondo_celle"], font=("Consolas", _S(8)),
+            fieldbackground=c["sfondo_celle"], font=(FONT_MONO, _S(8)),
             rowheight=_S(22), borderwidth=0)
         style.configure("Retro.Treeview.Heading",
             background=c["pulsanti_sfondo"], foreground=c["pulsanti_testo"],
-            font=("Consolas", _S(8), "bold"), borderwidth=1, relief="ridge")
+            font=(FONT_MONO, _S(8), "bold"), borderwidth=1, relief="ridge")
         style.map("Retro.Treeview",
             background=[("selected", c["cursore"])],
             foreground=[("selected", c["testo_cursore"])])
@@ -3819,6 +4331,22 @@ class RetroDBApp:
                          ).pack(side="right")
 
         tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(4), _S(2)))
+
+        # ── Barra ricerca riferimento ──
+        search_bar = tk.Frame(self._vista, bg=c["sfondo"])
+        search_bar.pack(fill="x", padx=_S(10), pady=(_S(2), _S(2)))
+        tk.Label(search_bar, text="CERCA:", bg=c["sfondo"], fg=c["cerca_testo"],
+                 font=self._f_btn).pack(side="left")
+        _step_cerca_var = tk.StringVar()
+        _step_search_entry = tk.Entry(search_bar, font=self._f_label, width=30,
+                 bg=c["sfondo_celle"], fg=c["dati"], insertbackground=c["dati"],
+                 relief="flat", highlightthickness=1, highlightbackground=c["bordo_vuote"],
+                 highlightcolor=c["cerca_testo"],
+                 textvariable=_step_cerca_var)
+        _step_search_entry.pack(side="left", padx=(_S(4), _S(8)), fill="x", expand=True)
+        _step_count_label = tk.Label(search_bar, text="",
+                 bg=c["sfondo"], fg=c["testo_dim"], font=self._f_small)
+        _step_count_label.pack(side="right")
 
         # ── Treeview con tutti i campi della tabella riferimento ──
         if not ref_db or not ref_td:
@@ -3875,6 +4403,49 @@ class RetroDBApp:
             if i % 2:
                 step_tree.item(item, tags=("dispari",))
 
+        # ── Cache righe per filtro ricerca ──
+        _step_all_rows = []
+        for child in step_tree.get_children():
+            vals = step_tree.item(child, "values")
+            _step_all_rows.append((child, vals))
+
+        _step_count_label.config(text="%d record" % len(_step_all_rows))
+
+        def _step_filtra(*args):
+            """Filtra righe nel Treeview riferimento in tempo reale."""
+            testo = _step_cerca_var.get().strip().lower()
+            step_tree.delete(*step_tree.get_children())
+            count = 0
+            for iid, vals in _step_all_rows:
+                if not testo or any(testo in str(v).lower() for v in vals):
+                    step_tree.insert("", "end", iid=iid, values=vals)
+                    count += 1
+            # Zebra
+            for i, item in enumerate(step_tree.get_children()):
+                if i % 2:
+                    step_tree.item(item, tags=("dispari",))
+                else:
+                    step_tree.item(item, tags=())
+            # Seleziona primo risultato
+            children_f = step_tree.get_children()
+            if children_f:
+                step_tree.selection_set(children_f[0])
+                step_tree.focus(children_f[0])
+                step_tree.see(children_f[0])
+            # Conteggio
+            tot = len(_step_all_rows)
+            if testo:
+                _step_count_label.config(
+                    text="%d/%d trovati" % (count, tot), fg=c["cerca_testo"])
+            else:
+                _step_count_label.config(
+                    text="%d record" % tot, fg=c["testo_dim"])
+
+        _step_cerca_var.trace_add("write", _step_filtra)
+        _step_search_entry.bind("<Escape>", lambda e: (_step_cerca_var.set(""), step_tree.focus_set()))
+        _step_search_entry.bind("<Return>", lambda e: step_tree.focus_set())
+        _step_search_entry.bind("<Down>", lambda e: step_tree.focus_set())
+
         # ── Conteggio ──
         tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(2), _S(2)))
 
@@ -3909,8 +4480,20 @@ class RetroDBApp:
         status_lbl = tk.Label(self._vista, text=status_text,
                                bg=c["sfondo"], fg=c["testo_dim"], font=self._f_status, anchor="w")
         status_lbl.pack(fill="x", padx=_S(10), pady=(0, _S(2)))
-        tk.Label(self._vista, text="Frecce = Scorri  |  Enter = Seleziona  |  Tab = Bottoni  |  Esc = Indietro",
+        tk.Label(self._vista, text="Digita = Cerca  |  Frecce = Scorri  |  Enter = Conferma  |  Tab = Bottoni  |  Esc = Indietro",
                  bg=c["sfondo"], fg=c["puntini"], font=self._f_small).pack(fill="x", padx=_S(10), pady=(0, _S(4)))
+
+        # Digitazione diretta -> salta alla barra ricerca
+        def _tree_key_to_search(event):
+            ch = event.char
+            if ch and ch.isprintable() and len(ch) == 1:
+                _step_search_entry.focus_set()
+                _step_search_entry.insert("end", ch)
+                return "break"
+        step_tree.bind("<Key>", _tree_key_to_search)
+
+        # Ctrl+F -> focus barra ricerca
+        step_tree.bind("<Control-f>", lambda e: (_step_search_entry.focus_set(), "break"))
 
         # Enter e frecce su Treeview
         step_tree.bind("<Return>", lambda e: _conferma_step())
@@ -4015,11 +4598,11 @@ class RetroDBApp:
         style.theme_use("clam")
         style.configure("Retro.Treeview",
             background=c["sfondo_celle"], foreground=c["dati"],
-            fieldbackground=c["sfondo_celle"], font=("Consolas", _S(8)),
+            fieldbackground=c["sfondo_celle"], font=(FONT_MONO, _S(8)),
             rowheight=_S(22), borderwidth=0)
         style.configure("Retro.Treeview.Heading",
             background=c["pulsanti_sfondo"], foreground=c["pulsanti_testo"],
-            font=("Consolas", _S(8), "bold"), borderwidth=1, relief="ridge")
+            font=(FONT_MONO, _S(8), "bold"), borderwidth=1, relief="ridge")
         style.map("Retro.Treeview",
             background=[("selected", c["cursore"])],
             foreground=[("selected", c["testo_cursore"])])
@@ -4566,11 +5149,11 @@ class RetroDBApp:
         style.theme_use("clam")
         style.configure("Retro.Treeview",
             background=c["sfondo_celle"], foreground=c["dati"],
-            fieldbackground=c["sfondo_celle"], font=("Consolas", _S(8)),
+            fieldbackground=c["sfondo_celle"], font=(FONT_MONO, _S(8)),
             rowheight=_S(22), borderwidth=0)
         style.configure("Retro.Treeview.Heading",
             background=c["pulsanti_sfondo"], foreground=c["pulsanti_testo"],
-            font=("Consolas", _S(8), "bold"), borderwidth=1, relief="ridge")
+            font=(FONT_MONO, _S(8), "bold"), borderwidth=1, relief="ridge")
         style.map("Retro.Treeview",
             background=[("selected", c["cursore"])],
             foreground=[("selected", c["testo_cursore"])])
@@ -4938,10 +5521,11 @@ class RetroDBApp:
                                   self._rif_preselezionati)
 
         if self.table_def.riferimenti and ha_rif_preselezionati:
-            # ── INTESTAZIONE FISSA (da wizard) ──
-            # Mostra riferimenti come testo non modificabile, stile "foglio A4"
+            # ── INTESTAZIONE MODIFICABILE (da wizard/copia) ──
+            # Riferimenti preselezionati, navigabili con tastiera (Enter = cambia)
             intestazione = tk.Frame(self._fields_inner, bg=c["sfondo"])
             intestazione.pack(fill="x", pady=(_S(1), _S(4)))
+            self._ref_btns = []  # bottoni riferimento per navigazione
 
             for rif in self.table_def.riferimenti:
                 alias = rif.get("alias", rif["tabella"])
@@ -4959,13 +5543,47 @@ class RetroDBApp:
                         self._ref_fixed[campo_rec] = str(rec.get(ref_k["nome"], ""))
 
                 row = tk.Frame(intestazione, bg=c["sfondo"])
-                row.pack(fill="x", pady=0)
-                tk.Label(row, text="%s:" % alias.upper().replace("_", " "),
-                         bg=c["sfondo"], fg=c["cerca_testo"], font=self._f_btn,
-                         width=max_label, anchor="w").pack(side="left")
-                tk.Label(row, text=desc if desc else "(non selezionato)",
-                         bg=c["sfondo"], fg=c["dati"], font=self._f_label,
-                         anchor="w").pack(side="left", padx=(_S(4), 0))
+                row.pack(fill="x", pady=_S(1))
+                # Bottone focusable: mostra il valore, Enter lo cambia
+                btn_text = "%s: %s" % (alias.upper().replace("_", " "),
+                                       desc if desc else "(non selezionato)")
+                ref_btn = tk.Button(row, text=btn_text, font=self._f_label,
+                    bg=c["sfondo"], fg=c["dati"], anchor="w",
+                    activebackground=c["pulsanti_sfondo"],
+                    activeforeground=c["cerca_testo"],
+                    highlightbackground=c["linee"],
+                    highlightcolor=c["cerca_testo"],
+                    highlightthickness=1, relief="flat", bd=0,
+                    cursor="hand2")
+                ref_btn.pack(fill="x")
+                # Stile focus: evidenzia quando ha il focus
+                ref_btn.bind("<FocusIn>",
+                    lambda e, b=ref_btn: b.config(
+                        fg=c["cerca_testo"], bg=c["pulsanti_sfondo"]))
+                ref_btn.bind("<FocusOut>",
+                    lambda e, b=ref_btn: b.config(
+                        fg=c["dati"], bg=c["sfondo"]))
+                if ref_db:
+                    _cmd = lambda a=alias, cr=campo_rec, db=ref_db, btn=ref_btn, r=rif: \
+                        self._cambia_riferimento(a, cr, db, btn, r)
+                    ref_btn.config(command=_cmd)
+                    ref_btn.bind("<Return>", lambda e, fn=_cmd: (fn(), "break")[-1])
+                    ref_btn.bind("<space>", lambda e, fn=_cmd: (fn(), "break")[-1])
+                    ref_btn.bind("<KP_Enter>", lambda e, fn=_cmd: (fn(), "break")[-1])
+                self._ref_btns.append(ref_btn)
+
+            # Primo bottone prende il focus se stiamo duplicando
+            if self._ref_btns and self.modo_nuovo:
+                self.root.after(200, lambda: self._ref_btns[0].focus_set())
+
+            # Navigazione frecce su/giu' tra riferimenti
+            for i, b in enumerate(self._ref_btns):
+                if i > 0:
+                    prev = self._ref_btns[i - 1]
+                    b.bind("<Up>", lambda e, p=prev: (p.focus_set(), "break")[-1])
+                if i < len(self._ref_btns) - 1:
+                    nxt = self._ref_btns[i + 1]
+                    b.bind("<Down>", lambda e, n=nxt: (n.focus_set(), "break")[-1])
 
             tk.Frame(self._fields_inner, bg=c["linee"], height=1).pack(fill="x", pady=(_S(2), _S(4)))
 
@@ -5362,6 +5980,170 @@ class RetroDBApp:
                 dati[campo["nome"]] = val
         return dati
 
+    def _cambia_riferimento(self, alias, campo_rec, ref_db, label_widget, rif):
+        """Selettore inline per cambiare un riferimento dopo duplicazione.
+        Nasconde il form e mostra una Listbox fullscreen con filtro rapido.
+        Niente Toplevel popup (troppo piccoli su uConsole)."""
+        c = carica_colori()
+
+        # Raccogli tutti i record disponibili
+        ref_td = self.ref_defs.get(alias)
+        if ref_td and ref_td.condiviso:
+            filtro = None
+        else:
+            filtro = self.filtro_utente()
+        indici = ref_db.get_records_filtrati(filtro) if ref_db else []
+        if not indici:
+            self._status("Nessun elemento in %s!" % alias, "stato_errore")
+            return
+
+        # Salva widget visibili attuali e nascondili
+        self._ref_sel_hidden = []
+        for child in self._vista.winfo_children():
+            if child.winfo_ismapped():
+                self._ref_sel_hidden.append(child)
+                child.pack_forget()
+
+        # Frame selettore inline (occupa tutta la _vista)
+        sel_frame = tk.Frame(self._vista, bg=c["sfondo"])
+        sel_frame.pack(fill="both", expand=True, padx=_S(10), pady=(_S(6), _S(4)))
+        self._ref_sel_frame = sel_frame
+
+        # Titolo
+        tk.Label(sel_frame, text="SCEGLI %s" % alias.upper().replace("_", " "),
+                 bg=c["sfondo"], fg=c["cerca_testo"],
+                 font=self._f_title).pack(anchor="w", pady=(_S(2), _S(4)))
+
+        # Filtro rapido
+        cerca_var = tk.StringVar()
+        cerca_entry = tk.Entry(sel_frame, textvariable=cerca_var,
+                               bg=c["sfondo_celle"], fg=c["dati"],
+                               insertbackground=c["dati"], font=self._f_label,
+                               relief="flat", highlightthickness=1,
+                               highlightbackground=c["linee"],
+                               highlightcolor=c["cerca_testo"])
+        cerca_entry.pack(fill="x", pady=(_S(2), _S(4)))
+
+        # Listbox fullscreen
+        lb_frame = tk.Frame(sel_frame, bg=c["sfondo"])
+        lb_frame.pack(fill="both", expand=True, pady=(_S(2), _S(4)))
+        lb = tk.Listbox(lb_frame, font=self._f_list,
+                        bg=c["sfondo_celle"], fg=c["dati"],
+                        selectbackground=c["cursore"],
+                        selectforeground=c["testo_cursore"],
+                        highlightthickness=0, relief="flat",
+                        exportselection=False)
+        lb.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(lb_frame, orient="vertical", command=lb.yview)
+        sb.pack(side="right", fill="y")
+        lb.configure(yscrollcommand=sb.set)
+
+        # Status bar in basso
+        status_lbl = tk.Label(sel_frame, text="\u2191\u2193 = naviga  |  Enter = conferma  |  Esc = annulla  |  digita per filtrare",
+                              bg=c["sfondo"], fg=c["testo_dim"], font=self._f_small, anchor="w")
+        status_lbl.pack(fill="x", pady=(_S(2), 0))
+
+        # Popola lista
+        descrizioni = []
+        for idx in indici:
+            desc = ref_db.get_descrizione_record(idx)
+            descrizioni.append(desc)
+            lb.insert("end", desc)
+
+        # Preseleziona il valore corrente
+        current_val = self._ref_fixed.get(campo_rec, "")
+        ref_k = ref_db.table_def.get_campo_chiave()
+        for i, idx in enumerate(indici):
+            rec = ref_db.leggi(idx)
+            if rec and ref_k and str(rec.get(ref_k["nome"], "")) == current_val:
+                lb.selection_set(i)
+                lb.see(i)
+                break
+
+        # Indici filtrati (per filtro cerca)
+        filtered_indices = list(range(len(indici)))
+
+        def _filtra(*args):
+            testo = cerca_var.get().strip().lower()
+            lb.delete(0, "end")
+            filtered_indices.clear()
+            for i, desc in enumerate(descrizioni):
+                if not testo or testo in desc.lower():
+                    lb.insert("end", desc)
+                    filtered_indices.append(i)
+            if lb.size() > 0:
+                lb.selection_set(0)
+                lb.see(0)
+
+        cerca_var.trace_add("write", _filtra)
+
+        def _ripristina_form(focus_btn=True):
+            """Rimuove il selettore e ricostruisce il form.
+            Ricostruire e' piu' sicuro che fare pack/unpack."""
+            sel_frame.destroy()
+            self._ref_sel_hidden = []
+            # Ricostruisci form completo (come fa _mostra_record)
+            nome_tab = self.table_def.nome
+            rec_idx = self._pos_visibile
+            self._costruisci_form(nome_tab)
+            self._mostra_record()
+            # Focus sul bottone del riferimento appena cambiato
+            if focus_btn and hasattr(self, '_ref_btns') and self._ref_btns:
+                for b in self._ref_btns:
+                    txt = b.cget("text").lower()
+                    if alias.lower().replace("_", " ") in txt:
+                        self.root.after(100, lambda bb=b: bb.focus_set())
+                        break
+
+        def _conferma(e=None):
+            sel = lb.curselection()
+            if not sel:
+                _ripristina_form()
+                return
+            # Mappa selezione filtrata -> indice reale
+            filt_idx = sel[0]
+            if filt_idx < len(filtered_indices):
+                real_list_idx = filtered_indices[filt_idx]
+            else:
+                real_list_idx = filt_idx
+            real_db_idx = indici[real_list_idx]
+            rec = ref_db.leggi(real_db_idx)
+            if rec and ref_k:
+                new_key = str(rec.get(ref_k["nome"], ""))
+                # Aggiorna _ref_fixed PRIMA di ricostruire il form
+                self._ref_fixed[campo_rec] = new_key
+                # Aggiorna anche _rif_preselezionati con il nuovo indice
+                self._rif_preselezionati[alias] = real_db_idx
+                self._status("Cambiato %s" % alias, "stato_ok")
+            _ripristina_form()
+
+        lb.bind("<Return>", _conferma)
+        cerca_entry.bind("<Return>", lambda e: (lb.focus_set(), "break")[-1])
+        cerca_entry.bind("<Down>", lambda e: (lb.focus_set(), "break")[-1])
+        cerca_entry.bind("<Escape>", lambda e: _ripristina_form())
+        lb.bind("<Escape>", lambda e: _ripristina_form())
+
+        # Tab: cerca -> listbox -> cerca
+        cerca_entry.bind("<Tab>", lambda e: (lb.focus_set(), "break")[-1])
+        lb.bind("<Tab>", lambda e: (cerca_entry.focus_set(), "break")[-1])
+
+        # Focus iniziale sulla cerca
+        cerca_entry.focus_set()
+
+        # Bottoni
+        btn_bar = tk.Frame(top, bg=c["sfondo"])
+        btn_bar.pack(fill="x", padx=_S(10), pady=(_S(2), _S(6)))
+        tk.Button(btn_bar, text="CONFERMA", font=self._f_btn,
+                  bg=c["cerca_sfondo"], fg=c["cerca_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=_conferma).pack(side="left", padx=(_S(0), _S(4)))
+        tk.Button(btn_bar, text="ANNULLA", font=self._f_btn,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=top.destroy).pack(side="left")
+
+        cerca_entry.focus_set()
+
     def _aggiorna_contatore(self, curr, tot):
         self._label_contatore.config(text="Rec %d/%d" % (curr, tot) if tot else "Nessun record")
 
@@ -5370,37 +6152,23 @@ class RetroDBApp:
         self._label_status.config(text=" %s" % msg, fg=c.get(color_key, c["testo_dim"]))
 
     def _flash_btn(self, btn, cmd):
-        """Ritorna un comando wrappato con flash rosso 0.8s."""
+        """Ritorna un comando wrappato con flash rosso (delega a ui_bottoni)."""
+        if _HAS_UI_BTN:
+            return _ui_flash_btn(self.root, btn, cmd)
+        # Fallback
         def _wrapper():
             try:
-                orig_bg = btn.cget("bg")
-                orig_fg = btn.cget("fg")
+                orig_bg = btn.cget("bg"); orig_fg = btn.cget("fg")
                 btn.config(bg="#ff0000", fg="#ffffff")
-                # Esegui comando dopo 150ms cosi' il flash si vede
-                self.root.after(150, lambda: self._flash_exec(btn, orig_bg, orig_fg, cmd))
+                self.root.after(150, lambda: (btn.config(bg=orig_bg, fg=orig_fg), cmd()))
             except Exception:
                 cmd()
         return _wrapper
 
-    def _flash_exec(self, btn, orig_bg, orig_fg, cmd):
-        """Ripristina colore e esegui comando."""
-        try:
-            btn.config(bg=orig_bg, fg=orig_fg)
-        except Exception:
-            pass
-        cmd()
-
     def _flash_key(self, op, cmd):
-        """Flash bottone per nome operazione + esegui comando (da scorciatoia tastiera)."""
-        btn = getattr(self, '_btn_map', {}).get(op)
-        if btn:
-            try:
-                orig_bg = btn.cget("bg")
-                orig_fg = btn.cget("fg")
-                btn.config(bg="#ff0000", fg="#ffffff")
-                self.root.after(150, lambda: self._flash_exec(btn, orig_bg, orig_fg, cmd))
-            except Exception:
-                cmd()
+        """Flash bottone per nome operazione (delega a ui_bottoni)."""
+        if _HAS_UI_BTN:
+            _ui_flash_key(self.root, getattr(self, '_btn_map', {}), op, cmd)
         else:
             cmd()
 
@@ -5517,6 +6285,16 @@ class RetroDBApp:
                 ok, msg = rf.validate()
                 if not ok: self._status("%s: %s" % (nome.replace("_"," "), msg), "stato_errore"); rf.set_focus(); return
 
+        # Utenti: email obbligatoria per admin
+        if self._nome_tabella == "utenti":
+            is_adm = str(dati.get("Admin", "")).strip().upper() in ("1", "S", "SI", "TRUE", "V")
+            email_utente = str(dati.get("Email", "")).strip()
+            if is_adm and not email_utente:
+                self._status("Email obbligatoria per Admin!", "stato_errore")
+                if "Email" in self.fields:
+                    self.fields["Email"].set_focus()
+                return
+
         if self.modo_nuovo:
             utente_id = None
             if not self.table_def.condiviso:
@@ -5583,6 +6361,10 @@ class RetroDBApp:
                     "<Button-1>", "<Key>"):
             try: self.root.unbind(key)
             except: pass
+        # Sospendi focus visivo durante transizione per evitare
+        # che bind_class FocusIn/Out sporchi i colori dei bottoni
+        sospendi_focus(True)
+        pulisci_cache()
         # Distrugge contenuto e ricrea frame schermata sopra _base
         c = carica_colori()
         self._base.configure(bg=c["sfondo"])
@@ -5591,6 +6373,8 @@ class RetroDBApp:
         self._vista = tk.Frame(self._base, bg=c["sfondo"])
         self._vista.place(x=0, y=0, relwidth=1, relheight=1)
         self._kb_original_colors = {}
+        # Riattiva focus visivo (i nuovi widget partiranno puliti)
+        sospendi_focus(False)
 
     def _rimuovi_coperta(self):
         """Compatibilita': non serve piu' con il frame fisso."""
