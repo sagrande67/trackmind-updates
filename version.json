@@ -1,6 +1,13 @@
 {
-  "version": "05.04.0",
-  "date": "2026-04-10",
-  "note": "Versione corrente - nessun aggiornamento",
-  "files": {}
+  "version": "05.04.2",
+  "date": "2026-04-13",
+  "note": "Fix admin, bottoni menu, autostart",
+  "files": {
+    "retrodb.py": "root",
+    "auth.py": "core",
+    "crono.py": "addons",
+    "ai_analisi.py": "addons",
+    "web_sync.py": "addons",
+    "prompt_editor.py": "addons"
+  }
 }
