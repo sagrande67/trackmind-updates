@@ -1,7 +1,7 @@
 {
-  "version": "05.05.08",
+  "version": "05.05.09",
   "date": "2026-04-17",
-  "time": "13:20:44",
+  "time": "13:36:36",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -28,6 +28,7 @@
     "tm_field.py": "core",
     "ui_bottoni.py": "core",
     "updater.py": "core",
-    "conf.def": "tabelle"
+    "conf.def": "tabelle",
+    "logo.png": "loghi"
   }
 }

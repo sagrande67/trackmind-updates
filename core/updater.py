@@ -86,9 +86,14 @@ APP_FOLDERS = ["root", "addons", "core"]
 
 # File extra non-.py da includere negli aggiornamenti.
 # Chiave = cartella logica, valore = lista nomi file.
-# Solo conf.def viene distribuito: le altre .def sono personalizzabili dal cliente.
+# - conf.def: solo questo viene distribuito, le altre .def sono
+#   personalizzabili dal cliente
+# - logo.png: logo di default di TrackMind spedito con l'app; i
+#   rivenditori possono comunque sovrascriverlo localmente mettendo il
+#   proprio PNG in dati/loghi/ (non toccato dagli aggiornamenti).
 APP_EXTRA_FILES = {
     "tabelle": ["conf.def"],
+    "loghi":   ["logo.png"],
 }
 
 # Tutte le cartelle valide: APP_FOLDERS + chiavi APP_EXTRA_FILES
@@ -689,6 +694,7 @@ def scarica_aggiornamento_github(info, base_dir, backup_dir=None, callback=None)
         "core": os.path.join(base_dir, "core"),
         "dev": os.path.join(base_dir, "dev"),
         "tabelle": os.path.join(base_dir, "tabelle"),
+        "loghi": os.path.join(base_dir, "loghi"),
     }
 
     try:

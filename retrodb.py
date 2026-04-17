@@ -1407,38 +1407,48 @@ class RetroDBApp:
     def _mostra_logo_login(self, parent, c):
         """Mostra, se presente, il logo del rivenditore sotto i campi login.
 
-        Il file viene cercato in dati/loghi/<nome> dove <nome> e' configurabile
-        in conf (chiave 'login_logo', default 'logo.png'). Se non c'e' la
-        .png prova anche .gif. La cartella dedicata 'loghi/' tiene tutti i
-        marchi in un posto ordinato (logo login, futuro logo stampa, ecc.).
-        Se il logo e' troppo grande viene ridotto con subsample() (stdlib
-        tkinter, no PIL).
+        Il file viene cercato in quest'ordine:
+          1. dati/loghi/<nome>    - override utente/rivenditore locale,
+                                    NON toccato dagli aggiornamenti
+          2. dati/loghi/<base>.gif
+          3. loghi/<nome>         - default spedito con l'app via GitHub update
+          4. loghi/<base>.gif
+          5. dati/<nome>          - retrocompat vecchie installazioni
+          6. dati/<base>.gif      - retrocompat
 
-        Retrocompat: se il file non esiste nella nuova cartella 'loghi/' ma
-        esiste direttamente in dati/ lo usiamo comunque (vecchie installazioni).
+        <nome> e' configurabile in conf (chiave 'login_logo', default
+        'logo.png'). Se il logo e' troppo grande viene ridotto con
+        subsample() (stdlib tkinter, no PIL).
+
+        Il doppio livello permette: default bello out-of-the-box per tutti
+        (cartella loghi/ distribuita), ma il rivenditore puo' brandizzare
+        mettendo il proprio PNG in dati/loghi/ senza paura che gli venga
+        sovrascritto dall'aggiornamento successivo.
 
         La reference alla PhotoImage viene salvata in self._login_logo_img
         per evitare che il garbage collector di Python la cancelli (tkinter
         tiene solo una weak-ref alle immagini)."""
         try:
+            base_dir  = self._get_base()
             dati_dir  = self.percorsi.get("dati", "dati")
-            loghi_dir = os.path.join(dati_dir, "loghi")
-            # Crea la cartella se manca, cosi' il rivenditore sa dove mettere
-            # il proprio PNG senza leggere la documentazione.
+            user_dir  = os.path.join(dati_dir, "loghi")   # override utente
+            ship_dir  = os.path.join(base_dir, "loghi")   # default spedito
+            # Crea la cartella utente se manca, cosi' il rivenditore sa
+            # dove mettere un eventuale override senza leggere la doc.
             try:
-                os.makedirs(loghi_dir, exist_ok=True)
+                os.makedirs(user_dir, exist_ok=True)
             except Exception:
                 pass
             nome_logo = self.conf.get("login_logo", "logo.png") or "logo.png"
+            base_nome, _ext = os.path.splitext(nome_logo)
 
-            # Ordine di ricerca: dati/loghi/<nome>, dati/loghi/<base>.gif,
-            # dati/<nome> (retrocompat), dati/<base>.gif (retrocompat).
-            base, _ext = os.path.splitext(nome_logo)
             candidati = [
-                os.path.join(loghi_dir, nome_logo),
-                os.path.join(loghi_dir, base + ".gif"),
-                os.path.join(dati_dir,  nome_logo),
-                os.path.join(dati_dir,  base + ".gif"),
+                os.path.join(user_dir, nome_logo),
+                os.path.join(user_dir, base_nome + ".gif"),
+                os.path.join(ship_dir, nome_logo),
+                os.path.join(ship_dir, base_nome + ".gif"),
+                os.path.join(dati_dir, nome_logo),           # retrocompat
+                os.path.join(dati_dir, base_nome + ".gif"),  # retrocompat
             ]
             path = None
             for p in candidati:
