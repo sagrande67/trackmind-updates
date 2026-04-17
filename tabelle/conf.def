@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────
+# CONFIGURAZIONE SISTEMA - Tabella monorecord (accesso da login)
+# Non compare nel menu (!nascosto;vero), accessibile con CoNfI
+# ─────────────────────────────────────────────────────────────────
+!accesso;admin
+!condiviso;vero
+!nascosto;vero
+!salva;vero
+!naviga;vero
+
+# ─── Percorsi ───────────────────────────────────────────────────
+percorso_installazione;50;S
+percorso_tabelle;50;S
+percorso_dati;50;S
+percorso_backup;50;S
+percorso_core;50;S
+percorso_addons;50;S
+
+# ─── Parametri ──────────────────────────────────────────────────
+!sezione;PARAMETRI
+nome_database;30;S
+larghezza_max;5;N
+altezza_max;5;N
+scala;4;S
+fullscreen;1;F
+cella_dimensione;3;N
+cella_spaziatura;2;N
+font_campi;3;N
+font_label;3;N
+stampante_bt;25;S
+multiutente;3;N
+data_installazione;8;D
+data_fine_licenza;8;D
+
+# ─── Notifiche Sviluppatore ────────────────────────────────────
+!sezione;NOTIFICHE SVILUPPATORE
+email_sviluppatore;30;S
+smtp_server;25;S
+smtp_port;4;N
+smtp_user;30;S
+smtp_password;20;P
+
+# ─── Intelligenza Artificiale ──────────────────────────────────
+!sezione;INTELLIGENZA ARTIFICIALE
+anthropic_api_key;120;S
+crediti_ia;5;N

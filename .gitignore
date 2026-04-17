@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────
+#  .gitignore per il canale aggiornamenti TrackMind (repo PUBBLICO).
+#
+#  Qui dentro deve finire SOLO il codice applicazione + version.json.
+#  Niente dati utente, niente segreti, niente cache.
+# ─────────────────────────────────────────────────────────────────────
+
+# --- Segreti (MAI committare su repo pubblico) ---
+conf.dat
+api_key.txt
+secret.dat
+*.key
+.env
+.env.*
+
+# --- Cache / compilato Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- File temporanei / backup / swap ---
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# --- Copie accidentali Windows Explorer ---
+*(copia)*
+*(copy)*
+
+# --- Dati utente (NON vanno distribuiti) ---
+dati/
+backup/
+colori.cfg
+*.log
+
+# --- Utility dev / test (non fanno parte del canale update) ---
+sync_*.py
+test_*.py
+genera_*.py
+_*.py
+
+# --- Cartella clone annidata per sbaglio ---
+trackmind-updates/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.iml
