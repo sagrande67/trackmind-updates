@@ -158,15 +158,64 @@ def _S(val):
     return max(1, int(val * get_scala()))
 
 
+def _get_batteria_info_windows():
+    """Legge lo stato della batteria su Windows via GetSystemPowerStatus (kernel32).
+    Usa solo ctypes (stdlib). Ritorna (percentuale, stato) o (None, None)
+    se non c'e' batteria (es. desktop PC fisso)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _SPS(ctypes.Structure):
+            _fields_ = [
+                ("ACLineStatus",         wintypes.BYTE),
+                ("BatteryFlag",          wintypes.BYTE),
+                ("BatteryLifePercent",   wintypes.BYTE),
+                ("SystemStatusFlag",     wintypes.BYTE),
+                ("BatteryLifeTime",      wintypes.DWORD),
+                ("BatteryFullLifeTime",  wintypes.DWORD),
+            ]
+
+        sps = _SPS()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(sps)):
+            return None, None
+
+        flag = sps.BatteryFlag & 0xFF
+        pct = sps.BatteryLifePercent & 0xFF
+        ac = sps.ACLineStatus & 0xFF
+
+        # Nessuna batteria (desktop) o stato sconosciuto
+        if flag == 128 or flag == 255 or pct == 255:
+            return None, None
+
+        # Mappa stato al formato Linux usato altrove nel codice
+        if flag & 8:
+            stato = "Charging"
+        elif ac == 1 and pct >= 100:
+            stato = "Full"
+        elif ac == 0:
+            stato = "Discharging"
+        elif ac == 1:
+            stato = "Charging"
+        else:
+            stato = "Unknown"
+
+        return int(pct), stato
+    except Exception:
+        return None, None
+
+
 def _get_batteria_info():
-    """Legge lo stato della batteria da /sys/class/power_supply (Linux/uConsole).
+    """Legge lo stato della batteria.
+    - Linux/uConsole: da /sys/class/power_supply
+    - Windows: via GetSystemPowerStatus (kernel32)
+    - Mac e sistemi senza batteria: (None, None)
     Ritorna (percentuale, stato) dove:
       percentuale: int 0-100, oppure None se non disponibile
       stato: 'Charging', 'Discharging', 'Full', 'Unknown', oppure None
-    Su Windows/Mac ritorna (None, None).
     """
     if sys.platform == "win32":
-        return None, None
+        return _get_batteria_info_windows()
     ps_dir = "/sys/class/power_supply"
     if not os.path.isdir(ps_dir):
         return None, None
