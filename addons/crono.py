@@ -1468,13 +1468,10 @@ class Crono:
         scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
         os.makedirs(scouting_dir, exist_ok=True)
 
-        # Pulisci TUTTI i file scouting esistenti prima di riscaricare
-        try:
-            for f in os.listdir(scouting_dir):
-                if f.endswith(".json"):
-                    os.remove(os.path.join(scouting_dir, f))
-        except Exception:
-            pass
+        # NON cancellare i file scouting esistenti: l'archivio va mantenuto
+        # per tutti i piloti/date e filtrato dal campo CERCA in "Tutti i tempi".
+        # La deduplica per transponder+data+session_id viene fatta piu' avanti
+        # quando si salvano le nuove sessioni (sovrascrive solo quelle uguali).
 
         def _fetch_tutto():
             messaggi = []
