@@ -1770,10 +1770,23 @@ class LapTimer:
             self._lbl_res_status.config(text="Stampa in corso...", fg=c["stato_avviso"])
             self._lbl_res_status.update_idletasks()
 
+        # Legge il MAC della stampante da conf.dat (come fa retrodb).
+        # Se non configurato, usa "auto" (Windows: win32print cerca generico;
+        # Linux: scan BT).
+        mac = "auto"
+        try:
+            from conf_manager import carica_conf
+            _conf = carica_conf()
+            _mac = (_conf.get("stampante_bt", "") or "").strip()
+            if _mac:
+                mac = _mac
+        except Exception:
+            pass
+
         righe = self._genera_scheda_crono()
 
         def _stampa_thread():
-            ok, msg = stampa_bluetooth(righe, "auto")
+            ok, msg = stampa_bluetooth(righe, mac)
             try:
                 if hasattr(self, '_lbl_res_status'):
                     fg = c["stato_ok"] if ok else c["stato_errore"]
