@@ -77,6 +77,12 @@ class RetroField(tk.Frame):
         self._on_enter = on_enter
         self._label_text = label
         self._has_focus = False
+        # Id del timer di lampeggio, memorizzato per poterlo cancellare ed
+        # evitare cicli concorrenti quando il focus rimbalza (tipico della
+        # schermata di login, dove _forza_focus_once triggera piu' FocusIn
+        # di fila - XSetInputFocus + click simulato + rifocus a 150/500 ms).
+        self._blink_after_id = None
+        self._blink_on = False
 
         # Dimensioni scalate
         self._cell_w = _S(BASE_CELL_W)
@@ -199,20 +205,41 @@ class RetroField(tk.Frame):
             self._cursor_pos = self._editable_positions.index(idx)
         self._redraw()
 
+    def _cancel_blink(self):
+        """Cancella il timer di lampeggio pendente, se esiste.
+        Chiamato prima di ogni nuovo _blink() per evitare cicli concorrenti."""
+        if self._blink_after_id is not None:
+            try:
+                self.after_cancel(self._blink_after_id)
+            except Exception:
+                pass
+            self._blink_after_id = None
+
     def _on_focus_in(self, event):
         c = carica_colori()
         self._has_focus = True
         self._canvas.config(highlightbackground=c["dati"])
-        self._redraw(); self._blink_on = True; self._blink()
+        self._redraw()
+        # Cancella un eventuale blink residuo (focus rimbalzato sul login)
+        # prima di avviare il nuovo ciclo, cosi' non girano due timer insieme.
+        self._cancel_blink()
+        self._blink_on = True
+        self._blink()
 
     def _on_focus_out(self, event):
         c = carica_colori()
         self._has_focus = False
         self._canvas.config(highlightbackground=c["bordo_vuote"])
         self._redraw()
+        # Niente timer residui: cosi' il prossimo _on_focus_in
+        # parte "pulito" dal colore cursore acceso.
+        self._cancel_blink()
 
     def _blink(self):
-        if not self._has_focus: return
+        # Se nel frattempo il focus e' andato via, niente nuova schedulata
+        if not self._has_focus:
+            self._blink_after_id = None
+            return
         c = carica_colori()
         self._blink_on = not self._blink_on
         cr = self._editable_positions[self._cursor_pos] if self._cursor_pos < self._max_editable else -1
@@ -230,7 +257,8 @@ class RetroField(tk.Frame):
                 fg = c["dati"] if char else c["puntini"]
                 self._canvas.itemconfig(self._cell_rects[cr], fill=bg)
                 self._canvas.itemconfig(self._cell_texts[cr], fill=fg)
-        self.after(530, self._blink)
+        # Memorizza l'id per poterlo cancellare se il focus rimbalza
+        self._blink_after_id = self.after(530, self._blink)
 
     def _on_key(self, event):
         if getattr(self, '_readonly', False): return

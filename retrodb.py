@@ -3204,30 +3204,46 @@ class RetroDBApp:
     def _esegui_prepara_github(self):
         """Copia i file nella cartella del repository GitHub locale.
 
-        Chiede all'utente di selezionare la cartella del repo (es.
-        C:\\dev\\trackmind-updates), poi scrive version.json + tutti i file
-        nella struttura attesa dal canale GitHub. L'utente dopo fa
-        git add + commit + push per pubblicare.
+        Legge il percorso dalla chiave `github_repo_dir` di conf.dat
+        (configurabile dalla tabella CONFI, sezione Percorsi). Se quella
+        cartella esiste ed e' valida, la usa subito senza chiedere nulla.
+        Se non e' valorizzata o non esiste, apre il filedialog come
+        fallback e salva la scelta in conf.dat.
 
-        La cartella scelta viene ricordata in conf (chiave 'github_repo_dir')
-        per velocizzare le volte successive.
+        Scrive version.json + tutti i file nella struttura attesa dal
+        canale GitHub. L'utente dopo fa git add + commit + push.
         """
         c = carica_colori()
         base = self._get_base()
 
-        # Proponi come default la cartella ricordata in conf, se c'e'
-        init_dir = self.conf.get("github_repo_dir", "")
-        if not init_dir or not os.path.isdir(init_dir):
-            init_dir = os.path.expanduser("~")
-
-        dest = _filedialog.askdirectory(
-            parent=self.root,
-            title="Seleziona la cartella del repository GitHub (locale)",
-            initialdir=init_dir,
-            mustexist=True)
-        if not dest:
-            self._prep_status.config(text="Annullato.", fg=c["testo_dim"])
-            return
+        # 1) Prova a usare il path gia' configurato in conf.dat
+        dest = (self.conf.get("github_repo_dir") or "").strip()
+        if dest and os.path.isdir(dest):
+            # Path valido: procedi diretto
+            pass
+        else:
+            # 2) Fallback: filedialog per sceglierlo (solo la prima volta
+            #    o se l'utente ha cancellato la cartella precedente).
+            if dest:
+                self._prep_status.config(
+                    text="Percorso '%s' non valido, seleziona la cartella..." % dest,
+                    fg=c["stato_avviso"])
+                self.root.update()
+            init_dir = dest if dest else os.path.expanduser("~")
+            dest = _filedialog.askdirectory(
+                parent=self.root,
+                title="Seleziona la cartella del repository GitHub (locale)",
+                initialdir=init_dir,
+                mustexist=True)
+            if not dest:
+                self._prep_status.config(text="Annullato.", fg=c["testo_dim"])
+                return
+            # Salva subito in conf.dat cosi' la prossima volta non chiede piu'
+            try:
+                self.conf["github_repo_dir"] = dest
+                salva_conf(self.conf)
+            except Exception:
+                pass
 
         # Sicurezza: non permettere di usare la cartella del progetto stesso
         # come destinazione (sovrascriverebbe i file che stai modificando)

@@ -1,8 +1,8 @@
 {
-  "version": "05.05.11",
-  "date": "2026-04-17",
-  "time": "19:18:03",
-  "note": "",
+  "version": "05.05.13",
+  "date": "2026-04-18",
+  "time": "07:45:00",
+  "note": "Percorso repository GitHub trackmind-updates configurabile dalla tabella CONFI (nuovo campo github_repo_dir). PREPARA GITHUB legge il path da conf.dat senza chiedere ogni volta.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",
