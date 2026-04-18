@@ -17,7 +17,7 @@ _OBFUSCATION_KEY = b"Tr4ckM1nd_C0nf_K3y_2026!#"
 
 # Struttura CONF di default
 DEFAULT_CONF = {
-    "nome_database": "RetroDB",
+    "nome_database": "TRACKMIND",
     "percorso_installazione": "",  # path completo, si auto-rileva
     "percorso_tabelle": "",        # path completo definizioni
     "percorso_dati": "",           # path completo dati

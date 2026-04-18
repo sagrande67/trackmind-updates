@@ -1,8 +1,8 @@
 {
-  "version": "05.05.13",
+  "version": "05.05.14",
   "date": "2026-04-18",
-  "time": "07:45:00",
-  "note": "Percorso repository GitHub trackmind-updates configurabile dalla tabella CONFI (nuovo campo github_repo_dir). PREPARA GITHUB legge il path da conf.dat senza chiedere ogni volta.",
+  "time": "08:10:00",
+  "note": "Rename del database interno da 'RetroDB' a 'TRACKMIND': aggiornato DEFAULT_CONF in conf_manager.py per le nuove installazioni. Le installazioni esistenti possono aggiornare il valore dalla tabella CONFI (campo nome_database).",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",
