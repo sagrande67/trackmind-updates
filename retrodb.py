@@ -2621,7 +2621,9 @@ class RetroDBApp:
 
         tk.Label(conn_bar, text="Password:", bg=c["sfondo"], fg=c["label"],
                  font=self._f_label).pack(side="left")
-        self._wifi_pwd_entry = tk.Entry(conn_bar, font=self._f_label, width=20, show="*",
+        # Password in chiaro (niente show="*"): su pista le password Wi-Fi
+        # sono spesso complicate e vederle mentre si digitano evita errori.
+        self._wifi_pwd_entry = tk.Entry(conn_bar, font=self._f_label, width=20,
                                          bg=c["sfondo_celle"], fg=c["dati"],
                                          insertbackground=c["dati"], relief="flat",
                                          highlightthickness=1, highlightbackground=c["bordo_vuote"])

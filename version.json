@@ -1,8 +1,8 @@
 {
-  "version": "05.05.15",
+  "version": "05.05.16",
   "date": "2026-04-18",
-  "time": "08:30:00",
-  "note": "Fix stampa termica dalla pagina CRONOMETRA del LapTimer: il bottone STAMPA ora legge il MAC della stampante da conf.dat (campo stampante_bt) invece di passare sempre 'auto', che faceva fallire l'auto-setup con 'Stampante non configurata'.",
+  "time": "08:50:00",
+  "note": "Schermata HOTSPOT: password Wi-Fi visibile in chiaro mentre si digita (rimosso show='*' dall'Entry). Le password delle reti in pista sono spesso complicate e vederle riduce gli errori di battitura.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",
