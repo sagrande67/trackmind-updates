@@ -344,7 +344,9 @@ class AnalizzaTempi:
         for w in self.root.winfo_children():
             w.destroy()
         top = self.root.winfo_toplevel()
-        for k in ("<e>", "<p>", "<v>", "<a>", "<s>", "<Control-s>", "<Escape>", "<Up>", "<Down>"):
+        for k in ("<e>", "<p>", "<v>", "<a>", "<s>",
+                  "<Control-s>", "<Control-S>",
+                  "<Escape>", "<Up>", "<Down>"):
             try: top.unbind(k)
             except: pass
 
@@ -474,6 +476,7 @@ class AnalizzaTempi:
         top.bind("<v>", lambda e: self._toggle("valido"))
         top.bind("<a>", lambda e: self._auto())
         top.bind("<Control-s>", lambda e: self._salva())
+        top.bind("<Control-S>", lambda e: self._salva())
         top.bind("<Escape>", lambda e: self._chiudi())
 
         # Popola e calcola

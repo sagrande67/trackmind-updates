@@ -2491,8 +2491,11 @@ class Crono:
             self._at_search_entry.focus_set()
             self._at_search_entry.select_range(0, "end")
             return "break"
+        # Case-insensitive: funziona anche con CapsLock/Shift
         self._at.bind("<Control-f>", _focus_cerca)
+        self._at.bind("<Control-F>", _focus_cerca)
         self.root.bind("<Control-f>", _focus_cerca)
+        self.root.bind("<Control-F>", _focus_cerca)
 
         children = self._at.get_children()
         # Ripristina selezione salvata (dal grafico o altra schermata)

@@ -197,7 +197,11 @@ class EditorTabelle:
         self._schermata_lista()
 
     def _pulisci(self):
-        for k in ("<Escape>","<Control-a>","<Control-d>","<Control-s>","<Control-Up>","<Control-Down>","<Return>"):
+        for k in ("<Escape>",
+                  "<Control-a>","<Control-A>",
+                  "<Control-d>","<Control-D>",
+                  "<Control-s>","<Control-S>",
+                  "<Control-Up>","<Control-Down>","<Return>"):
             try: self._top.unbind(k)
             except: pass
         # Sospendi focus + pulisci cache durante transizione
@@ -666,8 +670,10 @@ class EditorTabelle:
             self._btn_map[op] = b
         self._setup_btns(bb)
         tk.Label(self.root,text="Esc=Lista",bg=c["sfondo"],fg=c["puntini"],font=self._f_small,anchor="e").pack(fill="x",padx=10,pady=(0,4))
-        self._top.bind("<Control-a>",lambda e:self._flash_key("agg",self._agg)); self._top.bind("<Control-d>",lambda e:self._flash_key("eli",self._eli))
-        self._top.bind("<Control-s>",lambda e:self._flash_key("save",self._save))
+        # Case-insensitive: funziona anche con CapsLock/Shift
+        self._top.bind("<Control-a>",lambda e:self._flash_key("agg",self._agg)); self._top.bind("<Control-A>",lambda e:self._flash_key("agg",self._agg))
+        self._top.bind("<Control-d>",lambda e:self._flash_key("eli",self._eli)); self._top.bind("<Control-D>",lambda e:self._flash_key("eli",self._eli))
+        self._top.bind("<Control-s>",lambda e:self._flash_key("save",self._save)); self._top.bind("<Control-S>",lambda e:self._flash_key("save",self._save))
         self._top.bind("<Control-Up>",lambda e:self._flash_key("su",lambda:self._spo(-1))); self._top.bind("<Control-Down>",lambda e:self._flash_key("giu",lambda:self._spo(1)))
         self._top.bind("<Escape>",lambda e:self._schermata_lista())
         ch = self._et.get_children()
@@ -782,6 +788,7 @@ class EditorTabelle:
         self._setup_btns([b1,b2])
         self._btn_map = {"conferma": b1, "annulla": b2}
         self._top.bind("<Control-s>",lambda e:self._flash_key("conferma",ok_cmd))
+        self._top.bind("<Control-S>",lambda e:self._flash_key("conferma",ok_cmd))
         self._top.bind("<Escape>",lambda e:self._flash_key("annulla",lambda:self._editor(si=idx)))
 
     def _ent(self, parent, width=25):

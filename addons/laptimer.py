@@ -305,8 +305,9 @@ class LapTimer:
         info_txt = "%s  |  %s" % (self.pilota, self.setup)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
-        # Barra batteria in alto a destra (overlay, non altera layout)
-        _aggiungi_barra_bat(header)
+        # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
+        # cosi' e' un overlay puro e non occupa spazio nel pack layout.
+        _aggiungi_barra_bat(self.root)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(15, 0))
         centro = tk.Frame(self.root, bg=c["sfondo"])
         centro.pack(expand=True)
@@ -415,8 +416,9 @@ class LapTimer:
         info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
-        # Barra batteria in alto a destra (overlay, non altera layout)
-        _aggiungi_barra_bat(header)
+        # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
+        # cosi' e' un overlay puro e non occupa spazio nel pack layout.
+        _aggiungi_barra_bat(self.root)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
 
         # ── Area superiore: 3 colonne con grid ──
@@ -1558,8 +1560,9 @@ class LapTimer:
         info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
-        # Barra batteria in alto a destra (overlay, non altera layout)
-        _aggiungi_barra_bat(header)
+        # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
+        # cosi' e' un overlay puro e non occupa spazio nel pack layout.
+        _aggiungi_barra_bat(self.root)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
 
         # Area superiore: 3 colonne

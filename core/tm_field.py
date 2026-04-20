@@ -118,7 +118,8 @@ class RetroField(tk.Frame):
                         ("<Up>", self._on_up), ("<Down>", self._on_down),
                         ("<Home>", self._on_home), ("<End>", self._on_end),
                         ("<Return>", self._on_return), ("<Tab>", self._on_tab),
-                        ("<Control-v>", self._on_paste), ("<Control-c>", self._on_copy)]:
+                        ("<Control-v>", self._on_paste), ("<Control-V>", self._on_paste),
+                        ("<Control-c>", self._on_copy), ("<Control-C>", self._on_copy)]:
             self._canvas.bind(ev, fn)
 
     def _build_ui(self, label_width):

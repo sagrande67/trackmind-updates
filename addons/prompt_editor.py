@@ -148,8 +148,11 @@ class PromptEditor:
 
         # Bind
         self.win.protocol("WM_DELETE_WINDOW", self._chiudi)
+        # Case-insensitive: funziona anche con CapsLock/Shift
         self.win.bind("<Control-s>", lambda e: self._salva())
+        self.win.bind("<Control-S>", lambda e: self._salva())
         self.win.bind("<Control-r>", lambda e: self._ripristina_default())
+        self.win.bind("<Control-R>", lambda e: self._ripristina_default())
         self.win.bind("<Escape>", lambda e: self._chiudi())
 
         # Focus

@@ -721,7 +721,9 @@ class RetroDBApp:
         # (bind_class su tutti i Button per inversione colori al focus)
 
         # Binding globali rimossi (CONF accessibile solo da login)
-        self.root.bind("<Control-q>", lambda e: self.root.destroy())  # Ctrl+Q = ESCI da qualsiasi schermata
+        # Ctrl+Q = ESCI da qualsiasi schermata (case-insensitive: funziona anche con CapsLock/Shift)
+        self.root.bind("<Control-q>", lambda e: self.root.destroy())
+        self.root.bind("<Control-Q>", lambda e: self.root.destroy())
 
         valida, msg, giorni = verifica_licenza(self.conf)
         if not valida:
@@ -4020,7 +4022,9 @@ class RetroDBApp:
         pe_txt.bind("<<Modified>>", _on_modify)
         pe_txt.bind("<KeyRelease>", lambda e: _aggiorna_cursore())
         self.root.bind("<Control-s>", lambda e: _salva())
+        self.root.bind("<Control-S>", lambda e: _salva())
         self.root.bind("<Control-r>", lambda e: _ripristina_default())
+        self.root.bind("<Control-R>", lambda e: _ripristina_default())
         self.root.bind("<Escape>", lambda e: _chiudi_editor())
 
         # Tab da testo ai bottoni
@@ -5560,8 +5564,9 @@ class RetroDBApp:
                 return "break"
         step_tree.bind("<Key>", _tree_key_to_search)
 
-        # Ctrl+F -> focus barra ricerca
+        # Ctrl+F -> focus barra ricerca (case-insensitive)
         step_tree.bind("<Control-f>", lambda e: (_step_search_entry.focus_set(), "break"))
+        step_tree.bind("<Control-F>", lambda e: (_step_search_entry.focus_set(), "break"))
 
         # Enter e frecce su Treeview
         step_tree.bind("<Return>", lambda e: _conferma_step())
@@ -5839,8 +5844,10 @@ class RetroDBApp:
         storico_tree.bind("<Double-Button-1>",
             lambda e: self._carica_da_storico_pista(nome_tabella, _get_sel_idx()))
 
-        # Shortcut Ctrl+D per COPIA
+        # Shortcut Ctrl+D per COPIA (case-insensitive)
         self.root.bind("<Control-d>",
+            lambda e: self._copia_setup(nome_tabella, _get_sel_idx()))
+        self.root.bind("<Control-D>",
             lambda e: self._copia_setup(nome_tabella, _get_sel_idx()))
 
         # Sync selezione frecce
@@ -6916,40 +6923,44 @@ class RetroDBApp:
         # Navigazione tastiera sulla barra
         self._kb_setup_bottoni(_bar_btns, orizzontale=True)
 
-        # Scorciatoie da tastiera
+        # Scorciatoie da tastiera - case-insensitive (lower + upper) per funzionare
+        # anche con CapsLock attivo o Shift premuto.
+        def _bind_ctrl(letter, cb):
+            self.root.bind(f"<Control-{letter.lower()}>", cb)
+            self.root.bind(f"<Control-{letter.upper()}>", cb)
         attivi = [b for b in _bar_btns if str(b["state"]) != "disabled"]
         if attivi:
-            self.root.bind("<Control-b>", lambda e: attivi[0].focus_set())
-        self.root.bind("<Control-s>", lambda e: self._flash_key("salva", self._salva))
-        self.root.bind("<Control-n>", lambda e: self._flash_key("nuovo", self._nuovo))
-        self.root.bind("<Control-f>", lambda e: self._flash_key("cerca", self._cerca))
-        self.root.bind("<Control-x>", lambda e: self._flash_key("cancella", self._cancella))
+            _bind_ctrl("b", lambda e: attivi[0].focus_set())
+        _bind_ctrl("s", lambda e: self._flash_key("salva", self._salva))
+        _bind_ctrl("n", lambda e: self._flash_key("nuovo", self._nuovo))
+        _bind_ctrl("f", lambda e: self._flash_key("cerca", self._cerca))
+        _bind_ctrl("x", lambda e: self._flash_key("cancella", self._cancella))
         if self.table_def.puo("elenca"):
-            self.root.bind("<Control-e>", lambda e: self._flash_key("elenca",
+            _bind_ctrl("e", lambda e: self._flash_key("elenca",
                 lambda: self._schermata_elenco(nome_tabella)))
         # COPIA setup (solo tabelle composite)
         if self.table_def.is_composite and self.table_def.puo("nuovo"):
-            self.root.bind("<Control-d>", lambda e: self._flash_key("copia",
+            _bind_ctrl("d", lambda e: self._flash_key("copia",
                 lambda: self._copia_setup(nome_tabella,
                     self.indice_corrente if self.indice_corrente >= 0 else None)))
         # Ctrl+H = torna al primo campo (Home campi)
         primi_campi = list(self.fields.values())
         if primi_campi:
-            self.root.bind("<Control-h>", lambda e: primi_campi[0].set_focus())
+            _bind_ctrl("h", lambda e: primi_campi[0].set_focus())
         # Salta tra sezioni: PgUp/PgDown oppure Ctrl+Freccia Su/Giu
         self.root.bind("<Prior>", lambda e: self._salta_sezione(-1))           # PgUp
         self.root.bind("<Next>", lambda e: self._salta_sezione(1))             # PgDown
         self.root.bind("<Control-Up>", lambda e: self._salta_sezione(-1))      # Ctrl+Su
         self.root.bind("<Control-Down>", lambda e: self._salta_sezione(1))     # Ctrl+Giu
         # Navigazione record
-        self.root.bind("<Control-o>", lambda e: self._vai_precedente())
-        self.root.bind("<Control-p>", lambda e: self._vai_successivo())
+        _bind_ctrl("o", lambda e: self._vai_precedente())
+        _bind_ctrl("p", lambda e: self._vai_successivo())
         # LapTimer (solo se !laptimer;vero nel .def + licenza attiva)
         if self.table_def.puo("crono") and _HAS_CRONO:
-            self.root.bind("<Control-t>", lambda e: self._flash_key("crono", self._lancia_crono))
+            _bind_ctrl("t", lambda e: self._flash_key("crono", self._lancia_crono))
         # Stampa scheda (solo se !stampa;vero nel .def + stampante trovata)
         if _HAS_THERMAL and self.table_def.puo("stampa") and ((not _is_linux()) or self._bt_stampante_ok):
-            self.root.bind("<Control-g>", lambda e: self._flash_key("stampa", self._stampa_scheda_record))
+            _bind_ctrl("g", lambda e: self._flash_key("stampa", self._stampa_scheda_record))
         # Escape -> torna indietro
         if self.table_def.is_composite:
             self.root.bind("<Escape>", lambda e: self._schermata_selezione(nome_tabella))
@@ -7485,10 +7496,23 @@ class RetroDBApp:
     def _pulisci(self):
         try: self.root.unbind_all("<MouseWheel>")
         except: pass
-        for key in ("<Return>", "<Escape>", "<Control-b>", "<Control-s>",
-                    "<Control-n>", "<Control-f>", "<Control-e>",
-                    "<Control-p>", "<Control-o>", "<Control-d>",
-                    "<Control-t>", "<Control-r>", "<Control-h>", "<Control-g>",
+        for key in ("<Return>", "<Escape>",
+                    # Ctrl+lettera: unbind di entrambe le varianti (lower + upper)
+                    # per coerenza con i bind case-insensitive di _kb_bottoni
+                    "<Control-b>", "<Control-B>",
+                    "<Control-s>", "<Control-S>",
+                    "<Control-n>", "<Control-N>",
+                    "<Control-f>", "<Control-F>",
+                    "<Control-e>", "<Control-E>",
+                    "<Control-x>", "<Control-X>",
+                    "<Control-p>", "<Control-P>",
+                    "<Control-o>", "<Control-O>",
+                    "<Control-d>", "<Control-D>",
+                    "<Control-t>", "<Control-T>",
+                    "<Control-r>", "<Control-R>",
+                    "<Control-h>", "<Control-H>",
+                    "<Control-g>", "<Control-G>",
+                    "<Control-q>", "<Control-Q>",
                     "<Prior>", "<Next>", "<Control-Up>", "<Control-Down>",
                     "<Button-1>", "<Key>"):
             try: self.root.unbind(key)
