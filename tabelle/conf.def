@@ -39,7 +39,7 @@ email_sviluppatore;55;S
 smtp_server;25;S
 smtp_port;4;N
 smtp_user;55;S
-smtp_password;20;P
+smtp_password;20;S
 
 # ─── Intelligenza Artificiale ──────────────────────────────────
 !sezione;INTELLIGENZA ARTIFICIALE

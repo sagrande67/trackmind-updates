@@ -2113,6 +2113,27 @@ class RetroDBApp:
     # =========================================================================
     _notifica_inviata = False  # Una sola notifica per sessione
 
+    @staticmethod
+    def _smtp_connect(server, port, timeout=15):
+        """Restituisce un client SMTP gia' pronto (autenticazione a carico del chiamante).
+
+        Sceglie automaticamente il metodo di crittografia in base alla porta:
+        - 465 -> SMTP_SSL (TLS implicito, Gmail "SSL/TLS" di Thunderbird)
+        - 587 (o altro) -> SMTP + STARTTLS (TLS esplicito, standard moderno)
+
+        Cosi' l'utente puo' impostare in CONFI qualsiasi porta supportata dal
+        provider senza dover toccare il codice. Se la rete blocca una porta
+        (es. alcuni hotspot mobili bloccano 587) basta cambiare a 465 in CONFI.
+        """
+        import smtplib
+        p = int(port)
+        if p == 465:
+            s = smtplib.SMTP_SSL(server, p, timeout=timeout)
+        else:
+            s = smtplib.SMTP(server, p, timeout=timeout)
+            s.starttls()
+        return s
+
     def _notifica_connessione(self):
         """Invia email allo sviluppatore con dati macchina quando c'e' connessione.
         Esecuzione in background, silente, una volta per sessione."""
@@ -2155,8 +2176,7 @@ class RetroDBApp:
                 msg["Subject"] = "[%s] Avvio - %s - %s" % (nome_db, codice, ora)
                 msg["From"] = smtp_usr
                 msg["To"] = email_dev
-                with smtplib.SMTP(smtp_srv, smtp_port, timeout=15) as s:
-                    s.starttls()
+                with self._smtp_connect(smtp_srv, smtp_port, timeout=15) as s:
                     s.login(smtp_usr, smtp_pwd)
                     s.send_message(msg)
             except Exception:
@@ -3637,8 +3657,7 @@ class RetroDBApp:
                     part.add_header("Content-Disposition", "attachment", filename=zip_name)
                     msg.attach(part)
 
-                    with smtplib.SMTP(smtp_srv, smtp_port, timeout=30) as s:
-                        s.starttls()
+                    with self._smtp_connect(smtp_srv, smtp_port, timeout=30) as s:
                         s.login(smtp_usr, smtp_pwd)
                         s.send_message(msg)
                     print("[BACKUP EMAIL] Inviato a %s" % dest_email)
@@ -5247,8 +5266,7 @@ class RetroDBApp:
                 msg["From"] = smtp_usr
                 msg["To"] = email_dev
                 msg["Reply-To"] = email_admin
-                with smtplib.SMTP(smtp_srv, smtp_port, timeout=15) as s:
-                    s.starttls()
+                with self._smtp_connect(smtp_srv, smtp_port, timeout=15) as s:
                     s.login(smtp_usr, smtp_pwd)
                     s.send_message(msg)
                 # Successo - aggiorna UI dal thread principale
