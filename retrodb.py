@@ -68,6 +68,16 @@ except Exception:
     _BarraIO = None
     _BarraBatteria = None
     _HAS_SD_BAR = False
+
+# Auto-riconnessione Wi-Fi (quando l'hotspot del telefono va giu' e torna,
+# Windows non si ricollega sempre da solo). Modulo opzionale: se manca,
+# TrackMind resta comunque funzionante senza riconnessione automatica.
+try:
+    from core.wifi_monitor import AutoRiconnettore as _WifiAutoRiconnettore
+    _HAS_WIFI_AUTO = True
+except Exception:
+    _WifiAutoRiconnettore = None
+    _HAS_WIFI_AUTO = False
 # splash.py non piu' usato: la splash e' integrata in _schermata_splash()
 
 # Stampa termica (opzionale)
@@ -670,6 +680,12 @@ class RetroDBApp:
 
         # Monitor WiFi ogni 30 secondi
         self._wifi_monitor()
+
+        # Auto-riconnessione Wi-Fi: thread in background che, se configurato
+        # da CONFI, tenta di riagganciare il profilo Wi-Fi preferito quando
+        # la rete cade (tipicamente hotspot del telefono su Windows).
+        self._wifi_auto = None
+        self._wifi_auto_start()
 
         # Ricerca stampante BT in background (solo Linux/uConsole)
         if _HAS_THERMAL and _is_linux():
@@ -2469,6 +2485,62 @@ class RetroDBApp:
         except Exception:
             pass
         self.root.after(30000, self._wifi_monitor)
+
+    def _wifi_auto_start(self):
+        """Avvia (o riavvia) il thread di auto-riconnessione Wi-Fi.
+
+        Idempotente: se il modulo core.wifi_monitor manca, o se nella CONFI
+        l'opzione e' disattivata, non fa nulla ma sopravvive l'app.
+        Chiamato all'avvio e ad ogni salvataggio della CONFI.
+        """
+        # Ferma il thread precedente, se in esecuzione
+        self._wifi_auto_stop()
+
+        if not _HAS_WIFI_AUTO:
+            return
+        attivo = int(self.conf.get("wifi_auto_attivo", 0) or 0)
+        if not attivo:
+            return
+
+        ssid = str(self.conf.get("wifi_auto_ssid", "") or "").strip()
+        # Se non e' configurato un SSID, usiamo quello a cui siamo ora
+        # connessi (l'ultimo visto) come "rete preferita" di fallback.
+        if not ssid:
+            try:
+                connesso, ssid_ora = self._wifi_stato()
+                if connesso and ssid_ora:
+                    ssid = ssid_ora
+            except Exception:
+                pass
+        if not ssid:
+            # Nessuna rete di riferimento -> niente da fare
+            return
+
+        try:
+            intervallo = int(self.conf.get("wifi_auto_intervallo", 15) or 15)
+        except (ValueError, TypeError):
+            intervallo = 15
+
+        log_path = os.path.join(self.percorsi["dati"], "wifi_log.txt")
+        try:
+            self._wifi_auto = _WifiAutoRiconnettore(
+                ssid_preferito=ssid,
+                intervallo_sec=intervallo,
+                log_path=log_path,
+            )
+            self._wifi_auto.start()
+        except Exception as _e:
+            print("[WIFI_AUTO] avvio fallito: %s" % _e)
+            self._wifi_auto = None
+
+    def _wifi_auto_stop(self):
+        """Ferma il thread di auto-riconnessione se in esecuzione."""
+        try:
+            if self._wifi_auto is not None:
+                self._wifi_auto.stop()
+                self._wifi_auto = None
+        except Exception:
+            self._wifi_auto = None
 
     def _bt_printer_monitor(self):
         """Verifica stampante BT in background. Non blocca la UI.
@@ -4845,6 +4917,8 @@ class RetroDBApp:
         "cella_spaziatura": "1", "font_campi": "9", "font_label": "9",
         "multiutente": "1", "crediti_ia": "500",
         "sd_tbw_gb": "30000", "sd_vu_max_mbs": "20",
+        "wifi_auto_attivo": "", "wifi_auto_ssid": "",
+        "wifi_auto_intervallo": "15",
     }
 
     def _apri_conf(self):
@@ -4936,11 +5010,14 @@ class RetroDBApp:
             if chiave in ("larghezza_max", "altezza_max",
                           "cella_dimensione", "cella_spaziatura",
                           "font_campi", "font_label", "smtp_port", "crediti_ia",
-                          "sd_tbw_gb", "sd_vu_max_mbs"):
+                          "sd_tbw_gb", "sd_vu_max_mbs",
+                          "wifi_auto_intervallo"):
                 try:
                     val = int(val)
                 except (ValueError, TypeError):
                     val = 700 if "max" in chiave else 0
+            elif chiave == "wifi_auto_attivo":
+                val = 1 if str(val).strip().upper() in ("X", "1") else 0
             elif chiave == "scala":
                 try:
                     val = float(val)
@@ -5002,6 +5079,13 @@ class RetroDBApp:
         for p in [self.percorsi["definizioni"], self.percorsi["dati"],
                   self.percorsi["backup"]]:
             os.makedirs(p, exist_ok=True)
+
+        # Riavvia l'auto-riconnessione Wi-Fi con i nuovi parametri
+        # (se l'utente ha cambiato SSID/intervallo/flag nella CONFI)
+        try:
+            self._wifi_auto_start()
+        except Exception as _e:
+            print("[WIFI_AUTO] restart fallito: %s" % _e)
 
     def _mostra_ricarica_ia(self):
         """Mostra/nasconde il mini-form ricarica IA con RICHIEDI e APPLICA CODICE."""

@@ -1,7 +1,7 @@
 {
-  "version": "05.05.25",
+  "version": "05.05.26",
   "date": "2026-04-20",
-  "time": "11:55:57",
+  "time": "17:28:20",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -29,6 +29,7 @@
     "tm_field.py": "core",
     "ui_bottoni.py": "core",
     "updater.py": "core",
+    "wifi_monitor.py": "core",
     "conf.def": "tabelle",
     "logo.png": "loghi"
   },

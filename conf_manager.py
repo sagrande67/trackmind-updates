@@ -50,6 +50,9 @@ DEFAULT_CONF = {
     "crediti_ia": 500,                # Crediti IA: scalano a ogni analisi, ricaricabili con codice
     "sd_tbw_gb": 30000,               # TBW dichiarato della micro-SD in GB (default 30 TB)
     "sd_vu_max_mbs": 20,              # Fondo scala VU meter I/O SD in MB/s
+    "wifi_auto_attivo": 0,            # 0=disabilitato, 1=riconnessione Wi-Fi automatica
+    "wifi_auto_ssid": "",             # SSID del profilo Wi-Fi preferito da riagganciare
+    "wifi_auto_intervallo": 15,       # Secondi tra un controllo e l'altro (min 5)
 }
 
 # Chiave segreta per generare/verificare le chiavi di attivazione
