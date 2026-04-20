@@ -1,8 +1,8 @@
 {
-  "version": "05.05.28",
+  "version": "05.05.29",
   "date": "2026-04-20",
-  "time": "20:57:57",
-  "note": "",
+  "time": "21:09:00",
+  "note": "Fix bottone SPEGNI su uConsole: fallback systemctl poweroff + sudo -n",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

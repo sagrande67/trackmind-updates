@@ -1578,8 +1578,41 @@ class RetroDBApp:
         if sys.platform == "win32":
             self.root.destroy()  # Su Windows: solo esci
         else:
-            self.root.destroy()
-            os.system("sudo shutdown -h now")  # Linux/uConsole
+            # Linux/uConsole: prova piu' strade per spegnere senza richiedere
+            # la password sudo (non c'e' un tty dove digitarla dopo destroy).
+            # Ordine tentativi:
+            #   1) systemctl poweroff              -> passa via polkit
+            #   2) sudo -n shutdown -h now         -> NOPASSWD sudoers
+            #   3) sudo -n poweroff                -> NOPASSWD sudoers (alias)
+            #   4) sudo shutdown -h now            -> ultimo tentativo
+            import subprocess
+            comandi = [
+                ["systemctl", "poweroff"],
+                ["sudo", "-n", "shutdown", "-h", "now"],
+                ["sudo", "-n", "poweroff"],
+                ["sudo", "shutdown", "-h", "now"],
+            ]
+            spento = False
+            for cmd in comandi:
+                try:
+                    r = subprocess.run(cmd, capture_output=True,
+                                       text=True, timeout=5)
+                    if r.returncode == 0:
+                        spento = True
+                        break
+                except Exception:
+                    continue
+            if spento:
+                self.root.destroy()
+            else:
+                # Tutti i tentativi falliti: avvisa e NON distruggere la UI
+                # cosi' l'utente capisce che deve configurare sudoers.
+                if _lbl:
+                    _lbl.config(
+                        text=("Impossibile spegnere: configurare sudoers "
+                              "(vedi LEGGIMI.txt)"),
+                        fg=c["stato_errore"])
+                    self.root.update()
 
     def _esci_al_desktop(self):
         """Chiude TrackMind e torna al desktop (Linux/uConsole).
