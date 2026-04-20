@@ -38,6 +38,8 @@ DEFAULT_CONF = {
     "versione": "5.4",
     "codice_macchina": "",         # Hardware fingerprint (auto-generato)
     "chiave_attivazione": "",      # Chiave fornita dallo sviluppatore
+    "licenza_revocata": "",        # Data revoca ISO se la licenza e' stata revocata dallo sviluppatore
+    "motivo_revoca": "",           # Motivo revoca (informativo)
     "email_sviluppatore": "sandrograndesso@gmail.com",
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
@@ -46,6 +48,8 @@ DEFAULT_CONF = {
     "anthropic_api_key": "",        # API key Anthropic per analisi IA (opzionale)
     "multiutente": "1",               # 0=illimitato, 1=monoutente, 2+=multi con limite
     "crediti_ia": 500,                # Crediti IA: scalano a ogni analisi, ricaricabili con codice
+    "sd_tbw_gb": 30000,               # TBW dichiarato della micro-SD in GB (default 30 TB)
+    "sd_vu_max_mbs": 20,              # Fondo scala VU meter I/O SD in MB/s
 }
 
 # Chiave segreta per generare/verificare le chiavi di attivazione
@@ -444,6 +448,10 @@ def verifica_attivazione(conf):
         conf["codice_macchina"] = codice_macchina
         salva_conf(conf)
 
+    # ─ Licenza revocata dallo sviluppatore: blocco totale, prima di tutto ─
+    if conf.get("licenza_revocata"):
+        return False, codice_macchina, "LICENZA REVOCATA - Contattare il rivenditore"
+
     chiave_salvata = conf.get("chiave_attivazione", "").strip().upper()
 
     if not chiave_salvata:
@@ -596,6 +604,32 @@ def genera_chiave_con_opzioni(codice_macchina, data_scadenza="2099-12-31", opzio
         return chiave_base  # 5 blocchi standard
     opt_block = _encode_options_block(opzioni, codice_macchina)
     return "%s-%s" % (chiave_base, opt_block)
+
+
+def hash_chiave_attivazione(chiave):
+    """
+    Hash SHA-256 di una chiave di attivazione, usato per confronti anonimi
+    (es. lista revoche pubblica). Normalizza maiuscolo/spazi prima.
+    """
+    norm = (chiave or "").strip().upper()
+    if not norm:
+        return ""
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def applica_revoca(conf, motivo=""):
+    """
+    Applica il flag di revoca alla conf e svuota la chiave di attivazione,
+    in modo che il prossimo login mostri "LICENZA REVOCATA".
+    Idempotente: se gia' revocata non rifa' niente.
+    """
+    if conf.get("licenza_revocata"):
+        return False
+    conf["licenza_revocata"] = date.today().isoformat()
+    conf["motivo_revoca"] = motivo or "Licenza revocata"
+    conf["chiave_attivazione"] = ""
+    salva_conf(conf)
+    return True
 
 
 def ha_opzione_laptimer(conf):

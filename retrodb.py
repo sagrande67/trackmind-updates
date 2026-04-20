@@ -3173,7 +3173,7 @@ class RetroDBApp:
                   command=self._esegui_prepara_aggiornamento)
         btn_crea.pack(side="left", padx=_S(3))
 
-        btn_github = tk.Button(bar, text="PREPARA GITHUB", font=self._f_btn, width=_S(16),
+        btn_github = tk.Button(bar, text="PUBBLICA GITHUB", font=self._f_btn, width=_S(16),
                   bg=c["pulsanti_sfondo"], fg=c["dati"],
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._esegui_prepara_github)
@@ -3258,23 +3258,95 @@ class RetroDBApp:
         except Exception:
             pass
 
+        # Sicurezza: verifica che dest sia un vero repo git (.git/ presente)
+        # PRIMA di copiare. Se non lo e', probabilmente l'utente ha puntato
+        # a una cartella sbagliata (es. 'dev' invece di 'dev/trackmind-updates'):
+        # copiare li' produrrebbe solo file sparsi fuori posto.
+        if not os.path.isdir(os.path.join(dest, ".git")):
+            self._prep_status.config(
+                text="'%s' NON e' un repo git (manca .git/). Clona prima 'trackmind-updates' e correggi github_repo_dir in CONFI." % dest,
+                fg=c["stato_errore"])
+            return
+
         self._prep_status.config(text="Copia in corso verso %s..." % dest,
                                   fg=c["testo_dim"])
         self.root.update()
 
         ok, msg, _ = prepara_aggiornamento_github(dest, APP_VERSION, base)
-        if ok:
-            # Ricorda la cartella per le prossime volte
-            try:
-                self.conf["github_repo_dir"] = dest
-                salva_conf(self.conf)
-            except Exception:
-                pass
+        if not ok:
+            self._prep_status.config(text=msg, fg=c["stato_errore"])
+            return
+
+        # Ricorda la cartella per le prossime volte
+        try:
+            self.conf["github_repo_dir"] = dest
+            salva_conf(self.conf)
+        except Exception:
+            pass
+
+        # Dopo la copia, pubblica davvero: git add + commit + push.
+        # Se git non e' configurato o manca la rete, segnaliamo chiaramente
+        # all'utente senza rompere nulla (i file sono gia' nel repo locale).
+        self._prep_status.config(
+            text="File copiati. Eseguo git add/commit/push...",
+            fg=c["testo_dim"])
+        self.root.update()
+
+        git_ok, git_msg = self._git_push_repo(dest, APP_VERSION)
+        if git_ok:
             self._prep_status.config(
-                text="OK: %s - ora fai git add/commit/push" % msg,
+                text="PUBBLICATO su GitHub: v%s - %s" % (APP_VERSION, git_msg),
                 fg=c["stato_ok"])
         else:
-            self._prep_status.config(text=msg, fg=c["stato_errore"])
+            self._prep_status.config(
+                text="File nel repo OK, push FALLITO: %s" % git_msg,
+                fg=c["stato_avviso"])
+
+    def _git_push_repo(self, repo_dir, app_version):
+        """Esegue git add/commit/push sul repo locale trackmind-updates.
+
+        Ritorna (successo: bool, messaggio: str). Non solleva eccezioni:
+        qualunque errore viene incapsulato nel messaggio, cosi' il chiamante
+        puo' mostrarlo nella status bar senza crash.
+        """
+        import subprocess as _sp
+        try:
+            if not os.path.isdir(os.path.join(repo_dir, ".git")):
+                return False, "non e' un repo git (manca .git/)"
+
+            # git add .
+            r = _sp.run(["git", "-C", repo_dir, "add", "."],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return False, "git add: %s" % (r.stderr.strip()[:120] or "errore")
+
+            # Controlla se ci sono modifiche da committare
+            r = _sp.run(["git", "-C", repo_dir, "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and not r.stdout.strip():
+                return True, "nessuna modifica (gia' pubblicato)"
+
+            # git commit
+            msg_commit = "Release v%s" % app_version
+            r = _sp.run(["git", "-C", repo_dir, "commit", "-m", msg_commit],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return False, "git commit: %s" % (r.stderr.strip()[:120] or "errore")
+
+            # git push
+            r = _sp.run(["git", "-C", repo_dir, "push"],
+                        capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                stderr_short = (r.stderr.strip() or r.stdout.strip())[:160]
+                return False, "git push: %s" % (stderr_short or "errore")
+
+            return True, "commit + push eseguiti"
+        except FileNotFoundError:
+            return False, "git non installato"
+        except _sp.TimeoutExpired:
+            return False, "timeout (connessione lenta?)"
+        except Exception as e:
+            return False, "errore: %s" % e
 
     # =========================================================================
     #  BACKUP E RIPRISTINO
@@ -4768,6 +4840,7 @@ class RetroDBApp:
         "scala": "1.0", "fullscreen": "", "cella_dimensione": "16",
         "cella_spaziatura": "1", "font_campi": "9", "font_label": "9",
         "multiutente": "1", "crediti_ia": "500",
+        "sd_tbw_gb": "30000", "sd_vu_max_mbs": "20",
     }
 
     def _apri_conf(self):
@@ -4858,7 +4931,8 @@ class RetroDBApp:
             # Conversione numerici
             if chiave in ("larghezza_max", "altezza_max",
                           "cella_dimensione", "cella_spaziatura",
-                          "font_campi", "font_label", "smtp_port", "crediti_ia"):
+                          "font_campi", "font_label", "smtp_port", "crediti_ia",
+                          "sd_tbw_gb", "sd_vu_max_mbs"):
                 try:
                     val = int(val)
                 except (ValueError, TypeError):

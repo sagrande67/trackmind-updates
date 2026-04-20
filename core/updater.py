@@ -195,12 +195,26 @@ def prepara_aggiornamento(dest_dir, app_version, base_dir, note=""):
         zip_name = "update_v%s.zip" % app_version
         zip_path = os.path.join(dest_dir, zip_name)
 
+        # Leggi la lista hash delle licenze revocate dal registro locale
+        # (best-effort: se il modulo non e' disponibile si pubblica senza revoche)
+        revoche_list = []
+        try:
+            import sys as _sys
+            dev_dir = os.path.join(base_dir, "dev")
+            if os.path.isdir(dev_dir) and dev_dir not in _sys.path:
+                _sys.path.insert(0, dev_dir)
+            from genera_licenza import lista_hash_revocate  # type: ignore
+            revoche_list = lista_hash_revocate() or []
+        except Exception:
+            revoche_list = []
+
         version_info = {
             "version": app_version,
             "date": datetime.now().strftime("%Y-%m-%d"),
             "time": datetime.now().strftime("%H:%M:%S"),
             "note": note,
             "files": files_map,
+            "revoche": revoche_list,
         }
 
         os.makedirs(dest_dir, exist_ok=True)
@@ -274,12 +288,26 @@ def prepara_aggiornamento_github(dest_dir, app_version, base_dir, note=""):
         if not os.path.isdir(dest_dir):
             return False, "Cartella destinazione non esiste: %s" % dest_dir, ""
 
+        # Leggi la lista hash delle licenze revocate dal registro locale
+        # (best-effort: se il modulo non e' disponibile si pubblica senza revoche)
+        revoche_list = []
+        try:
+            import sys as _sys
+            dev_dir = os.path.join(base_dir, "dev")
+            if os.path.isdir(dev_dir) and dev_dir not in _sys.path:
+                _sys.path.insert(0, dev_dir)
+            from genera_licenza import lista_hash_revocate  # type: ignore
+            revoche_list = lista_hash_revocate() or []
+        except Exception:
+            revoche_list = []
+
         version_info = {
             "version": app_version,
             "date": datetime.now().strftime("%Y-%m-%d"),
             "time": datetime.now().strftime("%H:%M:%S"),
             "note": note,
             "files": files_map,
+            "revoche": revoche_list,
         }
 
         # 1. Scrivi version.json nella root del repo (scrittura atomica)
@@ -448,17 +476,17 @@ def _leggi_version_json(zip_path):
 # ─────────────────────────────────────────────────────────────────────
 
 def _confronta_versioni(v_locale, v_remota):
-    """Confronta versioni (es. '5.4' vs '5.5'). Ritorna True se remota >= locale.
+    """Confronta versioni (es. '5.4' vs '5.5'). Ritorna True se remota > locale.
 
-    Accetta anche stessa versione: permette di pushare hotfix
-    senza dover bumpare il numero ogni volta.
+    Se remota == locale NON propone l'aggiornamento: per ripubblicare
+    un hotfix e' comunque necessario bumpare il numero di versione.
     """
     try:
         def _parse(v):
             return [int(x) for x in str(v).split(".")]
-        return _parse(v_remota) >= _parse(v_locale)
+        return _parse(v_remota) > _parse(v_locale)
     except:
-        return str(v_remota) >= str(v_locale)
+        return str(v_remota) > str(v_locale)
 
 
 def verifica_aggiornamento(zip_path, app_version):
@@ -636,9 +664,48 @@ def _scarica_url(url, timeout=15):
         return None
 
 
+def _applica_revoche_da_info(info):
+    """
+    Se il version.json remoto contiene un campo 'revoche' (lista di SHA-256
+    delle chiavi revocate dallo sviluppatore), confronta con l'hash della
+    chiave di attivazione locale. Se c'e' match, segna la licenza come
+    revocata nel conf.dat: al prossimo avvio il login mostra
+    'LICENZA REVOCATA'.
+
+    Ritorna True se la revoca e' stata applicata in questo giro.
+    Best-effort: qualsiasi errore non blocca il controllo aggiornamenti.
+    """
+    try:
+        revoche = info.get("revoche") or []
+        if not revoche:
+            return False
+        # Import locale per evitare import circolari a livello di modulo
+        import sys as _sys
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if base not in _sys.path:
+            _sys.path.insert(0, base)
+        from conf_manager import carica_conf, hash_chiave_attivazione, applica_revoca
+        conf = carica_conf()
+        chiave = conf.get("chiave_attivazione", "")
+        if not chiave:
+            return False
+        h_local = hash_chiave_attivazione(chiave)
+        revoche_norm = {str(x).strip().lower() for x in revoche}
+        if h_local.lower() in revoche_norm:
+            applica_revoca(conf, motivo="Revoca via aggiornamento")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def controlla_aggiornamento_github(app_version):
     """
     Controlla se esiste un aggiornamento su GitHub.
+
+    Effetto collaterale: se il version.json remoto contiene un elenco di
+    hash di chiavi revocate e la chiave locale ne fa parte, la licenza
+    viene segnata come revocata nel conf.dat (blocco al prossimo avvio).
 
     Args:
         app_version: versione corrente (es. "05.04.5")
@@ -656,6 +723,10 @@ def controlla_aggiornamento_github(app_version):
         info = json.loads(data.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return False, {}, "version.json non valido"
+
+    # Check revoche PRIMA del confronto versione: cosi' anche se non c'e'
+    # un update disponibile la revoca scatta comunque.
+    _applica_revoche_da_info(info)
 
     v_remota = info.get("version", "0")
     if not _confronta_versioni(app_version, v_remota):
