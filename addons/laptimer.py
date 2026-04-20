@@ -267,8 +267,9 @@ class LapTimer:
         self._f_best   = tkfont.Font(family=FONT_MONO, size=18, weight="bold")
         self._f_big    = tkfont.Font(family=FONT_MONO, size=36, weight="bold")
         self._f_fuel   = tkfont.Font(family=FONT_MONO, size=20, weight="bold")
-        # Font grandi per le info da leggere a colpo d'occhio durante la gara:
-        # tempo totale trascorso (bene visibile a distanza) e passo gara.
+        # Font GRANDI per tempo totale e passo gara (leggibili a distanza dalla
+        # pista): lo spazio lo recuperiamo limitando l'altezza della griglia
+        # giri (vedi _schermata_timer / _ricostruisci_timer_fermo).
         self._f_totale = tkfont.Font(family=FONT_MONO, size=32, weight="bold")
         self._f_passo  = tkfont.Font(family=FONT_MONO, size=22, weight="bold")
 
@@ -397,6 +398,40 @@ class LapTimer:
         h = max(90, min(140, int(wh * 0.18)))
         return w, h
 
+    def _calcola_altezza_griglia(self):
+        """Altezza fissa (in px) per il corpo della griglia giri.
+        Su uConsole (schermo 480px) riservo solo 4 righe visibili per
+        garantire che la status-bar con i bottoni (ESCLUDI/PIT/INCID/...)
+        resti sempre in vista. Su schermi piu' grandi (Windows 720+) posso
+        permettermi piu' righe. I giri in eccesso si scorrono con rotella
+        mouse o frecce Su/Giu.
+        """
+        try:
+            self.root.update_idletasks()
+            wh = self.root.winfo_height()
+            if wh < 100:
+                geo = self.root.geometry().split("+")[0]
+                if "x" in geo:
+                    try:
+                        wh = int(geo.split("x")[1])
+                    except Exception:
+                        wh = self.root.winfo_screenheight()
+                else:
+                    wh = self.root.winfo_screenheight()
+        except Exception:
+            wh = 720
+        # Riga griglia = 22px (definita in _schermata_timer come _grid_row_h)
+        row_h = 22
+        if wh <= 500:
+            # uConsole 480: massimo 4 righe visibili
+            return row_h * 4
+        elif wh <= 720:
+            # Notebook / desktop standard: 8 righe
+            return row_h * 8
+        else:
+            # Schermi grandi: 12 righe
+            return row_h * 12
+
     # =================================================================
     #  SCHERMATA 2: TIMER
     # =================================================================
@@ -419,7 +454,7 @@ class LapTimer:
         # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
         # cosi' e' un overlay puro e non occupa spazio nel pack layout.
         _aggiungi_barra_bat(self.root)
-        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(2, 0))
 
         # ── Area superiore: 3 colonne con grid ──
         # SX=grafico, CENTRO=timer, DX=proiezioni
@@ -476,7 +511,7 @@ class LapTimer:
         self._proiezioni_canvas.grid(row=0, column=2, sticky="e", padx=(5, 10))
         self._aggiorna_proiezioni()
 
-        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(5, 0))
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(2, 0))
 
         # ── Lista giri con griglia (sotto, tutta larghezza) ──
         self._grid_row_h = 22  # altezza riga griglia (definita PRIMA dei canvas)
@@ -489,9 +524,15 @@ class LapTimer:
         self._grid_header_canvas.pack(fill="x", padx=20, pady=(2, 0))
 
         # Canvas BODY scrollabile: solo linee griglia + dati giri (niente intestazioni)
+        # Altezza FISSA calcolata in base allo schermo: su uConsole (480px) mostro
+        # solo ~4 giri per garantire che la status-bar con i bottoni comandi
+        # (ESCLUDI/PIT/INCID/...) resti sempre visibile in basso. I giri in
+        # eccesso si scorrono con rotella mouse o frecce Su/Giu.
+        self._grid_body_h = self._calcola_altezza_griglia()
         self._grid_canvas = tk.Canvas(self.root, bg=c["sfondo"],
+                                       height=self._grid_body_h,
                                        highlightthickness=0, bd=0)
-        self._grid_canvas.pack(fill="both", expand=True, padx=20, pady=(0, 2))
+        self._grid_canvas.pack(fill="x", padx=20, pady=(0, 2))
         # Scroll con mousewheel
         def _on_mousewheel(event):
             self._grid_canvas.yview_scroll(-1 if event.delta > 0 or event.num == 4
@@ -1563,7 +1604,7 @@ class LapTimer:
         # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
         # cosi' e' un overlay puro e non occupa spazio nel pack layout.
         _aggiungi_barra_bat(self.root)
-        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(2, 0))
 
         # Area superiore: 3 colonne
         top_area = tk.Frame(self.root, bg=c["sfondo"])
@@ -1618,7 +1659,7 @@ class LapTimer:
                                              highlightbackground=c.get("linee", "#1a3a1a"))
         self._proiezioni_canvas.grid(row=0, column=2, sticky="e", padx=(5, 10))
 
-        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(5, 0))
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(2, 0))
 
         # Griglia giri (header fisso + body scrollabile)
         self._grid_row_h = 22
@@ -1627,9 +1668,12 @@ class LapTimer:
                                               height=self._grid_row_h,
                                               highlightthickness=0, bd=0)
         self._grid_header_canvas.pack(fill="x", padx=20, pady=(2, 0))
+        # Altezza griglia limitata su uConsole per lasciare spazio ai bottoni
+        self._grid_body_h = self._calcola_altezza_griglia()
         self._grid_canvas = tk.Canvas(self.root, bg=c["sfondo"],
+                                       height=self._grid_body_h,
                                        highlightthickness=0, bd=0)
-        self._grid_canvas.pack(fill="both", expand=True, padx=20, pady=(0, 2))
+        self._grid_canvas.pack(fill="x", padx=20, pady=(0, 2))
         def _on_mousewheel(event):
             self._grid_canvas.yview_scroll(-1 if event.delta > 0 or event.num == 4
                                            else 1, "units")
