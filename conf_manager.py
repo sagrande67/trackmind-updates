@@ -40,10 +40,10 @@ DEFAULT_CONF = {
     "chiave_attivazione": "",      # Chiave fornita dallo sviluppatore
     "licenza_revocata": "",        # Data revoca ISO se la licenza e' stata revocata dallo sviluppatore
     "motivo_revoca": "",           # Motivo revoca (informativo)
-    "email_sviluppatore": "sandrograndesso@gmail.com",
+    "email_sviluppatore": "trackmind.support.gmail.com@gmail.com",
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
-    "smtp_user": "sandrograndesso@gmail.com",
+    "smtp_user": "trackmind.support.gmail.com@gmail.com",
     "smtp_password": "",           # App password Gmail (da generare su myaccount.google.com)
     "anthropic_api_key": "",        # API key Anthropic per analisi IA (opzionale)
     "multiutente": "1",               # 0=illimitato, 1=monoutente, 2+=multi con limite
