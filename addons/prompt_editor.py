@@ -174,6 +174,17 @@ class PromptEditor:
         tk.Label(header, text="[ PROMPT IA ]", bg=c["sfondo"], fg=c["dati"],
                  font=self._f_title).pack(side="left")
 
+        # Barra batteria all'estrema destra (prima della label stato)
+        try:
+            from core.sd_bar import BarraBatteria as _BarraBat
+            from core.batteria import get_batteria_info as _get_bat_info
+            _pct, _ = _get_bat_info()
+            if _pct is not None:
+                _BarraBat(header, get_info_func=_get_bat_info).pack(
+                    side="right", padx=(6, 0))
+        except Exception:
+            pass
+
         # Indicatore stato modifica
         self._lbl_stato = tk.Label(header, text="", bg=c["sfondo"],
                                     fg=c["stato_ok"], font=self._f_small)

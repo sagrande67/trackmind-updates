@@ -30,6 +30,33 @@ try:
 except ImportError:
     FONT_MONO = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
 
+# Barra batteria (opzionale)
+try:
+    from core.batteria import aggiungi_barra_batteria as _aggiungi_barra_bat
+    from core.batteria import get_batteria_info as _get_bat_info
+    from core.sd_bar import BarraBatteria as _BarraBat
+except Exception:
+    _aggiungi_barra_bat = None
+    _get_bat_info = None
+    _BarraBat = None
+
+
+def _barra_bat_right(parent, padx=(6, 0)):
+    """Impacchetta la barra batteria a destra del parent con pack side='right'.
+    Va chiamata PRIMA di altre pack(side='right') per far finire la barra
+    sul bordo destro e gli altri widget alla sua sinistra."""
+    if _BarraBat is None or _get_bat_info is None:
+        return None
+    try:
+        pct, _ = _get_bat_info()
+        if pct is None:
+            return None
+        barra = _BarraBat(parent, get_info_func=_get_bat_info)
+        barra.pack(side="right", padx=padx)
+        return barra
+    except Exception:
+        return None
+
 
 # =================================================================
 #  UTILITA'
@@ -248,6 +275,9 @@ class ConfrontaSetup:
                  fg=c.get("dati", "#39ff14"),
                  font=self._f_title).pack(side="left", padx=(_S(8), 0))
 
+        # Barra batteria all'estrema destra (prima della label conteggio)
+        _barra_bat_right(header)
+
         self._sel_count_label = tk.Label(header, text="0 selezionati",
                  bg=c.get("sfondo", "#0a0a0a"),
                  fg=c.get("testo_dim", "#555555"),
@@ -465,6 +495,9 @@ class ConfrontaSetup:
                  bg=c.get("sfondo", "#0a0a0a"),
                  fg=c.get("dati", "#39ff14"),
                  font=self._f_title).pack(side="left", padx=(_S(8), 0))
+
+        # Barra batteria all'estrema destra (prima del bottone GRAFICO)
+        _barra_bat_right(header)
 
         # Bottone GRAFICO
         btn_grafico = tk.Button(header, text="GRAFICO (G)", font=self._f_btn,
@@ -796,6 +829,9 @@ class ConfrontaSetup:
                  bg=c.get("sfondo", "#0a0a0a"),
                  fg=c.get("dati", "#39ff14"),
                  font=self._f_title).pack(side="left", padx=(_S(8), 0))
+
+        # Barra batteria all'estrema destra (prima della legenda)
+        _barra_bat_right(header)
 
         tk.Label(header, text="linea piatta = veloce",
                  bg=c.get("sfondo", "#0a0a0a"),

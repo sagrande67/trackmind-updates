@@ -1,7 +1,7 @@
 {
-  "version": "05.05.18",
+  "version": "05.05.21",
   "date": "2026-04-20",
-  "time": "09:36:31",
+  "time": "10:25:33",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -19,6 +19,7 @@
     "splash.py": "addons",
     "web_sync.py": "addons",
     "auth.py": "core",
+    "batteria.py": "core",
     "editor_tabelle.py": "core",
     "focus_guard.py": "core",
     "meteo.py": "core",

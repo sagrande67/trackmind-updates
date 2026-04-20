@@ -54,6 +54,13 @@ try:
 except ImportError:
     _HAS_AI = False
 
+# Barra batteria (opzionale: se il modulo non c'e', si ignora)
+try:
+    from core.batteria import aggiungi_barra_batteria as _aggiungi_barra_bat
+except Exception:
+    def _aggiungi_barra_bat(*args, **kwargs):
+        return None
+
 # Font monospace per compatibilità cross-platform
 try:
     from config_colori import FONT_MONO
@@ -260,6 +267,10 @@ class LapTimer:
         self._f_best   = tkfont.Font(family=FONT_MONO, size=18, weight="bold")
         self._f_big    = tkfont.Font(family=FONT_MONO, size=36, weight="bold")
         self._f_fuel   = tkfont.Font(family=FONT_MONO, size=20, weight="bold")
+        # Font grandi per le info da leggere a colpo d'occhio durante la gara:
+        # tempo totale trascorso (bene visibile a distanza) e passo gara.
+        self._f_totale = tkfont.Font(family=FONT_MONO, size=32, weight="bold")
+        self._f_passo  = tkfont.Font(family=FONT_MONO, size=22, weight="bold")
 
     def _pulisci(self):
         for w in self.root.winfo_children():
@@ -294,6 +305,8 @@ class LapTimer:
         info_txt = "%s  |  %s" % (self.pilota, self.setup)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
+        # Barra batteria in alto a destra (overlay, non altera layout)
+        _aggiungi_barra_bat(header)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(15, 0))
         centro = tk.Frame(self.root, bg=c["sfondo"])
         centro.pack(expand=True)
@@ -402,6 +415,8 @@ class LapTimer:
         info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
+        # Barra batteria in alto a destra (overlay, non altera layout)
+        _aggiungi_barra_bat(header)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
 
         # ── Area superiore: 3 colonne con grid ──
@@ -440,10 +455,14 @@ class LapTimer:
         self._lbl_fuel = tk.Label(info_row, text="%dcc" % self.serbatoio,
                                    bg=c["sfondo"], fg=c["testo_dim"], font=self._f_best)
         self._lbl_fuel.pack(side="left")
-        # Tempo totale trascorso dalla partenza
+        # Tempo totale trascorso dalla partenza - GRANDE, leggibile a colpo d'occhio
         self._lbl_totale = tk.Label(timer_col, text="00:00:00.0",
-                                     bg=c["sfondo"], fg=c["testo_dim"], font=self._f_info)
-        self._lbl_totale.pack(pady=(2, 0))
+                                     bg=c["sfondo"], fg=c["stato_ok"], font=self._f_totale)
+        self._lbl_totale.pack(pady=(6, 0))
+        # Passo gara: media ultimi 3 giri validi (indicatore di ritmo)
+        self._lbl_passo = tk.Label(timer_col, text="passo: --:--.--",
+                                    bg=c["sfondo"], fg=c["testo_dim"], font=self._f_passo)
+        self._lbl_passo.pack(pady=(2, 0))
 
         # Pannello PROIEZIONI GIRI (DX) — stesse dimensioni del grafico SX
         self._proiezioni_w = self._grafico_w
@@ -493,7 +512,7 @@ class LapTimer:
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, side="bottom")
         status_bar = tk.Frame(self.root, bg=c["sfondo"])
         status_bar.pack(fill="x", side="bottom", padx=20, pady=(6, 8))
-        self._lbl_status = tk.Label(status_bar, text="SPAZIO = Avvia  |  \u2191\u2193 Scorri  |  ESC = Indietro",
+        self._lbl_status = tk.Label(status_bar, text="SPAZIO = Avvia  |  \u2191\u2193 Scorri  |  S = Stampa  |  ESC = Indietro",
                                      bg=c["sfondo"], fg=c["stato_ok"], font=self._f_status,
                                      anchor="w")
         self._lbl_status.pack(side="left")
@@ -510,6 +529,9 @@ class LapTimer:
         self.root.bind("<Next>", lambda e: self._scroll_live_page(1))    # PgDn
         self.root.bind("<Home>", lambda e: self._grid_canvas.yview_moveto(0))
         self.root.bind("<End>", lambda e: self._grid_canvas.yview_moveto(1.0))
+        # Stampa immediata del foglietto per il pilota (anche durante la gara)
+        self.root.bind("<s>", lambda e: self._stampa_termica())
+        self.root.bind("<S>", lambda e: self._stampa_termica())
 
     # -----------------------------------------------------------------
     #  LOGICA TIMER
@@ -529,7 +551,7 @@ class LapTimer:
         self.t_start = time.perf_counter()
         self.t_ultimo_giro = self.t_start
         c = self.colori
-        self._lbl_status.config(text="SPAZIO = Giro  |  ESC = Stop e Salva", fg=c["stato_ok"])
+        self._lbl_status.config(text="SPAZIO = Giro  |  S = Stampa  |  ESC = Stop e Salva", fg=c["stato_ok"])
         self._aggiorna_timer()
 
     def _aggiorna_timer(self):
@@ -599,9 +621,39 @@ class LapTimer:
             self._lbl_best.config(text="BEST: %s" % _fmt(self.miglior_tempo))
         self._aggiungi_riga(giro, nuovo_best)
         self._lbl_giri_count.config(text="Giri: %d" % num)
+        self._aggiorna_passo()
         self._lock_tempo = max(1.0, self.miglior_tempo * 0.4)
         self._space_locked = True
         self.root.after(int(self._lock_tempo * 1000), self._sblocca_space)
+
+    def _aggiorna_passo(self):
+        """Aggiorna la label PASSO con la media degli ultimi 3 giri validi.
+        Colore:
+          - verde se il passo corrente e' vicino al best (entro +5%)
+          - giallo se entro +10% dal best
+          - rosso oltre +10% (ritmo in calo)
+        """
+        if not hasattr(self, '_lbl_passo'):
+            return
+        c = self.colori
+        validi = [g["tempo"] for g in self.giri if g.get("stato") == "valido"]
+        if not validi:
+            self._lbl_passo.config(text="passo: --:--.--", fg=c["testo_dim"])
+            return
+        # Media ultimi 3 giri validi (se meno di 3, media di quelli che ci sono)
+        ultimi = validi[-3:]
+        passo = sum(ultimi) / len(ultimi)
+        if self.miglior_tempo and self.miglior_tempo > 0:
+            scarto = (passo - self.miglior_tempo) / self.miglior_tempo
+            if scarto <= 0.05:
+                fg = c["stato_ok"]
+            elif scarto <= 0.10:
+                fg = c["stato_avviso"]
+            else:
+                fg = c["stato_errore"]
+        else:
+            fg = c["stato_ok"]
+        self._lbl_passo.config(text="passo: %s" % _fmt(passo), fg=fg)
 
     def _sblocca_space(self):
         self._space_locked = False
@@ -969,6 +1021,9 @@ class LapTimer:
 
         # Ridisegna griglia con colori stato + riga riepilogo
         self._ridisegna_griglia_analisi()
+
+        # Aggiorna passo gara finale (rimane visibile nel riepilogo)
+        self._aggiorna_passo()
 
         # Salva automaticamente
         path = self._salva_risultati()
@@ -1503,6 +1558,8 @@ class LapTimer:
         info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
+        # Barra batteria in alto a destra (overlay, non altera layout)
+        _aggiungi_barra_bat(header)
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, pady=(8, 0))
 
         # Area superiore: 3 colonne
@@ -1540,9 +1597,14 @@ class LapTimer:
         self._lbl_fuel = tk.Label(info_row, text="%dcc" % self.serbatoio,
                                    bg=c["sfondo"], fg=c["testo_dim"], font=self._f_best)
         self._lbl_fuel.pack(side="left")
+        # Tempo totale trascorso dalla partenza - GRANDE, leggibile a colpo d'occhio
         self._lbl_totale = tk.Label(timer_col, text="00:00:00.0",
-                                     bg=c["sfondo"], fg=c["testo_dim"], font=self._f_info)
-        self._lbl_totale.pack(pady=(2, 0))
+                                     bg=c["sfondo"], fg=c["stato_ok"], font=self._f_totale)
+        self._lbl_totale.pack(pady=(6, 0))
+        # Passo gara: media ultimi 3 giri validi (indicatore di ritmo)
+        self._lbl_passo = tk.Label(timer_col, text="passo: --:--.--",
+                                    bg=c["sfondo"], fg=c["testo_dim"], font=self._f_passo)
+        self._lbl_passo.pack(pady=(2, 0))
 
         # Proiezioni (DX) — stesse dimensioni del grafico SX
         self._proiezioni_w = self._grafico_w
@@ -1758,17 +1820,39 @@ class LapTimer:
         return righe
 
     def _stampa_termica(self):
-        """Stampa scheda cronometraggio su stampante termica BT."""
-        if not _HAS_PRINT:
+        """Stampa scheda cronometraggio su stampante termica BT.
+        Utilizzabile anche durante il cronometraggio live: in quel caso il
+        feedback viene mostrato sullo status bar in basso (non c'e' ancora
+        la label di analisi). Se non ci sono giri, non fa nulla."""
+        c = self.colori
+
+        def _feedback(testo, colore):
+            """Scrive messaggio nella label di analisi se presente, altrimenti
+            nello status bar in basso (modalita live)."""
             if hasattr(self, '_lbl_res_status'):
-                self._lbl_res_status.config(
-                    text="Modulo stampa non disponibile", fg=self.colori["stato_errore"])
+                try:
+                    self._lbl_res_status.config(text=testo, fg=colore)
+                    self._lbl_res_status.update_idletasks()
+                    return
+                except Exception:
+                    pass
+            if hasattr(self, '_lbl_status'):
+                try:
+                    self._lbl_status.config(text=testo, fg=colore)
+                    self._lbl_status.update_idletasks()
+                except Exception:
+                    pass
+
+        if not _HAS_PRINT:
+            _feedback("Modulo stampa non disponibile", c["stato_errore"])
             return
 
-        c = self.colori
-        if hasattr(self, '_lbl_res_status'):
-            self._lbl_res_status.config(text="Stampa in corso...", fg=c["stato_avviso"])
-            self._lbl_res_status.update_idletasks()
+        # Nessun giro ancora: evita stampa vuota
+        if not self.giri:
+            _feedback("Nessun giro da stampare", c["stato_avviso"])
+            return
+
+        _feedback("Stampa in corso...", c["stato_avviso"])
 
         # Legge il MAC della stampante da conf.dat (come fa retrodb).
         # Se non configurato, usa "auto" (Windows: win32print cerca generico;
@@ -1783,14 +1867,21 @@ class LapTimer:
         except Exception:
             pass
 
+        # Durante la gara _totale non e' ancora stato settato: lo calcolo al volo
+        # cosi' la scheda stampata riporta il tempo totale corrente.
+        if self.stato == self.RUNNING and hasattr(self, 't_start') and self.t_start:
+            try:
+                self._totale = time.perf_counter() - self.t_start
+            except Exception:
+                pass
+
         righe = self._genera_scheda_crono()
 
         def _stampa_thread():
             ok, msg = stampa_bluetooth(righe, mac)
             try:
-                if hasattr(self, '_lbl_res_status'):
-                    fg = c["stato_ok"] if ok else c["stato_errore"]
-                    self._lbl_res_status.config(text=msg, fg=fg)
+                fg = c["stato_ok"] if ok else c["stato_errore"]
+                _feedback(msg, fg)
             except Exception:
                 pass
 

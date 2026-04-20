@@ -48,6 +48,13 @@ try:
 except ImportError:
     classifica_giri = None
 
+# Barra batteria (opzionale)
+try:
+    from core.batteria import aggiungi_barra_batteria as _aggiungi_barra_bat
+except Exception:
+    def _aggiungi_barra_bat(*args, **kwargs):
+        return None
+
 # Analisi IA (opzionale)
 try:
     from ai_analisi import AIAnalisi
@@ -366,6 +373,8 @@ class AnalizzaTempi:
         pilota = self.sessione.get("pilota", "?")
         tk.Label(header, text="  ANALISI  %s  |  %s  |  %s %s" % (pilota, setup, data, ora),
                  bg=c["sfondo"], fg=c["dati"], font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria in alto a destra (overlay)
+        _aggiungi_barra_bat(header)
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(4, 0))
 

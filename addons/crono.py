@@ -107,6 +107,13 @@ try:
 except ImportError:
     _HAS_MYRCM = False
 
+# Barra batteria (opzionale: se il modulo non c'e', si ignora)
+try:
+    from core.batteria import aggiungi_barra_batteria as _aggiungi_barra_bat
+except Exception:
+    def _aggiungi_barra_bat(*args, **kwargs):
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────────
 #  COLORI
@@ -388,7 +395,11 @@ class Crono:
         for w in self.root.winfo_children():
             w.destroy()
         for k in ("<Return>", "<Escape>", "<Up>", "<Down>",
-                  "<e>", "<p>", "<v>", "<a>", "<s>"):
+                  "<Left>", "<Right>", "<Prior>", "<Next>", "<Home>",
+                  "<plus>", "<equal>", "<minus>",
+                  "<KP_Add>", "<KP_Subtract>", "<0>",
+                  "<e>", "<p>", "<v>", "<a>", "<s>",
+                  "<l>", "<L>", "<g>", "<G>", "<P>"):
             try: self._top.unbind(k)
             except: pass
 
@@ -424,6 +435,8 @@ class Crono:
         setup = self.ctx.get("setup_name", "?")
         tk.Label(header, text="  CRONO v%s  |  %s  |  %s" % (__version__, pilota, setup),
                  bg=c["sfondo"], fg=c["dati"], font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria in alto a destra (overlay)
+        _aggiungi_barra_bat(header)
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(6, 10))
 
@@ -811,6 +824,8 @@ class Crono:
                   command=back_cmd).pack(side="left")
         tk.Label(header, text="  SCOUTING", bg=c["sfondo"], fg=c["stato_avviso"],
                  font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria in alto a destra (overlay)
+        _aggiungi_barra_bat(header)
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(4, 8))
 
@@ -1952,6 +1967,8 @@ class Crono:
                   command=self._chiudi).pack(side="left")
         tk.Label(header, text="  CRONO v" + __version__, bg=c["sfondo"], fg=c["dati"],
                  font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria in alto a destra (overlay)
+        _aggiungi_barra_bat(header)
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(6, 10))
 
@@ -2122,6 +2139,18 @@ class Crono:
                   command=back_cmd).pack(side="left")
         tk.Label(header, text="  %s" % titolo,
                  bg=c["sfondo"], fg=c["dati"], font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria all'estrema destra: la impacchetto PRIMA del
+        # contatore cosi' con side="right" la barra resta piu' a destra
+        # e "N sessioni" le si piazza a fianco verso sinistra.
+        try:
+            from core.sd_bar import BarraBatteria as _BarraBat
+            from core.batteria import get_batteria_info as _get_bat_info
+            _pct, _ = _get_bat_info()
+            if _pct is not None:
+                _BarraBat(header, get_info_func=_get_bat_info).pack(
+                    side="right", padx=(6, 0))
+        except Exception:
+            pass
         self._at_header_count = tk.Label(header, text="%d sessioni" % len(sessioni),
                  bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_small)
         self._at_header_count.pack(side="right")
@@ -2871,6 +2900,16 @@ class Crono:
                   command=_esci_grafico).pack(side="left")
         tk.Label(header, text="  GRAFICO PROGRESSIVO  |  %d sessioni" % len(sessioni_sel),
                  bg=c["sfondo"], fg=c["dati"], font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria all'estrema destra (prima del selettore modalita')
+        try:
+            from core.sd_bar import BarraBatteria as _BarraBat
+            from core.batteria import get_batteria_info as _get_bat_info
+            _pct, _ = _get_bat_info()
+            if _pct is not None:
+                _BarraBat(header, get_info_func=_get_bat_info).pack(
+                    side="right", padx=(6, 0))
+        except Exception:
+            pass
 
         # Selettore GARA / PROVE
         sel_frame = tk.Frame(header, bg=c["sfondo"])
@@ -2904,35 +2943,93 @@ class Crono:
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(4, 4))
 
-        # Canvas area
-        canvas_frame = tk.Frame(self.root, bg=c["sfondo"])
-        canvas_frame.pack(fill="both", expand=True, padx=10, pady=(2, 4))
+        # ─── Area centrale: grafico SX + pannello sessioni DX ───
+        # Layout a due colonne per non far "rubare" spazio verticale dalla
+        # legenda quando ci sono molte sessioni selezionate (prima era
+        # overlay in alto e copriva meta' grafico).
+        body = tk.Frame(self.root, bg=c["sfondo"])
+        body.pack(fill="both", expand=True, padx=10, pady=(2, 4))
 
-        canvas = tk.Canvas(canvas_frame, bg=c["sfondo_celle"],
+        # Colonna SX: canvas grafico (espandibile, si prende tutto lo spazio)
+        graph_col = tk.Frame(body, bg=c["sfondo"])
+        graph_col.pack(side="left", fill="both", expand=True)
+        canvas = tk.Canvas(graph_col, bg=c["sfondo_celle"],
                            highlightthickness=1, highlightbackground=c["linee"])
         canvas.pack(fill="both", expand=True)
 
-        # Legenda in alto a sinistra, sovrapposta al canvas (con numeri)
-        leg_frame = tk.Frame(canvas, bg=c["sfondo_celle"])
-        leg_frame.place(x=70, y=8, anchor="nw")
+        # Colonna DX: pannello sessioni con scrollbar verde retro.
+        # Larghezza ~280px (scelta utente: media). pack_propagate(False)
+        # per rispettare la width anche se il contenuto e' piu' stretto.
+        sess_col = tk.Frame(body, bg=c["sfondo"], width=280)
+        sess_col.pack(side="right", fill="y", padx=(6, 0))
+        sess_col.pack_propagate(False)
+        tk.Label(sess_col, text="S E S S I O N I", bg=c["sfondo"],
+                 fg=c["testo_dim"], font=self._f_small).pack(pady=(0, 2))
+
+        sess_canvas = tk.Canvas(sess_col, bg=c["sfondo_celle"],
+                                highlightthickness=1,
+                                highlightbackground=c["linee"])
+        sess_vsb = tk.Scrollbar(sess_col, orient="vertical",
+                                command=sess_canvas.yview,
+                                bg=c["sfondo"], troughcolor=c["sfondo"],
+                                activebackground=c["dati"],
+                                highlightbackground=c["linee"],
+                                relief="flat", bd=0, width=12)
+        sess_canvas.configure(yscrollcommand=sess_vsb.set)
+        sess_vsb.pack(side="right", fill="y")
+        sess_canvas.pack(side="left", fill="both", expand=True)
+
+        sess_inner = tk.Frame(sess_canvas, bg=c["sfondo_celle"])
+        sess_win = sess_canvas.create_window((0, 0), window=sess_inner,
+                                              anchor="nw")
+
+        def _on_sess_inner_cfg(e):
+            sess_canvas.configure(scrollregion=sess_canvas.bbox("all"))
+        sess_inner.bind("<Configure>", _on_sess_inner_cfg)
+
+        def _on_sess_canvas_cfg(e):
+            # Riallinea la larghezza del frame interno al canvas scrollabile
+            sess_canvas.itemconfigure(sess_win, width=e.width)
+        sess_canvas.bind("<Configure>", _on_sess_canvas_cfg)
+
+        # Popola il pannello con una card per sessione
         for i, sess in enumerate(sessioni_sel):
             num = i + 1
             color = self._GRAPH_COLORS[i % len(self._GRAPH_COLORS)]
-            lf = tk.Frame(leg_frame, bg=c["sfondo_celle"])
-            lf.pack(anchor="w", pady=(0, 1))
-            # Numero + quadrato colore
-            tk.Label(lf, text="%d" % num, bg=c["sfondo_celle"], fg=color,
-                     font=(FONT_MONO, 9, "bold"), width=2, anchor="e").pack(side="left")
-            sq = tk.Canvas(lf, width=10, height=10, bg=color,
+            card = tk.Frame(sess_inner, bg=c["sfondo_celle"])
+            card.pack(fill="x", padx=4, pady=2, anchor="w")
+            # Riga 1: N + quadrato colore + label (pilota/data/ora)
+            r1 = tk.Frame(card, bg=c["sfondo_celle"])
+            r1.pack(fill="x", anchor="w")
+            tk.Label(r1, text="%d" % num, bg=c["sfondo_celle"], fg=color,
+                     font=(FONT_MONO, 10, "bold"), width=2,
+                     anchor="e").pack(side="left")
+            sq = tk.Canvas(r1, width=10, height=10, bg=color,
                            highlightthickness=0, bd=0)
-            sq.pack(side="left", padx=(2, 4))
-            tk.Label(lf, text="%s  %dg  B:%s  M:%s" % (
-                sess["label"], sess["n_giri"],
-                _fmt(sess["best"]), _fmt(sess["media"])),
-                bg=c["sfondo_celle"], fg=color, font=self._f_small).pack(side="left")
+            sq.pack(side="left", padx=(3, 4), pady=3)
+            tk.Label(r1, text=sess["label"], bg=c["sfondo_celle"], fg=color,
+                     font=self._f_small, anchor="w").pack(side="left")
+            # Riga 2: best / media / n giri (indentata sotto la label)
+            info = "B:%s  M:%s  %dg" % (
+                _fmt(sess["best"]), _fmt(sess["media"]), sess["n_giri"])
+            tk.Label(card, text=info, bg=c["sfondo_celle"],
+                     fg=c["testo_dim"], font=self._f_small,
+                     anchor="w").pack(fill="x", padx=(22, 0))
+
+        # Scroll con rotella mouse sul pannello sessioni (Windows/Mac/Linux)
+        def _on_sess_wheel(e):
+            delta = -1 if (getattr(e, 'delta', 0) > 0
+                           or getattr(e, 'num', 0) == 4) else 1
+            sess_canvas.yview_scroll(delta, "units")
+        sess_canvas.bind("<MouseWheel>", _on_sess_wheel)
+        sess_canvas.bind("<Button-4>", _on_sess_wheel)
+        sess_canvas.bind("<Button-5>", _on_sess_wheel)
+        sess_inner.bind("<MouseWheel>", _on_sess_wheel)
+        sess_inner.bind("<Button-4>", _on_sess_wheel)
+        sess_inner.bind("<Button-5>", _on_sess_wheel)
 
         zoom_status = self._status_label(self.root,
-            "+/- = zoom  |  frecce = sposta  |  0 = reset  |  L = legenda  |  G = gara  P = prove  |  ESC = tempi")
+            "+/- = zoom  |  frecce = sposta  |  0 = reset  |  L = pannello  |  G = gara  P = prove  |  ESC = tempi")
 
         self._top.bind("<Escape>", lambda e: _esci_grafico())
 
@@ -2942,16 +3039,17 @@ class Crono:
         zoom_state = {
             "g_min": 0.0, "g_max": float(full_max_giri),
             "t_min": 0.0, "t_max": full_c_max,
-            "show_legend": True,
+            "show_panel": True,
         }
 
-        # Toggle legenda
+        # Toggle pannello sessioni (L): nasconde/ripristina la colonna DX
+        # cosi' il grafico puo' occupare tutta la larghezza se serve
         def _toggle_legenda(e=None):
-            zoom_state["show_legend"] = not zoom_state["show_legend"]
-            if zoom_state["show_legend"]:
-                leg_frame.place(x=70, y=8, anchor="nw")
+            zoom_state["show_panel"] = not zoom_state["show_panel"]
+            if zoom_state["show_panel"]:
+                sess_col.pack(side="right", fill="y", padx=(6, 0))
             else:
-                leg_frame.place_forget()
+                sess_col.pack_forget()
             return "break"
 
         # ── Funzione di disegno (chiamata su resize e zoom/pan) ──
@@ -3093,17 +3191,35 @@ class Crono:
 
         # ── Zoom e pan da tastiera ──
         def _zoom(factor, axis="both"):
-            """Zoom centrato sulla vista corrente."""
+            """Zoom centrato sulla vista corrente.
+            La finestra mantiene la stessa larghezza calcolata anche quando
+            tocca i bordi: se un lato sarebbe fuori dal dominio, l'altro
+            viene spinto in compenso cosi' la vista resta simmetrica
+            intorno al centro precedente (o incollata al bordo)."""
+            def _nuovo_range(vmin, vmax, lo, hi, f):
+                center = (vmin + vmax) / 2.0
+                half = (vmax - vmin) / 2.0 * f
+                # Limita la meta' allo spazio disponibile totale
+                half = min(half, (hi - lo) / 2.0)
+                nmin = center - half
+                nmax = center + half
+                # Sposta la finestra se esce dai bordi (senza deformarla)
+                if nmin < lo:
+                    nmax += (lo - nmin); nmin = lo
+                if nmax > hi:
+                    nmin -= (nmax - hi); nmax = hi
+                # Clamp finale per sicurezza
+                nmin = max(lo, nmin); nmax = min(hi, nmax)
+                return nmin, nmax
+
             if axis in ("both", "x"):
-                g_center = (zoom_state["g_min"] + zoom_state["g_max"]) / 2
-                g_half = (zoom_state["g_max"] - zoom_state["g_min"]) / 2 * factor
-                zoom_state["g_min"] = max(0, g_center - g_half)
-                zoom_state["g_max"] = min(full_max_giri, g_center + g_half)
+                zoom_state["g_min"], zoom_state["g_max"] = _nuovo_range(
+                    zoom_state["g_min"], zoom_state["g_max"],
+                    0.0, float(full_max_giri), factor)
             if axis in ("both", "y"):
-                t_center = (zoom_state["t_min"] + zoom_state["t_max"]) / 2
-                t_half = (zoom_state["t_max"] - zoom_state["t_min"]) / 2 * factor
-                zoom_state["t_min"] = max(0, t_center - t_half)
-                zoom_state["t_max"] = min(full_c_max * 1.2, t_center + t_half)
+                zoom_state["t_min"], zoom_state["t_max"] = _nuovo_range(
+                    zoom_state["t_min"], zoom_state["t_max"],
+                    0.0, full_c_max * 1.2, factor)
             _draw()
 
         def _pan(dx_frac, dy_frac):
@@ -3136,26 +3252,33 @@ class Crono:
             _draw()
             return "break"
 
-        # Binding tastiera
-        canvas.bind("<plus>", lambda e: (_zoom(0.7), "break")[-1])
-        canvas.bind("<equal>", lambda e: (_zoom(0.7), "break")[-1])
-        canvas.bind("<minus>", lambda e: (_zoom(1.4), "break")[-1])
-        canvas.bind("<KP_Add>", lambda e: (_zoom(0.7), "break")[-1])
-        canvas.bind("<KP_Subtract>", lambda e: (_zoom(1.4), "break")[-1])
-        canvas.bind("<Left>", lambda e: (_pan(-0.15, 0), "break")[-1])
-        canvas.bind("<Right>", lambda e: (_pan(0.15, 0), "break")[-1])
-        canvas.bind("<Up>", lambda e: (_pan(0, 0.15), "break")[-1])
-        canvas.bind("<Down>", lambda e: (_pan(0, -0.15), "break")[-1])
-        canvas.bind("<Prior>", lambda e: (_zoom(0.5), "break")[-1])  # PgUp = zoom forte
-        canvas.bind("<Next>", lambda e: (_zoom(2.0), "break")[-1])   # PgDn = zoom out forte
-        canvas.bind("<0>", _reset_zoom)
-        canvas.bind("<Home>", _reset_zoom)
-        canvas.bind("<l>", _toggle_legenda)
-        canvas.bind("<L>", _toggle_legenda)
-        canvas.bind("<g>", lambda e: (_switch_modo("GARA"), "break")[-1])
-        canvas.bind("<G>", lambda e: (_switch_modo("GARA"), "break")[-1])
-        canvas.bind("<p>", lambda e: (_switch_modo("PROVE"), "break")[-1])
-        canvas.bind("<P>", lambda e: (_switch_modo("PROVE"), "break")[-1])
+        # Binding tastiera: sia su canvas (focus diretto) sia sul toplevel
+        # cosi' funzionano anche se l'utente ha cliccato sul pannello
+        # sessioni a destra e il focus e' uscito dal grafico.
+        _kb = (
+            ("<plus>",        lambda e: (_zoom(0.7), "break")[-1]),
+            ("<equal>",       lambda e: (_zoom(0.7), "break")[-1]),
+            ("<minus>",       lambda e: (_zoom(1.4), "break")[-1]),
+            ("<KP_Add>",      lambda e: (_zoom(0.7), "break")[-1]),
+            ("<KP_Subtract>", lambda e: (_zoom(1.4), "break")[-1]),
+            ("<Left>",        lambda e: (_pan(-0.15, 0), "break")[-1]),
+            ("<Right>",       lambda e: (_pan(0.15, 0), "break")[-1]),
+            ("<Up>",          lambda e: (_pan(0, 0.15), "break")[-1]),
+            ("<Down>",        lambda e: (_pan(0, -0.15), "break")[-1]),
+            ("<Prior>",       lambda e: (_zoom(0.5), "break")[-1]),
+            ("<Next>",        lambda e: (_zoom(2.0), "break")[-1]),
+            ("<0>",           _reset_zoom),
+            ("<Home>",        _reset_zoom),
+            ("<l>",           _toggle_legenda),
+            ("<L>",           _toggle_legenda),
+            ("<g>",           lambda e: (_switch_modo("GARA"), "break")[-1]),
+            ("<G>",           lambda e: (_switch_modo("GARA"), "break")[-1]),
+            ("<p>",           lambda e: (_switch_modo("PROVE"), "break")[-1]),
+            ("<P>",           lambda e: (_switch_modo("PROVE"), "break")[-1]),
+        )
+        for ev, fn in _kb:
+            canvas.bind(ev, fn)
+            self._top.bind(ev, fn)
         canvas.focus_set()
 
     def _alias_pilota(self):

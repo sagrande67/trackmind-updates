@@ -38,6 +38,13 @@ except ImportError:
     import sys as _sys
     FONT_MONO = "Consolas" if _sys.platform == "win32" else "DejaVu Sans Mono"
 
+# Barra batteria (opzionale)
+try:
+    from core.batteria import aggiungi_barra_batteria as _aggiungi_barra_bat
+except Exception:
+    def _aggiungi_barra_bat(*args, **kwargs):
+        return None
+
 # ─────────────────────────────────────────────────────────────────────
 #  COLORI
 # ─────────────────────────────────────────────────────────────────────
@@ -562,6 +569,8 @@ class AIAnalisi:
             titolo_ia = "  ANALISI IA  |  %s  |  %s" % (pilota, setup)
         tk.Label(header, text=titolo_ia,
                  bg=c["sfondo"], fg=c["cerca_testo"], font=self._f_title).pack(side="left", padx=(8, 0))
+        # Barra batteria in alto a destra (overlay)
+        _aggiungi_barra_bat(header)
 
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=10, pady=(6, 0))
 
