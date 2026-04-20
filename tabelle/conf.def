@@ -35,10 +35,10 @@ data_fine_licenza;8;D
 
 # ─── Notifiche Sviluppatore ────────────────────────────────────
 !sezione;NOTIFICHE SVILUPPATORE
-email_sviluppatore;30;S
+email_sviluppatore;55;S
 smtp_server;25;S
 smtp_port;4;N
-smtp_user;30;S
+smtp_user;55;S
 smtp_password;20;P
 
 # ─── Intelligenza Artificiale ──────────────────────────────────
@@ -49,12 +49,12 @@ crediti_ia;5;N
 # ─── Disco / micro-SD ──────────────────────────────────────────
 # Usati dalle barre LED nell'header del menu principale.
 # sd_tbw_gb: TBW dichiarato dal produttore della micro-SD in GB.
-#   E' il riferimento per la stima di usura quando non e' disponibile
-#   il dato reale via mmc extcsd. Default 30000 GB (= 30 TB, tipico
-#   di una buona micro-SD gaming). Soglie: giallo 75%, rosso 90%.
+# E' il riferimento per la stima di usura quando non e' disponibile
+# il dato reale via mmc extcsd. Default 30000 GB (= 30 TB, tipico
+# di una buona micro-SD gaming). Soglie: giallo 75%, rosso 90%.
 # sd_vu_max_mbs: fondo scala del VU meter I/O in MB/s. Sopra questo
-#   valore i LED restano tutti accesi. Default 20 MB/s (adatto a
-#   micro-SD UHS-I classe A1/A2). Alzalo se usi una SD piu' veloce.
+# valore i LED restano tutti accesi. Default 20 MB/s (adatto a
+# micro-SD UHS-I classe A1/A2). Alzalo se usi una SD piu' veloce.
 !sezione;DISCO / MICRO-SD
 sd_tbw_gb;6;N
 sd_vu_max_mbs;4;N

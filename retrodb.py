@@ -1581,6 +1581,51 @@ class RetroDBApp:
             self.root.destroy()
             os.system("sudo shutdown -h now")  # Linux/uConsole
 
+    def _esci_al_desktop(self):
+        """Chiude TrackMind e torna al desktop (Linux/uConsole).
+
+        Prima fa un backup automatico per sicurezza, poi ferma il thread di
+        auto-riconnessione Wi-Fi e distrugge la finestra Tk. Al ritorno su
+        console l'utente trova il desktop Openbox/LXDE e puo' aprire un
+        terminale, modificare file di sistema, cambiare layout tastiera, ecc.
+        Doppia pressione per conferma (come SPEGNI) per evitare uscite
+        accidentali in pista.
+        """
+        import time
+        c = carica_colori()
+        now = time.time()
+        # Trova label di stato in base alla schermata corrente
+        _lbl = None
+        for attr in ('_menu_status', '_login_status'):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    if w.winfo_exists():
+                        _lbl = w; break
+                except: pass
+        if not hasattr(self, '_esci_so_ts') or now - self._esci_so_ts > 3:
+            self._esci_so_ts = now
+            if _lbl:
+                _lbl.config(text="Premi ESCI A SO di nuovo per confermare!",
+                            fg=c["stato_avviso"])
+            return
+        # Confermato: backup + uscita
+        del self._esci_so_ts
+        if _lbl:
+            _lbl.config(text="Backup e uscita al desktop...",
+                        fg=c["stato_avviso"])
+            self.root.update()
+        try:
+            self._esegui_backup(force=True)
+        except Exception:
+            pass  # Se il backup fallisce, esci comunque
+        # Ferma il thread Wi-Fi (se attivo) prima di chiudere
+        try:
+            self._wifi_auto_stop()
+        except Exception:
+            pass
+        self.root.destroy()
+
     def _esegui_login(self):
         # Disattiva click/focus autostart: se l'utente ha gia' premuto Invio
         # non serve piu' forzare nulla.
@@ -2004,6 +2049,11 @@ class RetroDBApp:
         if sys.platform != "win32":
             _bb.append(_mkb(btn_grid, "SPEGNI", self._spegni_console,
                             fg=c["stato_errore"]))
+            # Esce da TrackMind lasciandoti al desktop (Openbox/LXDE della uConsole).
+            # Utile per accedere al terminale, modificare file di sistema,
+            # aggiornare la tastiera, lanciare nmtui, ecc. senza dover spegnere.
+            _bb.append(_mkb(btn_grid, "ESCI A SO", self._esci_al_desktop,
+                            fg=c["stato_avviso"]))
 
         # Disponi in griglia automatica: max bottoni per riga in base alla larghezza
         _COLS_MENU = 7  # bottoni per riga
