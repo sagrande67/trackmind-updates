@@ -60,14 +60,14 @@ sd_tbw_gb;6;N
 sd_vu_max_mbs;4;N
 
 # ─── Wi-Fi Auto-Riconnessione ──────────────────────────────────
-# Quando l'hotspot del telefono (o qualsiasi Wi-Fi) cade e poi torna,
-# Windows spesso non si ricollega da solo e chiede di nuovo la password.
-# Se abiliti wifi_auto_attivo e indichi lo SSID della rete preferita,
-# TrackMind tentera' la riconnessione automatica al profilo gia' salvato
-# nel sistema operativo ogni wifi_auto_intervallo secondi quando risulta
-# offline. Il profilo deve essere stato memorizzato almeno una volta
-# (cioe' ti sei gia' connesso a quella rete e hai spuntato "ricorda").
+# Quando un Wi-Fi (tipicamente l'hotspot del telefono) cade e poi
+# torna, Windows spesso non si ricollega da solo. Abilitando qui il
+# flag, TrackMind scansiona ogni wifi_auto_intervallo secondi le reti
+# a portata: se ne trova una presente nell'elenco Wi-Fi conosciute
+# (tabella wifi, dati/wifi.json - popolata automaticamente mano a mano
+# che ti connetti a reti nuove) si ricollega da solo usando la
+# password memorizzata. Nessun SSID personale e' salvato qui: ogni
+# installazione costruisce il proprio elenco a partire da zero.
 !sezione;WI-FI AUTO-RICONNESSIONE
 wifi_auto_attivo;1;F
-wifi_auto_ssid;50;S
 wifi_auto_intervallo;3;N

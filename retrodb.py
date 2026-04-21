@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 """
 RetroDB v5.4 - MOTORE GESTIONALE GENERICO
 - Login utente con username + password
@@ -1131,8 +1131,11 @@ class RetroDBApp:
         else:
             wifi_txt = "Wi-Fi: non connesso"
             wifi_fg = c["stato_errore"]
-        tk.Label(self._vista, text=wifi_txt, bg=c["sfondo"], fg=wifi_fg,
-                 font=self._f_small).pack(pady=(_S(4), 0))
+        # Salvata in self._lbl_wifi_login cosi' _wifi_monitor puo'
+        # aggiornarla in tempo reale quando la rete cade/torna.
+        self._lbl_wifi_login = tk.Label(self._vista, text=wifi_txt, bg=c["sfondo"],
+                                         fg=wifi_fg, font=self._f_small)
+        self._lbl_wifi_login.pack(pady=(_S(4), 0))
 
         # Stato Stampante BT (solo Linux/uConsole)
         if _HAS_THERMAL and _is_linux():
@@ -1796,8 +1799,11 @@ class RetroDBApp:
         else:
             wifi_txt = "  |  Wi-Fi: offline"
             wifi_fg = c["stato_errore"]
-        tk.Label(info_line, text=wifi_txt, bg=c["sfondo"], fg=wifi_fg,
-                 font=self._f_small).pack(side="left")
+        # Salvata in self._lbl_wifi_menu cosi' _wifi_monitor puo'
+        # aggiornarla in tempo reale quando la rete cade/torna.
+        self._lbl_wifi_menu = tk.Label(info_line, text=wifi_txt, bg=c["sfondo"],
+                                        fg=wifi_fg, font=self._f_small)
+        self._lbl_wifi_menu.pack(side="left")
 
         # Indicatore Stampante BT (solo Linux/uConsole)
         if _HAS_THERMAL and _is_linux():
@@ -2480,6 +2486,11 @@ class RetroDBApp:
                 r = subprocess.run(["netsh", "wlan", "connect", "name=%s" % ssid],
                                    capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
+                    # Auto-salva nell'elenco Wi-Fi conosciute
+                    try:
+                        self._wifi_elenco_aggiungi(ssid, password or "")
+                    except Exception:
+                        pass
                     return True, "Connesso a %s" % ssid
                 return False, r.stdout.strip() or r.stderr.strip() or "Connessione fallita"
             else:
@@ -2533,6 +2544,11 @@ class RetroDBApp:
                                 capture_output=True, text=True, timeout=5)
                         except Exception:
                             pass  # Se fallisce la connessione e' attiva, best-effort
+                    # Auto-salva nell'elenco Wi-Fi conosciute
+                    try:
+                        self._wifi_elenco_aggiungi(ssid, password or "")
+                    except Exception:
+                        pass
                     return True, "Connesso a %s" % ssid
                 err = r.stderr.strip() or r.stdout.strip() or "Connessione fallita"
                 # Messaggio piu' chiaro per errori comuni
@@ -2546,8 +2562,33 @@ class RetroDBApp:
         except Exception as e:
             return False, str(e)
 
+    def _internet_ok(self, timeout=1.0):
+        """Test veloce di connettivita' reale via socket TCP verso 1.1.1.1:53
+        (Cloudflare DNS). Un TCP connect richiede il 3-way handshake, quindi
+        se l'access point e' caduto ma il driver Wi-Fi non se n'e' ancora
+        accorto, il connect va in timeout. Molto piu' affidabile dello stato
+        del device NetworkManager (che resta 'connected' per minuti dopo una
+        caduta per via del timeout di beacon loss)."""
+        import socket
+        for host in ("1.1.1.1", "8.8.8.8"):
+            try:
+                s = socket.create_connection((host, 53), timeout=timeout)
+                s.close()
+                return True
+            except OSError:
+                continue
+        return False
+
     def _wifi_stato(self):
-        """Ritorna (connesso, ssid_corrente)."""
+        """Ritorna (connesso, ssid_corrente).
+
+        Per l'SSID interroga nmcli (Linux) o netsh (Windows). Per il flag
+        'connesso' NON si fida del solo stato del device: aggiunge un test
+        TCP reale verso 1.1.1.1:53 con timeout 1s, perche' il driver Wi-Fi
+        puo' impiegare minuti a notificare la beacon-loss a NetworkManager
+        quando l'access point scompare. Se il socket non si collega in 1s,
+        consideriamo la rete caduta a prescindere da cosa dice nmcli/netsh.
+        """
         try:
             if sys.platform == "win32":
                 r = subprocess.run(["netsh", "wlan", "show", "interfaces"],
@@ -2560,20 +2601,43 @@ class RetroDBApp:
                         ssid = line.split(":", 1)[1].strip()
                     elif "Stato" in line or "State" in line:
                         stato = line.split(":", 1)[1].strip().lower()
-                return ("conness" in stato or "connected" in stato, ssid)
+                nmcli_ok = "conness" in stato or "connected" in stato
             else:
-                r = subprocess.run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
-                                   capture_output=True, text=True, timeout=5)
+                nmcli_ok = False
+                ssid = ""
+                # Legge lo stato di ogni device: righe formato TYPE:STATE:CONNECTION
+                # es. "wlan0:connected:Galaxy" oppure "wlan0:disconnected:"
+                r = subprocess.run(
+                    ["nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device"],
+                    capture_output=True, text=True, timeout=5)
                 for line in r.stdout.splitlines():
-                    parti = line.split(":")
-                    if len(parti) >= 2 and "wireless" in parti[1].lower():
-                        return (True, parti[0])
-                return (False, "")
+                    # nmcli usa ":" come separatore ma puo' apparire negli SSID:
+                    # splittiamo al massimo in 3 parti cosi' il CONNECTION
+                    # mantiene eventuali ":" dentro il nome.
+                    parti = line.split(":", 2)
+                    if len(parti) < 3:
+                        continue
+                    tipo, stato, conn = parti
+                    if tipo.lower() != "wifi":
+                        continue
+                    # STATE puo' essere: connected, disconnected, unavailable,
+                    # connecting, deactivating, unmanaged
+                    if stato.lower().startswith("connected") and conn:
+                        nmcli_ok = True
+                        ssid = conn
+                        break
+            # Verita' finale: c'e' connettivita' IP?
+            if nmcli_ok and self._internet_ok():
+                return (True, ssid)
+            return (False, "")
         except Exception:
             return (False, "")
 
     def _wifi_monitor(self):
-        """Controlla WiFi ogni 30 sec. Se offline, avvisa nel titolo."""
+        """Controlla WiFi ogni 5 sec. Aggiorna il flag [OFFLINE] nel titolo
+        della finestra e, se la schermata HOTSPOT e' aperta, aggiorna anche
+        la label 'Connesso a: ...' cosi' il cambio di stato e' immediato
+        quando l'access point cade o si rialza."""
         try:
             connesso, ssid = self._wifi_stato()
             titolo_base = _nome_base(self.conf.get("nome_database", "RetroDB")) + "  v" + __version__
@@ -2585,9 +2649,39 @@ class RetroDBApp:
                 # Appena ripristinata
                 self._wifi_online = True
                 self.root.title(titolo_base)
+            # Se la schermata hotspot e' aperta, aggiorna la label stato
+            # in tempo reale (non solo dopo uno scan).
+            try:
+                lbl = getattr(self, "_wifi_stato_label", None)
+                if lbl is not None and lbl.winfo_exists():
+                    c = carica_colori()
+                    stato_txt = ("Connesso a: %s" % ssid) if connesso else "Non connesso"
+                    stato_fg = c["stato_ok"] if connesso else c["stato_errore"]
+                    lbl.config(text=stato_txt, fg=stato_fg)
+            except (tk.TclError, AttributeError):
+                pass
+            # Aggiorna anche le due label Wi-Fi piazzate nel menu principale
+            # (riga info sotto il nome utente) e nella schermata di login.
+            # Sono create senza ref self finche' v05.05.32, quindi _wifi_monitor
+            # non riusciva ad aggiornarle: l'utente vedeva "Wi-Fi: Galaxy"
+            # in verde anche a rete caduta finche' non cambiava schermata.
+            try:
+                c = carica_colori()
+                lbl_menu = getattr(self, "_lbl_wifi_menu", None)
+                if lbl_menu is not None and lbl_menu.winfo_exists():
+                    txt = ("  |  Wi-Fi: %s" % ssid) if connesso else "  |  Wi-Fi: offline"
+                    fg = c["stato_ok"] if connesso else c["stato_errore"]
+                    lbl_menu.config(text=txt, fg=fg)
+                lbl_login = getattr(self, "_lbl_wifi_login", None)
+                if lbl_login is not None and lbl_login.winfo_exists():
+                    txt = ("Wi-Fi: %s" % ssid) if connesso else "Wi-Fi: non connesso"
+                    fg = c["stato_ok"] if connesso else c["stato_errore"]
+                    lbl_login.config(text=txt, fg=fg)
+            except (tk.TclError, AttributeError):
+                pass
         except Exception:
             pass
-        self.root.after(30000, self._wifi_monitor)
+        self.root.after(5000, self._wifi_monitor)
 
     def _wifi_auto_start(self):
         """Avvia (o riavvia) il thread di auto-riconnessione Wi-Fi.
@@ -2595,6 +2689,10 @@ class RetroDBApp:
         Idempotente: se il modulo core.wifi_monitor manca, o se nella CONFI
         l'opzione e' disattivata, non fa nulla ma sopravvive l'app.
         Chiamato all'avvio e ad ogni salvataggio della CONFI.
+
+        v05.05.30: niente piu' SSID singolo in CONFI; il thread consulta
+        l'elenco dati/wifi.json (tabella wifi, popolata dalla cattura
+        automatica) e tenta tutte le reti conosciute che risultano a portata.
         """
         # Ferma il thread precedente, se in esecuzione
         self._wifi_auto_stop()
@@ -2605,29 +2703,16 @@ class RetroDBApp:
         if not attivo:
             return
 
-        ssid = str(self.conf.get("wifi_auto_ssid", "") or "").strip()
-        # Se non e' configurato un SSID, usiamo quello a cui siamo ora
-        # connessi (l'ultimo visto) come "rete preferita" di fallback.
-        if not ssid:
-            try:
-                connesso, ssid_ora = self._wifi_stato()
-                if connesso and ssid_ora:
-                    ssid = ssid_ora
-            except Exception:
-                pass
-        if not ssid:
-            # Nessuna rete di riferimento -> niente da fare
-            return
-
         try:
             intervallo = int(self.conf.get("wifi_auto_intervallo", 15) or 15)
         except (ValueError, TypeError):
             intervallo = 15
 
         log_path = os.path.join(self.percorsi["dati"], "wifi_log.txt")
+        wifi_json = os.path.join(self.percorsi["dati"], "wifi.json")
         try:
             self._wifi_auto = _WifiAutoRiconnettore(
-                ssid_preferito=ssid,
+                wifi_json_path=wifi_json,
                 intervallo_sec=intervallo,
                 log_path=log_path,
             )
@@ -2644,6 +2729,114 @@ class RetroDBApp:
                 self._wifi_auto = None
         except Exception:
             self._wifi_auto = None
+
+    # ── ELENCO WI-FI CONOSCIUTE (dati/wifi.json - tabella wifi) ──
+    #
+    # L'elenco viene popolato in due modi:
+    #   1) Cattura automatica: quando _wifi_monitor rileva una connessione
+    #      a un SSID non ancora salvato, apre un popup che chiede la
+    #      password per aggiungerlo.
+    #   2) Salvataggio diretto: quando l'utente si connette via la
+    #      schermata CONNESSIONE HOTSPOT (_wifi_connect), TrackMind
+    #      conosce gia' la password e la salva senza chiedere.
+    #
+    # AutoRiconnettore (in core/wifi_monitor.py) legge lo stesso file e,
+    # quando il Wi-Fi cade, scansiona le reti visibili: per qualsiasi SSID
+    # conosciuto in portata tenta la riconnessione usando la password
+    # salvata. Nessun SSID personale e' piu' hardcoded in CONFI.
+
+    def _wifi_elenco_path(self):
+        return os.path.join(self.percorsi["dati"], "wifi.json")
+
+    def _wifi_elenco_carica(self):
+        """Legge dati/wifi.json e ritorna la lista di record (dict)."""
+        path = self._wifi_elenco_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                contenuto = json.load(f)
+            return list(contenuto.get("records", []) or [])
+        except Exception:
+            return []
+
+    def _wifi_elenco_salva(self, records):
+        """Sovrascrive dati/wifi.json con la lista passata, mantenendo _meta."""
+        path = self._wifi_elenco_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        contenuto = {
+            "_meta": {"tabella": "wifi", "accesso": "admin",
+                      "versione": APP_VERSION},
+            "records": records,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(contenuto, f, indent=2, ensure_ascii=False)
+
+    def _wifi_elenco_contiene(self, ssid):
+        """True se lo SSID e' gia' presente in elenco (case-insensitive)."""
+        ssid_low = (ssid or "").strip().lower()
+        if not ssid_low:
+            return False
+        for r in self._wifi_elenco_carica():
+            if str(r.get("SSID", "")).strip().lower() == ssid_low:
+                return True
+        return False
+
+    def _wifi_elenco_aggiungi(self, ssid, password, note=""):
+        """Aggiunge una rete all'elenco se non presente. Ritorna True se
+        aggiunta, False se duplicata o in caso di errore. Se la password
+        e' vuota e la rete esiste gia', aggiorna comunque la password
+        (utile dopo una connessione manuale dalla schermata hotspot)."""
+        ssid = (ssid or "").strip()
+        if not ssid:
+            return False
+        recs = self._wifi_elenco_carica()
+        ssid_low = ssid.lower()
+        # Se gia' presente: aggiorna la password se ora ne abbiamo una
+        # migliore di quella salvata (tipicamente dopo connessione ok).
+        for r in recs:
+            if str(r.get("SSID", "")).strip().lower() == ssid_low:
+                if password and str(r.get("Password", "")) != password:
+                    r["Password"] = password
+                    r["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        self._wifi_elenco_salva(recs)
+                    except Exception:
+                        pass
+                return False
+        # Nuovo record: calcola prossimo Codice PK
+        max_codice = 0
+        for r in recs:
+            try:
+                v = int(r.get("Codice", 0))
+                if v > max_codice:
+                    max_codice = v
+            except Exception:
+                pass
+        nuovo = {
+            "_id": str(uuid.uuid4())[:8],
+            "Codice": str(max_codice + 1),
+            "SSID": ssid,
+            "Password": password or "",
+            "Note": note or "",
+            "_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        # Associa all'utente corrente (se gia' loggato)
+        try:
+            sess = getattr(self, "sessione", None)
+            if sess:
+                uid = (sess.get("Codice") or sess.get("_utente_id")
+                       or sess.get("codice") or "")
+                if uid:
+                    nuovo["_utente_id"] = str(uid)
+        except Exception:
+            pass
+        recs.append(nuovo)
+        try:
+            self._wifi_elenco_salva(recs)
+            return True
+        except Exception:
+            return False
 
     def _bt_printer_monitor(self):
         """Verifica stampante BT in background. Non blocca la UI.
@@ -2884,51 +3077,59 @@ class RetroDBApp:
                 self.root.after(200, _check_result)
                 return
             try:
-                self._wifi_listbox.winfo_exists()
+                if not self._wifi_listbox.winfo_exists():
+                    return
             except (tk.TclError, AttributeError):
                 return
             reti, errore = self._wifi_scan_result or ([], "Errore sconosciuto")
             # Ricorda selezione attuale
             old_ssid = ""
-            old_sel = self._wifi_listbox.curselection()
+            try:
+                old_sel = self._wifi_listbox.curselection()
+            except (tk.TclError, AttributeError):
+                return
             if old_sel and self._wifi_reti:
                 old_ssid = self._wifi_reti[old_sel[0]].get("ssid", "")
             self._wifi_reti = reti
             try:
                 self._wifi_listbox.delete(0, "end")
+                if errore:
+                    self._wifi_status.config(text="Errore: %s" % errore, fg=c["stato_errore"])
+                elif self._wifi_reti:
+                    for r in self._wifi_reti:
+                        sec = " [%s]" % r["security"] if r["security"] else " [Aperta]"
+                        self._wifi_listbox.insert("end", "  %s%%  %s%s" % (
+                            r["signal"].rjust(3), r["ssid"], sec))
+                    self._wifi_status.config(text="%d reti trovate" % len(self._wifi_reti), fg=c["stato_ok"])
+                    # Ripristina selezione se SSID ancora presente
+                    sel_idx = 0
+                    if old_ssid:
+                        for i, r in enumerate(self._wifi_reti):
+                            if r["ssid"] == old_ssid:
+                                sel_idx = i
+                                break
+                    self._wifi_listbox.selection_set(sel_idx)
+                    self._wifi_listbox.activate(sel_idx)
+                    self._wifi_listbox.see(sel_idx)
+                    self._wifi_on_select()
+                else:
+                    self._wifi_status.config(text="Nessuna rete trovata - premi AGGIORNA",
+                                              fg=c["stato_avviso"])
+                # Aggiorna stato connessione
+                connesso, ssid_attuale = self._wifi_stato()
+                stato_txt = "Connesso a: %s" % ssid_attuale if connesso else "Non connesso"
+                stato_fg = c["stato_ok"] if connesso else c["stato_errore"]
+                self._wifi_stato_label.config(text=stato_txt, fg=stato_fg)
             except (tk.TclError, AttributeError):
                 return
-            if errore:
-                self._wifi_status.config(text="Errore: %s" % errore, fg=c["stato_errore"])
-            elif self._wifi_reti:
-                for r in self._wifi_reti:
-                    sec = " [%s]" % r["security"] if r["security"] else " [Aperta]"
-                    self._wifi_listbox.insert("end", "  %s%%  %s%s" % (
-                        r["signal"].rjust(3), r["ssid"], sec))
-                self._wifi_status.config(text="%d reti trovate" % len(self._wifi_reti), fg=c["stato_ok"])
-                # Ripristina selezione se SSID ancora presente
-                sel_idx = 0
-                if old_ssid:
-                    for i, r in enumerate(self._wifi_reti):
-                        if r["ssid"] == old_ssid:
-                            sel_idx = i
-                            break
-                self._wifi_listbox.selection_set(sel_idx)
-                self._wifi_listbox.activate(sel_idx)
-                self._wifi_listbox.see(sel_idx)
-                self._wifi_on_select()
-            else:
-                self._wifi_status.config(text="Nessuna rete trovata - premi AGGIORNA",
-                                          fg=c["stato_avviso"])
-            # Aggiorna stato connessione
-            connesso, ssid_attuale = self._wifi_stato()
-            stato_txt = "Connesso a: %s" % ssid_attuale if connesso else "Non connesso"
-            stato_fg = c["stato_ok"] if connesso else c["stato_errore"]
-            self._wifi_stato_label.config(text=stato_txt, fg=stato_fg)
 
-            # Auto-refresh ogni 20 secondi
+            # Auto-refresh ogni 20 secondi (solo se la schermata e' ancora viva)
             if getattr(self, '_wifi_auto_refresh', False):
-                self.root.after(20000, self._wifi_aggiorna)
+                try:
+                    if self._wifi_listbox.winfo_exists():
+                        self.root.after(20000, self._wifi_aggiorna)
+                except (tk.TclError, AttributeError):
+                    pass
 
         self.root.after(300, _check_result)
 
@@ -5019,7 +5220,7 @@ class RetroDBApp:
         "cella_spaziatura": "1", "font_campi": "9", "font_label": "9",
         "multiutente": "1", "crediti_ia": "500",
         "sd_tbw_gb": "30000", "sd_vu_max_mbs": "20",
-        "wifi_auto_attivo": "", "wifi_auto_ssid": "",
+        "wifi_auto_attivo": "",
         "wifi_auto_intervallo": "15",
     }
 
