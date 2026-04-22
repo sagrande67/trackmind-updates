@@ -203,11 +203,6 @@ def import_automatico(location_id, transponder, data_setup, ora_setup=""):
     return dati, sessione_match, activity_id
 
 
-def scarica_pista(activity_id):
-    url = "%s/%s/track" % (API_BASE, activity_id)
-    return _api_get(url)
-
-
 def stampa_riepilogo(dati):
     if not dati or "sessions" not in dati:
         return

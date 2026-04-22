@@ -45,7 +45,7 @@ from conf_manager import (carica_conf, salva_conf, verifica_licenza, get_percors
                           verifica_attivazione, attiva_licenza, get_codice_macchina,
                           ha_opzione_laptimer, genera_token_laptimer,
                           crediti_ia_rimasti, applica_ricarica_ia)
-from auth import (carica_utenti, salva_utenti, verifica_login,
+from auth import (carica_utenti, verifica_login,
                   get_utente, is_admin, get_display_name,
                   username_esiste, cripta_password, decripta_password,
                   _verifica_accesso_speciale)
@@ -69,6 +69,15 @@ except Exception:
     _BarraBatteria = None
     _HAS_SD_BAR = False
 
+# Lettura stato batteria centralizzata in core/batteria.py (stessa logica
+# usata dagli addons via aggiungi_barra_batteria()). Fallback no-op se il
+# modulo manca.
+try:
+    from core.batteria import get_batteria_info as _get_batteria_info
+except Exception:
+    def _get_batteria_info():
+        return None, None
+
 # Auto-riconnessione Wi-Fi (quando l'hotspot del telefono va giu' e torna,
 # Windows non si ricollega sempre da solo). Modulo opzionale: se manca,
 # TrackMind resta comunque funzionante senza riconnessione automatica.
@@ -82,7 +91,7 @@ except Exception:
 
 # Stampa termica (opzionale)
 try:
-    from thermal_print import (genera_scheda_gara, genera_scheda_completa,
+    from thermal_print import (genera_scheda_completa,
                                salva_scheda_txt, stampa_bluetooth,
                                _bt_auto_setup, _bt_scan_stampante, _is_linux)
     _HAS_THERMAL = True
@@ -150,7 +159,7 @@ except ImportError:
 
 # Web Sync (aggiornamento cataloghi da web)
 try:
-    from web_sync import sync_tabella_background, ha_cambiamenti, carica_ultimo_sync
+    from web_sync import sync_tabella_background, ha_cambiamenti
     _HAS_WEBSYNC = True
 except ImportError:
     _HAS_WEBSYNC = False
@@ -167,101 +176,6 @@ MAX_VISIBLE_FIELDS = 15
 def _S(val):
     return max(1, int(val * get_scala()))
 
-
-def _get_batteria_info_windows():
-    """Legge lo stato della batteria su Windows via GetSystemPowerStatus (kernel32).
-    Usa solo ctypes (stdlib). Ritorna (percentuale, stato) o (None, None)
-    se non c'e' batteria (es. desktop PC fisso)."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class _SPS(ctypes.Structure):
-            _fields_ = [
-                ("ACLineStatus",         wintypes.BYTE),
-                ("BatteryFlag",          wintypes.BYTE),
-                ("BatteryLifePercent",   wintypes.BYTE),
-                ("SystemStatusFlag",     wintypes.BYTE),
-                ("BatteryLifeTime",      wintypes.DWORD),
-                ("BatteryFullLifeTime",  wintypes.DWORD),
-            ]
-
-        sps = _SPS()
-        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(sps)):
-            return None, None
-
-        flag = sps.BatteryFlag & 0xFF
-        pct = sps.BatteryLifePercent & 0xFF
-        ac = sps.ACLineStatus & 0xFF
-
-        # Nessuna batteria (desktop) o stato sconosciuto
-        if flag == 128 or flag == 255 or pct == 255:
-            return None, None
-
-        # Mappa stato al formato Linux usato altrove nel codice
-        if flag & 8:
-            stato = "Charging"
-        elif ac == 1 and pct >= 100:
-            stato = "Full"
-        elif ac == 0:
-            stato = "Discharging"
-        elif ac == 1:
-            stato = "Charging"
-        else:
-            stato = "Unknown"
-
-        return int(pct), stato
-    except Exception:
-        return None, None
-
-
-def _get_batteria_info():
-    """Legge lo stato della batteria.
-    - Linux/uConsole: da /sys/class/power_supply
-    - Windows: via GetSystemPowerStatus (kernel32)
-    - Mac e sistemi senza batteria: (None, None)
-    Ritorna (percentuale, stato) dove:
-      percentuale: int 0-100, oppure None se non disponibile
-      stato: 'Charging', 'Discharging', 'Full', 'Unknown', oppure None
-    """
-    if sys.platform == "win32":
-        return _get_batteria_info_windows()
-    ps_dir = "/sys/class/power_supply"
-    if not os.path.isdir(ps_dir):
-        return None, None
-    try:
-        for device in os.listdir(ps_dir):
-            dev_path = os.path.join(ps_dir, device)
-            cap_file = os.path.join(dev_path, "capacity")
-            type_file = os.path.join(dev_path, "type")
-            if not os.path.isfile(cap_file):
-                continue
-            # Verifica che sia una batteria (scarta AC, USB, ecc.)
-            try:
-                with open(type_file, "r") as f:
-                    tipo = f.read().strip()
-                if tipo != "Battery":
-                    continue
-            except Exception:
-                pass
-            # Leggi percentuale
-            try:
-                with open(cap_file, "r") as f:
-                    percent = int(f.read().strip())
-            except Exception:
-                continue
-            # Leggi stato ricarica (opzionale)
-            stato = None
-            status_file = os.path.join(dev_path, "status")
-            try:
-                with open(status_file, "r") as f:
-                    stato = f.read().strip()
-            except Exception:
-                pass
-            return percent, stato
-    except Exception:
-        pass
-    return None, None
 
 COLOR_DESCRIPTIONS = {
     "sfondo": "Sfondo applicazione", "dati": "Dati inseriti",
@@ -811,14 +725,6 @@ class RetroDBApp:
         # Admin e utenti normali: vedono solo i propri dati
         return self.sessione.get("codice")
 
-    def _imposta_geometria(self):
-        """Imposta dimensione finestra dalla configurazione. Solo se cambiata."""
-        target = "%dx%d" % (self._win_w, self._win_h)
-        current = self.root.geometry().split("+")[0]  # "WxH" senza posizione
-        if current != target:
-            self.root.geometry(target)
-        self.root.resizable(True, True)
-
     # =========================================================================
     #  NAVIGAZIONE DA TASTIERA (per uConsole / no mouse)
     # =========================================================================
@@ -898,11 +804,6 @@ class RetroDBApp:
         for _, btn in attivi:
             btn.bind("<Return>", self._kb_enter_invoca)
         attivi[0][1].focus_set()
-
-    def _kb_setup_listbox(self, listbox, on_enter=None):
-        """Configura Enter su Listbox per invocare un'azione."""
-        if on_enter:
-            listbox.bind("<Return>", lambda e: on_enter())
 
     # =========================================================================
     #  BARRA HELP TASTIERA
@@ -2772,16 +2673,6 @@ class RetroDBApp:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(contenuto, f, indent=2, ensure_ascii=False)
 
-    def _wifi_elenco_contiene(self, ssid):
-        """True se lo SSID e' gia' presente in elenco (case-insensitive)."""
-        ssid_low = (ssid or "").strip().lower()
-        if not ssid_low:
-            return False
-        for r in self._wifi_elenco_carica():
-            if str(r.get("SSID", "")).strip().lower() == ssid_low:
-                return True
-        return False
-
     def _wifi_elenco_aggiungi(self, ssid, password, note=""):
         """Aggiunge una rete all'elenco se non presente. Ritorna True se
         aggiunta, False se duplicata o in caso di errore. Se la password
@@ -3169,39 +3060,6 @@ class RetroDBApp:
         except (tk.TclError, AttributeError):
             pass
 
-    def _check_update_al_login(self):
-        """Check aggiornamenti alla schermata login. Blocca login durante il check."""
-        c = carica_colori()
-        def _worker():
-            try:
-                disp, info, msg = controlla_aggiornamento_github(APP_VERSION)
-                if disp:
-                    # Aggiornamento trovato: scarica
-                    self.root.after(0, lambda: self._login_status.config(
-                        text="Scaricando aggiornamento v%s..." % info.get("version","?"),
-                        fg=c["stato_avviso"]))
-                    base = self._get_base()
-                    ok, risultato, files = scarica_aggiornamento_github(
-                        info, base, self.percorsi.get("backup"),
-                        callback=lambda m: self.root.after(0, lambda: self._login_status.config(
-                            text=m, fg=c["stato_avviso"])))
-                    if ok:
-                        self._aggiornamento_scaricato = True
-                        # Riavvio automatico dopo 2 secondi
-                        self.root.after(0, lambda: self._login_status.config(
-                            text="Aggiornamento installato! Riavvio...",
-                            fg=c["stato_ok"]))
-                        self.root.after(2000, riavvia_app)
-                        return
-                # Nessun aggiornamento o download fallito: sblocca login
-                self.root.after(0, lambda: self._login_sblocca_dopo_check())
-            except Exception:
-                # Errore rete o altro: sblocca login comunque
-                self.root.after(0, lambda: self._login_sblocca_dopo_check())
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-
     def _login_sblocca_dopo_check(self):
         """Sblocca il login dopo il check aggiornamenti."""
         c = carica_colori()
@@ -3210,71 +3068,6 @@ class RetroDBApp:
             self._login_status.config(text="Default: admin / 000000", fg=c["testo_dim"])
         except (tk.TclError, AttributeError):
             pass
-
-    def _popup_riavvio(self, info):
-        """Mostra popup aggiornamento con conto alla rovescia e riavvio automatico."""
-        c = carica_colori()
-        versione = info.get("version", "?")
-        nota = info.get("note", "")
-
-        # Crea finestra popup sopra tutto
-        popup = tk.Toplevel(self.root)
-        popup.title("Aggiornamento")
-        popup.configure(bg=c["sfondo"])
-        popup.resizable(False, False)
-        popup.transient(self.root)
-        popup.grab_set()
-
-        # Centra rispetto alla finestra principale
-        popup.update_idletasks()
-        pw, ph = 380, 200
-        rx = self.root.winfo_x() + (self.root.winfo_width() - pw) // 2
-        ry = self.root.winfo_y() + (self.root.winfo_height() - ph) // 2
-        popup.geometry("%dx%d+%d+%d" % (pw, ph, rx, ry))
-
-        tk.Label(popup, text="AGGIORNAMENTO INSTALLATO",
-                 bg=c["sfondo"], fg=c["stato_ok"], font=self._f_title).pack(pady=(_S(15), _S(5)))
-        tk.Label(popup, text="Versione %s scaricata" % versione,
-                 bg=c["sfondo"], fg=c["dati"], font=self._f_label).pack()
-        if nota:
-            tk.Label(popup, text=nota, bg=c["sfondo"], fg=c["testo_dim"],
-                     font=self._f_small).pack(pady=(_S(2), _S(8)))
-
-        # Conto alla rovescia per riavvio automatico
-        lbl_count = tk.Label(popup, text="Riavvio automatico tra 5...",
-                             bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_label)
-        lbl_count.pack(pady=(_S(5), _S(8)))
-
-        self._countdown_annullato = False
-
-        def _countdown(sec):
-            if self._countdown_annullato:
-                return
-            if sec <= 0:
-                riavvia_app()
-                return
-            lbl_count.config(text="Riavvio automatico tra %d..." % sec)
-            popup.after(1000, lambda: _countdown(sec - 1))
-
-        bar = tk.Frame(popup, bg=c["sfondo"])
-        bar.pack(pady=_S(5))
-        tk.Button(bar, text="RIAVVIA ORA", font=self._f_btn, width=14,
-                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=riavvia_app).pack(side="left", padx=_S(4))
-
-        def _annulla():
-            self._countdown_annullato = True
-            lbl_count.config(text="Riavvio rimandato. Riavvia manualmente.")
-            popup.after(3000, popup.destroy)
-
-        tk.Button(bar, text="DOPO", font=self._f_btn, width=10,
-                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=_annulla).pack(side="left", padx=_S(4))
-
-        # Avvia conto alla rovescia da 5 secondi
-        _countdown(5)
 
     # =========================================================================
     #  AGGIORNAMENTO SOFTWARE (USB)
@@ -4826,82 +4619,9 @@ class RetroDBApp:
         record_id = record_id.replace("/", "-").replace("\\", "-").replace(":", "-").replace(" ", "_")
         setup_name = setup_name.replace("/", "-").replace("\\", "-").replace(":", "-")
         return record_id, setup_name
-    def _stampa_scheda(self, sessioni, best_assoluto):
-        """Stampa la scheda gara sulla stampante termica."""
-        if not _HAS_THERMAL:
-            return
-        c = carica_colori()
-        mac = self.conf.get("stampante_bt", "").strip()
-        if not mac:
-            mac = "auto"  # Su Windows cerca automaticamente via win32print
-
-        self._tempi_status.config(text="Stampa in corso...", fg=c["stato_avviso"])
-        self.root.update()
-
-        righe = genera_scheda_completa(sessioni, best_assoluto)
-        ok, msg = stampa_bluetooth(righe, mac)
-
-        if ok:
-            self._tempi_status.config(text="Scheda stampata!", fg=c["stato_ok"])
-        else:
-            self._tempi_status.config(text=msg, fg=c["stato_errore"])
-
-    def _esporta_scheda(self, sessioni, best_assoluto):
-        """Esporta la scheda gara come file .txt nella cartella dati."""
-        if not _HAS_THERMAL:
-            return
-        c = carica_colori()
-        righe = genera_scheda_completa(sessioni, best_assoluto)
-        base = self._get_base()
-        dati_dir = self.percorsi.get("dati", os.path.join(base, "dati"))
-        path = salva_scheda_txt(righe, dati_dir)
-        if path:
-            nome = os.path.basename(path)
-            self._tempi_status.config(
-                text="Esportato: %s" % nome, fg=c["stato_ok"])
-        else:
-            self._tempi_status.config(
-                text="Errore esportazione!", fg=c["stato_errore"])
-
-    # =========================================================================
-    #  STAMPA SCHEDA (generico per qualsiasi tabella)
-    # =========================================================================
     # =========================================================================
     #  WEB SYNC (aggiornamento catalogo da web)
     # =========================================================================
-    def _sync_web(self):
-        """Avvia sync web per la tabella corrente."""
-        if not _HAS_WEBSYNC or not self.table_def.links:
-            self._status("Nessun link configurato!", "stato_errore")
-            return
-        c = carica_colori()
-        self._status("Sync in corso... (%d link)" % len(self.table_def.links), "stato_avviso")
-        self._vista.update_idletasks()
-
-        def _on_risultato(risultato):
-            agg = risultato.get("aggiunti", 0)
-            upd = risultato.get("aggiornati", 0)
-            err = risultato.get("errori", [])
-            try:
-                if agg + upd > 0:
-                    self._status(
-                        "Sync: %d nuovi, %d aggiornati" % (agg, upd), "stato_ok")
-                    # Ricarica il record per mostrare eventuali modifiche
-                    self.db._carica_dati()
-                    self._indici_visibili = self.db.get_records_filtrati(self.filtro_utente())
-                    if self._indici_visibili:
-                        self._mostra_record()
-                elif err:
-                    self._status("Sync: %s" % err[0][:50], "stato_errore")
-                else:
-                    self._status("Sync: nessun cambiamento", "testo_dim")
-            except (tk.TclError, AttributeError):
-                pass
-
-        sync_tabella_background(
-            self._nome_tabella, self.table_def, self.db,
-            callback=lambda r: self.root.after(0, lambda: _on_risultato(r)))
-
     def _auto_sync_cataloghi(self):
         """Controlla tutte le tabelle con !link e sincronizza se > 24h."""
         if not _HAS_WEBSYNC:
@@ -6582,21 +6302,6 @@ class RetroDBApp:
         if _HAS_METEO and self.table_def.puo("crono"):
             self.root.after(500, self._auto_meteo)
 
-    def _apri_tutti(self, nome_tabella):
-        """Apri tutti i record della tabella (come prima)."""
-        self._indici_visibili = self.db.get_records_filtrati(self.filtro_utente())
-        self._pos_visibile = 0 if self._indici_visibili else -1
-        self.indice_corrente = self._indici_visibili[0] if self._indici_visibili else -1
-        self._costruisci_form(nome_tabella)
-        self._mostra_record()
-
-    def _elenco_da_selezione(self, nome_tabella):
-        """Apri vista elenco dalla schermata selezione."""
-        self._indici_visibili = self.db.get_records_filtrati(self.filtro_utente())
-        self._pos_visibile = 0 if self._indici_visibili else -1
-        self.indice_corrente = self._indici_visibili[0] if self._indici_visibili else -1
-        self._schermata_elenco(nome_tabella)
-
     # =========================================================================
     #  VISTA ELENCO (griglia tabellare)
     # =========================================================================
@@ -7699,11 +7404,6 @@ class RetroDBApp:
     def _aggiorna_visibili(self):
         self._indici_visibili = self.db.get_records_filtrati(self.filtro_utente())
 
-    def _vai_primo(self):
-        self._aggiorna_visibili()
-        if self._indici_visibili: self._pos_visibile = 0
-        self.modo_nuovo = False; self.modo_ricerca = False; self._mostra_record()
-
     def _vai_precedente(self):
         if self._pos_visibile > 0: self._pos_visibile -= 1
         self.modo_nuovo = False; self._mostra_record()
@@ -7711,11 +7411,6 @@ class RetroDBApp:
     def _vai_successivo(self):
         if self._pos_visibile < len(self._indici_visibili) - 1: self._pos_visibile += 1
         self.modo_nuovo = False; self._mostra_record()
-
-    def _vai_ultimo(self):
-        self._aggiorna_visibili()
-        if self._indici_visibili: self._pos_visibile = len(self._indici_visibili) - 1
-        self.modo_nuovo = False; self.modo_ricerca = False; self._mostra_record()
 
     # =========================================================================
     #  CRUD

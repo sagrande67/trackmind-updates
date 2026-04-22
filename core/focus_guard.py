@@ -34,8 +34,6 @@ SICUREZZA:
     - Se la finestra viene distrutta, la guardia si ferma da sola.
 """
 
-import sys
-
 # Intervallo ri-lift: 2s e' un compromesso fra reattivita' e carico CPU.
 # Su uConsole (ARM) intervalli piu' bassi scaldano il processore.
 _INTERVALLO_MS_DEFAULT = 2000

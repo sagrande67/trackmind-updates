@@ -11,11 +11,21 @@ import sys
 import tkinter as tk
 from tkinter import font as tkfont
 
-# Font monospace per compatibilita' cross-platform
+# Font monospace + helper colori centralizzati
 try:
-    from config_colori import FONT_MONO
+    from config_colori import FONT_MONO, carica_colori as _carica_colori
 except ImportError:
-    FONT_MONO = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+    # Fallback robusto se lanciato in modalita' diversa (sys.path mancante)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _parent = os.path.dirname(_here)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    try:
+        from config_colori import FONT_MONO, carica_colori as _carica_colori
+    except ImportError:
+        FONT_MONO = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+        def _carica_colori():
+            return {}
 
 # Guardia anti-popup di sistema (uConsole).
 try:
@@ -30,44 +40,6 @@ except Exception:
     except Exception:
         def _proteggi_finestra(root, **kwargs):
             return
-
-
-# =====================================================================
-#  COLORI (stesso schema di TrackMind)
-# =====================================================================
-DEFAULT_COLORS = {
-    "sfondo": "#0a0a0a", "sfondo_celle": "#0f0f0f",
-    "dati": "#39ff14", "label": "#22aa22", "testo_dim": "#1a6a1a",
-    "testo_cursore": "#0a0a0a", "cursore": "#39ff14",
-    "stato_ok": "#39ff14", "stato_avviso": "#ffaa00", "stato_errore": "#ff5555",
-    "linee": "#1a5a0a", "pulsanti_sfondo": "#1a3a1a", "pulsanti_testo": "#39ff14",
-    "cerca_sfondo": "#1a1a3a", "cerca_testo": "#6688ff",
-    "puntini": "#0e4a0e",
-}
-
-
-def _carica_colori():
-    """Carica colori da colori.cfg se presente."""
-    colori = DEFAULT_COLORS.copy()
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = os.path.join(base, "colori.cfg")
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                for riga in f:
-                    riga = riga.strip()
-                    if not riga or riga.startswith("#") or "=" not in riga:
-                        continue
-                    k, v = riga.split("=", 1)
-                    k, v = k.strip(), v.strip()
-                    if k in colori and v.startswith("#"):
-                        colori[k] = v
-        except Exception:
-            pass
-    return colori
 
 
 # DPI scaling

@@ -31,12 +31,14 @@ except Exception:
         def _proteggi_finestra(root, **kwargs):
             return
 
-# Font monospace per compatibilità cross-platform
+# Font monospace + helper colori centralizzati
 try:
-    from config_colori import FONT_MONO
+    from config_colori import FONT_MONO, carica_colori as _carica_colori
 except ImportError:
     import sys as _sys
     FONT_MONO = "Consolas" if _sys.platform == "win32" else "DejaVu Sans Mono"
+    def _carica_colori():
+        return {}
 
 # Barra batteria (opzionale)
 try:
@@ -45,138 +47,11 @@ except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
 
-# ─────────────────────────────────────────────────────────────────────
-#  COLORI
-# ─────────────────────────────────────────────────────────────────────
-DEFAULT_COLORS = {
-    "sfondo": "#0a0a0a", "sfondo_celle": "#0f0f0f",
-    "dati": "#39ff14", "label": "#22aa22", "testo_dim": "#1a6a1a",
-    "testo_cursore": "#0a0a0a", "cursore": "#39ff14",
-    "stato_ok": "#39ff14", "stato_avviso": "#ffaa00", "stato_errore": "#ff5555",
-    "linee": "#1a5a0a", "pulsanti_sfondo": "#1a3a1a", "pulsanti_testo": "#39ff14",
-    "cerca_sfondo": "#1a1a3a", "cerca_testo": "#6688ff",
-}
-
-def _carica_colori():
-    colori = DEFAULT_COLORS.copy()
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = os.path.join(base, "colori.cfg")
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                for riga in f:
-                    riga = riga.strip()
-                    if not riga or riga.startswith("#") or "=" not in riga:
-                        continue
-                    k, v = riga.split("=", 1)
-                    k, v = k.strip(), v.strip()
-                    if k in colori and v.startswith("#"):
-                        colori[k] = v
-        except Exception:
-            pass
-    return colori
-
 
 def _fmt(sec):
     if not sec: return "--"
     m = int(sec) // 60; s = sec - m * 60
     return "%02d:%05.2f" % (m, s)
-
-
-def _analisi_locale(giri):
-    """Analisi locale: ricostruisce stint reali identificando pit/incidenti dai tempi.
-    Ritorna dict con stint calcolati, autonomia, passo."""
-    if not giri:
-        return None
-
-    # 1. Raccogli tempi di tutti i giri
-    tempi = [(i, g.get("tempo", 0)) for i, g in enumerate(giri) if g.get("tempo", 0) > 0]
-    if len(tempi) < 3:
-        return None
-
-    # 2. Calcola passo normale (mediana per escludere outlier)
-    tempi_sorted = sorted([t for _, t in tempi])
-    n = len(tempi_sorted)
-    mediana = tempi_sorted[n // 2]
-
-    # 3. Calcola soglia pit: mediana + IQR * 1.5 (minimo mediana + 5 sec)
-    q1 = tempi_sorted[n // 4]
-    q3 = tempi_sorted[(3 * n) // 4]
-    iqr = q3 - q1
-    soglia = max(mediana + 5.0, mediana + iqr * 2.5)
-
-    # 4. Identifica separatori (pit/incidenti) e giri normali
-    giri_normali = []  # tempi dei giri normali
-    separatori = []  # indici dei separatori
-    for idx, tempo in tempi:
-        if tempo > soglia:
-            separatori.append(idx)
-        else:
-            giri_normali.append(tempo)
-
-    # 5. Calcola passo reale (solo giri normali)
-    if not giri_normali:
-        return None
-    media_passo = sum(giri_normali) / len(giri_normali)
-    best_giro = min(giri_normali)
-    peggiore = max(giri_normali)
-
-    # 6. Ricostruisci stint tra separatori
-    stint_list = []
-    stint_corrente = []
-    for idx, tempo in tempi:
-        if idx in separatori:
-            if stint_corrente:
-                durata = sum(stint_corrente)
-                stint_list.append({
-                    "giri": len(stint_corrente),
-                    "durata_sec": durata,
-                    "durata_min": durata / 60.0,
-                    "media": sum(stint_corrente) / len(stint_corrente),
-                    "best": min(stint_corrente),
-                    "peggiore": max(stint_corrente),
-                })
-                stint_corrente = []
-        else:
-            stint_corrente.append(tempo)
-    # Ultimo stint
-    if stint_corrente:
-        durata = sum(stint_corrente)
-        stint_list.append({
-            "giri": len(stint_corrente),
-            "durata_sec": durata,
-            "durata_min": durata / 60.0,
-            "media": sum(stint_corrente) / len(stint_corrente),
-            "best": min(stint_corrente),
-            "peggiore": max(stint_corrente),
-        })
-
-    # 7. Identifica test autonomia: stint piu' lungo con durata 4.5-7 min
-    test_autonomia = None
-    if stint_list:
-        stint_validi = [s for s in stint_list if 4.0 <= s["durata_min"] <= 7.5]
-        if stint_validi:
-            piu_lungo = max(stint_validi, key=lambda s: s["durata_sec"])
-            # Solo se e' chiaramente piu' lungo della media stint
-            durate = [s["durata_sec"] for s in stint_list]
-            media_durata = sum(durate) / len(durate)
-            if piu_lungo["durata_sec"] > media_durata * 1.3:
-                test_autonomia = piu_lungo
-
-    return {
-        "passo_mediana": mediana,
-        "passo_media": media_passo,
-        "best": best_giro,
-        "peggiore": peggiore,
-        "soglia_pit": soglia,
-        "n_giri_normali": len(giri_normali),
-        "n_separatori": len(separatori),
-        "stint": stint_list,
-        "test_autonomia": test_autonomia,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────

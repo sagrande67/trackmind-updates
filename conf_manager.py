@@ -10,7 +10,7 @@ import base64
 import hashlib
 import platform
 import subprocess as _subprocess
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 
 # Chiave di offuscamento interna (non modificabile dall'utente)
 _OBFUSCATION_KEY = b"Tr4ckM1nd_C0nf_K3y_2026!#"
@@ -673,21 +673,6 @@ def genera_token_laptimer():
     return raw[:16].upper()
 
 
-def verifica_token_laptimer(token):
-    """Verifica che il token sia valido (finestra di 2 minuti)."""
-    import time
-    token = token.strip().upper()
-    now_min = int(time.time()) // 60
-    for offset in (0, -1):
-        minuto = str(now_min + offset)
-        raw = hashlib.sha256(
-            _LAPTIMER_TOKEN_SECRET + minuto.encode("utf-8")
-        ).hexdigest()
-        if token == raw[:16].upper():
-            return True
-    return False
-
-
 # ─────────────────────────────────────────────────────────────────────
 #  CREDITI IA
 # ─────────────────────────────────────────────────────────────────────
@@ -713,33 +698,6 @@ def usa_credito_ia(conf):
     conf["crediti_ia"] = rimasti
     salva_conf(conf)
     return True, rimasti
-
-
-def genera_codice_ricarica(codice_macchina, crediti):
-    """
-    Genera un codice di ricarica IA firmato.
-    Formato: RIA-XXXX-XXXX-CCCC
-      RIA = prefisso fisso (Ricarica IA)
-      XXXX-XXXX = hash legato a macchina + crediti
-      CCCC = crediti codificati (XOR con chiave derivata)
-    """
-    crediti = max(1, min(crediti, 9999))
-    cm = codice_macchina.upper().strip()
-
-    # Hash: macchina + crediti + segreto
-    payload = "%s|%d" % (cm, crediti)
-    raw = hashlib.sha256(
-        _RICARICA_SECRET + payload.encode("utf-8")
-    ).hexdigest()
-    short = raw[:8].upper()
-
-    # Crediti codificati con XOR
-    ric_key = hashlib.sha256(
-        _RICARICA_SECRET + b"CRED" + cm.encode("utf-8")
-    ).digest()[:2]
-    cred_enc = crediti ^ (ric_key[0] << 8 | ric_key[1])
-
-    return "RIA-%s-%s-%04X" % (short[0:4], short[4:8], cred_enc & 0xFFFF)
 
 
 def applica_ricarica_ia(conf, codice_ricarica):

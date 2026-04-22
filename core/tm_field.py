@@ -5,9 +5,7 @@ Tipi: S=Stringa N=Numero D=Data O=Ora F=Flag P=Password V=ValoriVirgola $=Valuta
 
 import tkinter as tk
 from tkinter import font as tkfont
-from typing import Optional, Callable
 from datetime import datetime
-import sys
 from config_colori import carica_colori, FONT_MONO
 
 # Dimensioni base (scala 1.0)

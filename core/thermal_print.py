@@ -383,12 +383,6 @@ def _bt_auto_setup(mac_configurato=""):
         return None, mac, "Stampante non raggiungibile"
 
 
-def bt_reset_cache():
-    """Resetta la cache MAC (utile se si cambia stampante)."""
-    global _mac_cache
-    _mac_cache = None
-
-
 def stampante_disponibile(mac_configurato="auto"):
     """
     Verifica se una stampante termica e' effettivamente raggiungibile.

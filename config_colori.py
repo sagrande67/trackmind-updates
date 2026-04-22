@@ -146,8 +146,3 @@ def salva_colori(colori):
             d = desc.get(chiave, "")
             f.write(f"# {d}\n")
             f.write(f"{chiave}={valore}\n\n")
-
-
-def get_config_path():
-    """Restituisce il percorso del file colori.cfg."""
-    return _find_config()

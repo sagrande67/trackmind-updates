@@ -18,7 +18,6 @@ from version import __version__
 import tkinter as tk
 from tkinter import font as tkfont, ttk
 import json, os, sys
-from datetime import datetime
 
 # Guardia anti-popup di sistema (uConsole).
 try:
@@ -35,12 +34,14 @@ except Exception:
         def _proteggi_finestra(root, **kwargs):
             return
 
-# Font monospace per compatibilità cross-platform
+# Font monospace + helper colori centralizzati
 try:
-    from config_colori import FONT_MONO
+    from config_colori import FONT_MONO, carica_colori as _carica_colori
 except ImportError:
     import sys as _sys
     FONT_MONO = "Consolas" if _sys.platform == "win32" else "DejaVu Sans Mono"
+    def _carica_colori():
+        return {}
 
 # Importa classificatore da laptimer
 try:
@@ -61,50 +62,6 @@ try:
     _HAS_AI = True
 except ImportError:
     _HAS_AI = False
-
-# ---------------------------------------------------------------------
-#  COLORI (legge colori.cfg di RetroDB se presente)
-# ---------------------------------------------------------------------
-DEFAULT_COLORS = {
-    "sfondo":           "#0a0a0a",
-    "sfondo_celle":     "#0f0f0f",
-    "dati":             "#39ff14",
-    "label":            "#22aa22",
-    "testo_dim":        "#1a6a1a",
-    "testo_cursore":    "#0a0a0a",
-    "cursore":          "#39ff14",
-    "stato_ok":         "#39ff14",
-    "stato_avviso":     "#ffaa00",
-    "stato_errore":     "#ff5555",
-    "linee":            "#1a5a0a",
-    "pulsanti_sfondo":  "#1a3a1a",
-    "pulsanti_testo":   "#39ff14",
-    "bordo_vuote":      "#1a3a1a",
-    "cerca_sfondo":     "#1a1a3a",
-    "cerca_testo":      "#6688ff",
-}
-
-def _carica_colori():
-    colori = DEFAULT_COLORS.copy()
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = os.path.join(base, "colori.cfg")
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                for riga in f:
-                    riga = riga.strip()
-                    if not riga or riga.startswith("#") or "=" not in riga:
-                        continue
-                    k, v = riga.split("=", 1)
-                    k, v = k.strip(), v.strip()
-                    if k in colori and v.startswith("#"):
-                        colori[k] = v
-        except Exception:
-            pass
-    return colori
 
 
 def _fmt(secondi):
@@ -639,62 +596,6 @@ class AnalizzaTempi:
             self._lbl_status.config(text="Salvato!", fg=c["stato_ok"])
         except Exception as e:
             self._lbl_status.config(text="Errore: %s" % e, fg=c["stato_errore"])
-
-    # =================================================================
-    #  ANALISI IA
-    # =================================================================
-    def _lancia_ai(self):
-        """Lancia l'analisi IA con Claude, include strategia gara."""
-        # Calcola strategia per la durata selezionata
-        strategia = None
-        validi = [g for g in self.giri if g.get("stato") == "valido"]
-        pit_g = [g for g in self.giri if g.get("stato") == "pit"]
-        tempi_v = [g["tempo"] for g in validi]
-        tempi_pit = [g["tempo"] for g in pit_g]
-        media = sum(tempi_v) / len(tempi_v) if tempi_v else 0
-        media_pit = sum(tempi_pit) / len(tempi_pit) if tempi_pit else 0
-        stint_list = calcola_stint(self.giri)
-        completi = [s for s in stint_list if s["completo"]]
-        if completi and self.fuel_valido and self.serbatoio and media > 0:
-            durate = [s["durata"] / 60.0 for s in completi]
-            autonomia_min = sum(durate) / len(durate)
-            consumo_min = self.serbatoio / autonomia_min if autonomia_min > 0 else 0
-            rientro_sicuro = autonomia_min - (media / 60.0)
-            giri_sicuri = int(rientro_sicuro * 60 / media)
-            durata_sel = getattr(self, '_ultima_durata', 30)
-            strategia = calcola_strategia(
-                durata_sel, media, autonomia_min, giri_sicuri,
-                consumo_min, self.serbatoio, media_pit)
-
-        # Carica storico
-        storico = []
-        if self.path:
-            dati_dir = os.path.dirname(self.path)
-            nome_file = os.path.basename(self.path)
-            # Cerca sessioni con stesso prefisso (stesso record_id)
-            # Formato: lap_{record_id}_{timestamp}.json
-            parti = nome_file.split("_")
-            if len(parti) >= 2:
-                # Prova a ricostruire il prefisso record_id
-                prefisso = None
-                if nome_file.startswith("lap_"):
-                    # lap_rec_3_20260402_114034.json → prefisso = "lap_rec_3_"
-                    # Cerca tutti i file che iniziano con "lap_" nella stessa dir
-                    for f in sorted(os.listdir(dati_dir)):
-                        if f.endswith(".json") and f != nome_file and f.startswith("lap_"):
-                            try:
-                                with open(os.path.join(dati_dir, f), "r", encoding="utf-8") as fh:
-                                    s = json.load(fh)
-                                # Solo se stesso setup
-                                if s.get("setup") == self.sessione.get("setup"):
-                                    storico.append(s)
-                            except Exception:
-                                pass
-
-        self._pulisci()
-        AIAnalisi(self.sessione, self.path, storico=storico,
-                  strategia=strategia,
-                  parent=self.root, on_close=self._schermata_analisi)
 
     # =================================================================
     #  RUN (standalone)

@@ -254,18 +254,6 @@ def salva_utenti(records):
     """Salva la lista di record utenti."""
     _salva_records(records)
 
-def prossimo_codice():
-    """Prossimo codice utente disponibile."""
-    utenti = carica_utenti()
-    max_cod = 0
-    for u in utenti:
-        try:
-            v = int(u.get("Codice_Utente", 0))
-            if v > max_cod: max_cod = v
-        except: pass
-    return max_cod + 1
-
-
 # ─────────────────────────────────────────────────────────────────────
 #  AUTENTICAZIONE
 # ─────────────────────────────────────────────────────────────────────
@@ -325,18 +313,6 @@ def verifica_login(username, password):
 
     return False, None
 
-def modifica_password(codice, nuova_password):
-    """Cambia la password di un utente (salva crittata)."""
-    utenti = carica_utenti()
-    for u in utenti:
-        if str(u.get("Codice_Utente", "")) == str(codice):
-            u["Password"] = cripta_password(str(nuova_password))
-            u["_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            _salva_records(utenti)
-            return True
-    return False
-
-
 # ─────────────────────────────────────────────────────────────────────
 #  UTILITY
 # ─────────────────────────────────────────────────────────────────────
@@ -359,18 +335,10 @@ def get_utente(codice):
             return u
     return None
 
-def get_utenti_attivi():
-    """Restituisce solo gli utenti attivi."""
-    return [u for u in carica_utenti() if u.get("Attivo", "Si") in ("Si", "si", "SI", "X", "x")]
-
 def is_admin(sessione):
     """Verifica se la sessione e' admin (o superiore)."""
     if not sessione: return False
     return sessione.get("ruolo", "utente") in ("admin", "sviluppatore")
-
-def is_sviluppatore(sessione):
-    """Verifica se la sessione e' sviluppatore (accesso manutenzione)."""
-    return sessione and sessione.get("ruolo") == "sviluppatore"
 
 def get_display_name(sessione):
     """Nome visualizzazione da sessione."""

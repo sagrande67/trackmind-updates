@@ -16,7 +16,7 @@ Flusso:
 from version import __version__
 
 import tkinter as tk
-from tkinter import font as tkfont, ttk
+from tkinter import font as tkfont
 import time, json, os, sys, argparse
 from datetime import datetime
 
@@ -41,7 +41,7 @@ except Exception:
 
 # Stampa termica (opzionale)
 try:
-    from core.thermal_print import (genera_scheda_gara, stampa_bluetooth,
+    from core.thermal_print import (stampa_bluetooth,
                                      _fmt_tempo, _linea, _centra, _riga, W)
     _HAS_PRINT = True
 except ImportError:
@@ -61,12 +61,14 @@ except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
 
-# Font monospace per compatibilità cross-platform
+# Font monospace + helper colori centralizzati
 try:
-    from config_colori import FONT_MONO
+    from config_colori import FONT_MONO, carica_colori as _carica_colori
 except ImportError:
     import sys as _sys
     FONT_MONO = "Consolas" if _sys.platform == "win32" else "DejaVu Sans Mono"
+    def _carica_colori():
+        return {}
 
 # ─────────────────────────────────────────────────────────────────────
 #  FUNZIONE STANDALONE: classificazione giri (importabile da retrodb)
@@ -122,40 +124,6 @@ def _verifica_token(token):
     return False
 
 
-DEFAULT_COLORS = {
-    "sfondo":       "#0a0a0a",
-    "dati":         "#39ff14",
-    "label":        "#22aa22",
-    "testo_dim":    "#1a6a1a",
-    "stato_ok":     "#39ff14",
-    "stato_avviso": "#ffaa00",
-    "stato_errore": "#ff5555",
-    "linee":        "#1a5a0a",
-    "pulsanti_sfondo": "#1a3a1a",
-    "pulsanti_testo":  "#39ff14",
-}
-
-def _carica_colori():
-    colori = DEFAULT_COLORS.copy()
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = os.path.join(base, "colori.cfg")
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                for riga in f:
-                    riga = riga.strip()
-                    if not riga or riga.startswith("#") or "=" not in riga:
-                        continue
-                    k, v = riga.split("=", 1)
-                    k, v = k.strip(), v.strip()
-                    if k in colori and v.startswith("#"):
-                        colori[k] = v
-        except Exception:
-            pass
-    return colori
 
 
 def _fmt(secondi):

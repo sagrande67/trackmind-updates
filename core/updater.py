@@ -27,7 +27,7 @@ Eccezione: tabelle/conf.def e' incluso (definizione configurazione sistema)
 
 from version import __version__
 
-import os, sys, json, shutil, zipfile, glob
+import os, sys, json, shutil, zipfile
 import urllib.request
 import ssl
 from datetime import datetime

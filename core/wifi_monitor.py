@@ -401,10 +401,6 @@ class AutoRiconnettore(object):
     def stop(self):
         self._stop_event.set()
 
-    def set_wifi_json_path(self, nuovo):
-        """Cambia al volo il path dell'elenco (non serve stop/start)."""
-        self._wifi_json = nuovo or ""
-
     # ── loop ──
     def _loop(self):
         while not self._stop_event.is_set():

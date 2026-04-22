@@ -62,11 +62,13 @@ def _check_internet(timeout=3):
     except (OSError, socket.timeout):
         return False
 
-# Font monospace per compatibilità cross-platform
+# Font monospace + helper colori centralizzati
 try:
-    from config_colori import FONT_MONO
+    from config_colori import FONT_MONO, carica_colori as _carica_colori
 except ImportError:
     FONT_MONO = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+    def _carica_colori():
+        return {}
 
 # ── Import componenti TrackMind ──
 try:
@@ -86,7 +88,7 @@ except ImportError:
     AnalizzaTempi = None
 
 try:
-    from speedhive_import import (scarica_sessioni, estrai_id, converti_sessione,
+    from speedhive_import import (scarica_sessioni, converti_sessione,
                                    import_automatico, cerca_attivita)
     _HAS_SPEEDHIVE = True
 except ImportError:
@@ -99,8 +101,7 @@ except ImportError:
     _HAS_CONFRONTA = False
 
 try:
-    from myrcm_import import (cerca_eventi_online, scarica_categorie,
-                               scarica_tutti_tempi_evento, crea_scouting_json,
+    from myrcm_import import (scarica_tutti_tempi_evento, crea_scouting_json,
                                salva_scouting, import_evento_completo,
                                pulisci_scouting_data_vecchia)
     _HAS_MYRCM = True
@@ -113,41 +114,6 @@ try:
 except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  COLORI
-# ─────────────────────────────────────────────────────────────────────
-DEFAULT_COLORS = {
-    "sfondo": "#0a0a0a", "sfondo_celle": "#0f0f0f", "sfondo_celle_piene": "#0c120c",
-    "dati": "#39ff14", "label": "#22aa22", "testo_dim": "#1a6a1a",
-    "testo_cursore": "#0a0a0a", "cursore": "#39ff14",
-    "stato_ok": "#39ff14", "stato_avviso": "#ffaa00", "stato_errore": "#ff5555",
-    "linee": "#1a5a0a", "pulsanti_sfondo": "#1a3a1a", "pulsanti_testo": "#39ff14",
-    "bordo_vuote": "#1a3a1a", "cerca_sfondo": "#1a1a3a", "cerca_testo": "#6688ff",
-}
-
-def _carica_colori():
-    colori = DEFAULT_COLORS.copy()
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = os.path.join(base, "colori.cfg")
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, "r", encoding="utf-8") as f:
-                for riga in f:
-                    riga = riga.strip()
-                    if not riga or riga.startswith("#") or "=" not in riga:
-                        continue
-                    k, v = riga.split("=", 1)
-                    k, v = k.strip(), v.strip()
-                    if k in colori and v.startswith("#"):
-                        colori[k] = v
-        except Exception:
-            pass
-    return colori
 
 
 def _fmt(sec):
@@ -258,10 +224,6 @@ class Crono:
         except Exception:
             pass
 
-    def _pulisci_scouting_vecchi(self, scouting_dir, data_oggi):
-        """Mantenuto per compatibilita', non cancella piu' file."""
-        return 0
-
     @staticmethod
     def _normalizza_data(d):
         """Normalizza data a DD/MM/YYYY da qualsiasi formato."""
@@ -285,29 +247,6 @@ class Crono:
         if " - " in setup:
             return setup.split(" - ", 1)[1].strip()
         return ""
-
-    def _filtra_sessioni(self, sessioni, paths, data_filtro, pista_filtro):
-        """Filtra sessioni per data e/o pista (senza cancellare file).
-        Ritorna (sessioni_filtrate, paths_filtrati)."""
-        if not data_filtro and not pista_filtro:
-            return sessioni, paths
-        dc = self._normalizza_data(data_filtro)
-        pista_low = pista_filtro.lower().strip() if pista_filtro else ""
-        out_s, out_p = [], []
-        for s, p in zip(sessioni, paths):
-            # Filtro data
-            if dc:
-                df = self._normalizza_data(s.get("data", ""))
-                if df and df != dc:
-                    continue
-            # Filtro pista
-            if pista_low:
-                pf = self._pista_da_sessione(s).lower()
-                if pf and pista_low not in pf and pf not in pista_low:
-                    continue
-            out_s.append(s)
-            out_p.append(p)
-        return out_s, out_p
 
     # ── Registro piloti persistente (piloti.json) ──
 
@@ -1325,48 +1264,6 @@ class Crono:
                      prefill=self._scouting_prefill),
                  setup_snapshot=self._build_setup_snapshot())
 
-    def _rivedi_scouting(self):
-        """Apre AnalizzaTempi sulla sessione scouting selezionata."""
-        if not AnalizzaTempi:
-            return
-        sel = self._scout_lb.curselection()
-        if not sel or not self._scouting_data:
-            return
-        idx = sel[0]
-        sessione = self._scouting_data[idx]
-        path = self._scouting_files[idx]
-        self._pulisci()
-        AnalizzaTempi(sessione, path, parent=self.root,
-                      on_close=self._schermata_scouting)
-
-    def _elimina_scouting(self):
-        """Elimina sessione scouting (doppia pressione)."""
-        c = self.c
-        sel = self._scout_lb.curselection()
-        if not sel or not self._scouting_data:
-            return
-        idx = sel[0]
-
-        now = time.time()
-        if not hasattr(self, '_del_scout_ts') or now - self._del_scout_ts > 3:
-            self._del_scout_ts = now
-            self._scout_lb.config(selectbackground=c["stato_errore"])
-            return
-        del self._del_scout_ts
-
-        try:
-            os.remove(self._scouting_files[idx])
-        except Exception:
-            pass
-        self._scouting_files.pop(idx)
-        self._scouting_data.pop(idx)
-        self._scout_lb.delete(idx)
-        self._scout_lb.config(selectbackground=c["cursore"])
-        if self._scouting_data and idx < len(self._scouting_data):
-            self._scout_lb.selection_set(idx)
-        elif self._scouting_data:
-            self._scout_lb.selection_set(len(self._scouting_data) - 1)
-
     def _build_setup_snapshot(self):
         """Costruisce un dizionario con i dati setup da 'fotografare' nella sessione."""
         snap = {}
@@ -1630,301 +1527,6 @@ class Crono:
             self.root.after(0, _mostra_risultato)
 
         threading.Thread(target=_fetch_tutto, daemon=True).start()
-
-    def _avvia_speedhive(self):
-        """Alias per compatibilita' — reindirizza a ricerca completa."""
-        self._avvia_ricerca()
-
-    def _importa_speedhive_sessioni(self, data_str):
-        """Importa tutte le sessioni SpeedHive per un transponder in una data."""
-        c = self.c
-        speedhive_id = self._matched_pista["speedhive_id"]
-        transponder = self._sf_transponder.get().strip()
-        pilota = self._sf_pilota.get().strip() or "?"
-        pilota_note = self._sf_pilota_note.get().strip() if hasattr(self, '_sf_pilota_note') else ""
-        serbatoio_str = self._sf_serbatoio.get().strip()
-        try:
-            serbatoio = int(serbatoio_str) if serbatoio_str else 0
-        except ValueError:
-            serbatoio = 0
-
-        # Salva pilota nel registro persistente
-        self._save_pilota(pilota, transponder, serbatoio_str, pilota_note)
-
-        # Passa info pilota al contesto (per l'IA)
-        if pilota_note:
-            self.ctx["info_pilota"] = pilota_note
-
-        # Salva prefill
-        self._scouting_prefill = {
-            "pilota": pilota, "pista": self._matched_pista["nome"],
-            "transponder": transponder, "serbatoio": serbatoio_str,
-        }
-
-        # Mostra schermata di attesa
-        self._pulisci()
-        tk.Label(self.root, text="SPEEDHIVE IMPORT", bg=c["sfondo"],
-                 fg=c["cerca_testo"], font=self._f_title).pack(pady=(20, 10))
-        status = tk.Label(self.root, text="Ricerca sessioni per %s in data %s..." % (
-                     transponder, data_str),
-                 bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_info)
-        status.pack(pady=10)
-        self.root.update_idletasks()
-
-        # Check connessione internet
-        if not _check_internet():
-            status.config(text="NESSUNA CONNESSIONE INTERNET!", fg=c["stato_errore"])
-            self.root.after(3000, lambda: self._schermata_scouting(
-                prefill=getattr(self, '_scouting_prefill', None)))
-            return
-
-        def _fetch():
-            try:
-                from speedhive_import import cerca_attivita, scarica_sessioni
-                # Cerca attivita' del transponder nella data
-                activity_id, att_info = cerca_attivita(speedhive_id, transponder, data_str)
-                if not activity_id:
-                    self.root.after(0, lambda: self._import_result(
-                        None, status, transponder, data_str))
-                    return
-
-                # Scarica sessioni
-                dati = scarica_sessioni(activity_id)
-                if not dati or "sessions" not in dati:
-                    self.root.after(0, lambda: self._import_result(
-                        None, status, transponder, data_str))
-                    return
-
-                sessions = dati.get("sessions", [])
-                scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
-                os.makedirs(scouting_dir, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-                saved = []
-                for sess in sessions:
-                    laps = sess.get("laps", [])
-                    if not laps:
-                        continue
-                    sid = sess.get("id", 0)
-                    tempi = []
-                    giri_list = []
-                    for i, lap in enumerate(laps):
-                        try:
-                            dur = float(lap.get("duration", 0))
-                        except (ValueError, TypeError):
-                            dur = 0
-                        if dur > 0:
-                            tempi.append(dur)
-                            giri_list.append({
-                                "giro": len(giri_list) + 1,
-                                "tempo": round(dur, 3),
-                                "stato": "valido",
-                            })
-
-                    if not giri_list:
-                        continue
-
-                    # Ora inizio sessione
-                    dt_start = sess.get("dateTimeStart", "")
-                    try:
-                        from datetime import datetime as dt_cls
-                        dt_obj = dt_cls.fromisoformat(dt_start)
-                        ora = dt_obj.strftime("%H:%M:%S")
-                    except Exception:
-                        ora = dt_start[:8] if len(dt_start) >= 8 else "?"
-
-                    sessione = {
-                        "pilota": pilota,
-                        "setup": "SpeedHive - %s" % self._matched_pista["nome"],
-                        "data": data_str,
-                        "ora": ora,
-                        "tipo": "speedhive",
-                        "transponder": transponder,
-                        "serbatoio_cc": serbatoio,
-                        "sessione_carburante": serbatoio > 0,
-                        "speedhive_session": sid,
-                        "num_giri": len(giri_list),
-                        "giri": giri_list,
-                        "miglior_tempo": round(min(tempi), 3),
-                        "media": round(sum(tempi) / len(tempi), 3),
-                        "tempo_totale": round(sum(tempi), 3),
-                    }
-                    # Inietta riferimenti setup (telaio, miscela, gomme)
-                    for ck, cv in self.ctx.items():
-                        if ck.startswith("ref_") and cv:
-                            sessione[ck] = cv
-                    # Deduplica: elimina sessione vecchia con stesso transponder+data+ora o stesso session ID
-                    for old_f in os.listdir(scouting_dir):
-                        if not old_f.endswith(".json"):
-                            continue
-                        old_path = os.path.join(scouting_dir, old_f)
-                        try:
-                            with open(old_path, "r", encoding="utf-8") as fp:
-                                old = json.load(fp)
-                            if old.get("transponder") == transponder and (
-                                old.get("speedhive_session") == sid or
-                                (old.get("data") == data_str and
-                                 old.get("ora", "")[:5] == ora[:5])):
-                                os.remove(old_path)
-                        except Exception:
-                            pass
-                    path = os.path.join(scouting_dir,
-                        "lap_speedhive_%s_s%d.json" % (ts, sid))
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(sessione, f, ensure_ascii=False, indent=2)
-                    saved.append((sessione, path, sid, len(giri_list)))
-
-                self.root.after(0, lambda: self._import_result(
-                    saved, status, transponder, data_str))
-
-            except Exception:
-                self.root.after(0, lambda: self._import_result(
-                    None, status, transponder, data_str))
-
-        threading.Thread(target=_fetch, daemon=True).start()
-
-    def _importa_speedhive_tutti(self, data_str):
-        """Importa TUTTE le sessioni SpeedHive di una pista in una data.
-        Scarica ogni transponder attivo quel giorno, senza bisogno di conoscerlo."""
-        c = self.c
-        speedhive_id = self._matched_pista["speedhive_id"]
-        pista_nome = self._matched_pista["nome"]
-
-        # Salva prefill (senza transponder/pilota)
-        self._scouting_prefill = {
-            "pilota": "", "pista": pista_nome,
-            "transponder": "", "serbatoio": "",
-        }
-
-        # Schermata di attesa
-        self._pulisci()
-        tk.Label(self.root, text="SPEEDHIVE IMPORT", bg=c["sfondo"],
-                 fg=c["cerca_testo"], font=self._f_title).pack(pady=(20, 10))
-        status = tk.Label(self.root,
-                 text="Ricerca TUTTI i piloti a %s in data %s..." % (pista_nome, data_str),
-                 bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_info)
-        status.pack(pady=10)
-        self.root.update_idletasks()
-
-        def _fetch_tutti():
-            try:
-                from speedhive_import import (cerca_tutte_attivita_per_data,
-                                              scarica_sessioni)
-                # Trova tutte le attivita' della data
-                attivita = cerca_tutte_attivita_per_data(speedhive_id, data_str)
-                if not attivita:
-                    self.root.after(0, lambda: self._import_result(
-                        None, status, "tutti", data_str))
-                    return
-
-                scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
-                os.makedirs(scouting_dir, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                saved = []
-                n_piloti = len(attivita)
-
-                # Aggiorna stato con numero piloti trovati
-                self.root.after(0, lambda: status.config(
-                    text="Trovati %d transponder, scarico sessioni..." % n_piloti)
-                    if status.winfo_exists() else None)
-
-                for idx, att in enumerate(attivita):
-                    aid = att["activity_id"]
-                    chip = att["chipCode"]
-                    label = att.get("chipLabel", "Pilota_%s" % chip[-4:])
-
-                    # Aggiorna stato per ogni pilota
-                    self.root.after(0, lambda l=label, i=idx: status.config(
-                        text="[%d/%d] Scarico %s..." % (i + 1, n_piloti, l))
-                        if status.winfo_exists() else None)
-
-                    # Scarica sessioni di questo transponder
-                    dati = scarica_sessioni(aid)
-                    if not dati or "sessions" not in dati:
-                        continue
-
-                    for sess in dati.get("sessions", []):
-                        laps = sess.get("laps", [])
-                        if not laps:
-                            continue
-                        sid = sess.get("id", 0)
-                        tempi = []
-                        giri_list = []
-                        for lap in laps:
-                            try:
-                                dur = float(lap.get("duration", 0))
-                            except (ValueError, TypeError):
-                                dur = 0
-                            if dur > 0:
-                                tempi.append(dur)
-                                giri_list.append({
-                                    "giro": len(giri_list) + 1,
-                                    "tempo": round(dur, 3),
-                                    "stato": "valido",
-                                })
-                        if not giri_list:
-                            continue
-
-                        # Ora inizio sessione
-                        dt_start = sess.get("dateTimeStart", "")
-                        try:
-                            from datetime import datetime as dt_cls
-                            dt_obj = dt_cls.fromisoformat(dt_start)
-                            ora = dt_obj.strftime("%H:%M:%S")
-                        except Exception:
-                            ora = dt_start[:8] if len(dt_start) >= 8 else "?"
-
-                        sessione = {
-                            "pilota": label,
-                            "setup": "SpeedHive - %s" % pista_nome,
-                            "data": data_str,
-                            "ora": ora,
-                            "tipo": "speedhive",
-                            "transponder": chip,
-                            "serbatoio_cc": 0,
-                            "sessione_carburante": False,
-                            "speedhive_session": sid,
-                            "speedhive_activity": aid,
-                            "num_giri": len(giri_list),
-                            "giri": giri_list,
-                            "miglior_tempo": round(min(tempi), 3),
-                            "media": round(sum(tempi) / len(tempi), 3),
-                            "tempo_totale": round(sum(tempi), 3),
-                        }
-                        # Inietta riferimenti setup se presenti
-                        for ck, cv in self.ctx.items():
-                            if ck.startswith("ref_") and cv:
-                                sessione[ck] = cv
-
-                        # Deduplica: stessa pista+data+transponder+session ID
-                        for old_f in os.listdir(scouting_dir):
-                            if not old_f.endswith(".json"):
-                                continue
-                            old_path = os.path.join(scouting_dir, old_f)
-                            try:
-                                with open(old_path, "r", encoding="utf-8") as fp:
-                                    old = json.load(fp)
-                                if (old.get("transponder") == chip and
-                                    old.get("data") == data_str and
-                                    old.get("speedhive_session") == sid):
-                                    os.remove(old_path)
-                            except Exception:
-                                pass
-
-                        path = os.path.join(scouting_dir,
-                            "lap_speedhive_%s_%s_s%d.json" % (ts, chip[-6:], sid))
-                        with open(path, "w", encoding="utf-8") as f:
-                            json.dump(sessione, f, ensure_ascii=False, indent=2)
-                        saved.append((sessione, path, sid, len(giri_list)))
-
-                self.root.after(0, lambda: self._import_result(
-                    saved, status, "%d piloti" % n_piloti, data_str))
-
-            except Exception:
-                self.root.after(0, lambda: self._import_result(
-                    None, status, "tutti", data_str))
-
-        threading.Thread(target=_fetch_tutti, daemon=True).start()
 
     def _import_result(self, saved, status_label, transponder, data_str):
         """Mostra risultato import e apre TUTTI I TEMPI."""
