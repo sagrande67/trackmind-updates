@@ -2484,8 +2484,14 @@ class Crono:
                 # Chi ha fatto piu' giri nel minor tempo totale
                 ss.sort(key=lambda s: (-s["n_giri"], s["cumul"][-1] if s["cumul"] else 0))
             else:
-                # Chi ha i migliori tempi (best lap, poi media), giri irrilevanti
-                ss.sort(key=lambda s: (s["best"] if s["best"] > 0 else 9999, s["media"]))
+                # PROVE: conta lo STINT (passo gara), non il singolo giro:
+                # un best-lap isolato puo' essere un taglio pista, mentre la
+                # media del passo dice chi ha tenuto piu' velocita' su tutto
+                # il run. Ordine per media ascendente (piu' veloce prima),
+                # poi best come tiebreaker. Cosi' la sessione #1 coincide
+                # davvero con la curva piu' bassa del grafico cumulativo.
+                ss.sort(key=lambda s: (s["media"] if s["media"] > 0 else 9999,
+                                        s["best"] if s["best"] > 0 else 9999))
             return ss
 
         sessioni_sel = _ordina_sessioni(self._grafico_modo)
