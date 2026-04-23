@@ -144,13 +144,17 @@ except ImportError:
 
 # Analizza Tempi: gestito dal modulo Crono
 
-# Updater (aggiornamento software)
+# Updater (aggiornamento software).
+# NB: le funzioni di BUILD (prepara_aggiornamento, prepara_aggiornamento_github,
+# get_app_files_full, _trova_unita_usb) non servono piu' qui dentro perche'
+# il tool di pubblicazione e' stato spostato in dev/pubblica.py.
+# Qui importiamo solo le funzioni di CLIENT (applica un aggiornamento
+# scaricato): cerca_aggiornamento_usb, verifica_aggiornamento,
+# applica_aggiornamento, controlla_aggiornamento_github, ecc.
 try:
-    from updater import (prepara_aggiornamento, prepara_aggiornamento_github,
-                         cerca_aggiornamento_usb,
+    from updater import (cerca_aggiornamento_usb,
                          verifica_aggiornamento, applica_aggiornamento,
-                         riavvia_app, get_app_files, get_app_files_full,
-                         _trova_unita_usb,
+                         riavvia_app, get_app_files,
                          controlla_aggiornamento_github,
                          scarica_aggiornamento_github)
     _HAS_UPDATER = True
@@ -1948,16 +1952,10 @@ class RetroDBApp:
             _bb.append(_mkb(btn_grid, "HOTSPOT", self._schermata_hotspot))
             if _HAS_UPDATER:
                 _bb.append(_mkb(btn_grid, "AGGIORNA", self._schermata_aggiorna))
-                # PREPARA serve solo al confezionamento pacchetti di aggiornamento:
-                # operazione da sviluppatore (Windows o Linux Mint su x86_64).
-                # La uConsole e' ARM (aarch64/armv7l): e' una macchina di uso sul
-                # campo, non di build -> su quella il pulsante viene nascosto.
-                import platform as _plat
-                _arch = (_plat.machine() or "").lower()
-                _is_uconsole = _arch.startswith("aarch64") or _arch.startswith("arm")
-                if not _is_uconsole:
-                    _bb.append(_mkb(btn_grid, "PREPARA",
-                                    self._schermata_prepara_aggiornamento))
+                # Nota: il bottone PREPARA (confezionamento pacchetti di
+                # aggiornamento) e' stato spostato in dev/pubblica.py
+                # (tool standalone per sviluppatore). Sulla uConsole non
+                # serve: e' una macchina di uso sul campo, non di build.
 
         # Bottone CRONO scouting (solo se almeno un .def ha !crono;vero)
         _ha_crono = False
@@ -3254,270 +3252,6 @@ class RetroDBApp:
         else:
             self._upd_status.config(text=msg, fg=c["stato_errore"])
 
-    def _schermata_prepara_aggiornamento(self):
-        """Prepara zip aggiornamento su USB (lato sviluppatore)."""
-        self._pulisci(); c = carica_colori()
-
-        header = tk.Frame(self._vista, bg=c["sfondo"])
-        header.pack(fill="x", padx=_S(10), pady=(_S(6), 0))
-        tk.Button(header, text="< MENU", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._schermata_menu).pack(side="left")
-        tk.Label(header, text="  PREPARA AGGIORNAMENTO v%s" % APP_VERSION, bg=c["sfondo"],
-                 fg=c["dati"], font=self._f_title).pack(side="left", padx=(_S(8), 0))
-
-        tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(4), _S(4)))
-
-        # File che verranno inclusi (root + addons/ + core/)
-        base = self._get_base()
-        files_map = get_app_files_full(base)
-        # Ordina: prima root, poi addons, poi core; e dentro ogni gruppo
-        # in ordine alfabetico.
-        _ord_cart = {"root": 0, "addons": 1, "core": 2, "tabelle": 3}
-        files_ord = sorted(
-            files_map.items(),
-            key=lambda kv: (_ord_cart.get(kv[1], 9), kv[0]))
-
-        tk.Label(self._vista, text="File inclusi nello zip:", bg=c["sfondo"],
-                 fg=c["label"], font=self._f_label).pack(anchor="w", padx=_S(10), pady=(_S(4), _S(2)))
-
-        file_frame = tk.Frame(self._vista, bg=c["sfondo"])
-        file_frame.pack(fill="x", padx=_S(10))
-        file_list = tk.Listbox(file_frame, font=self._f_list, height=8,
-                                bg=c["sfondo_celle"], fg=c["dati"],
-                                highlightthickness=1, highlightbackground=c["bordo_vuote"],
-                                relief="flat")
-        file_list.pack(side="left", fill="x", expand=True)
-        # Mostra il file con la sua cartella logica per chiarezza
-        for nome, cart in files_ord:
-            if cart == "root":
-                full_path = os.path.join(base, nome)
-                etichetta = nome
-            else:
-                full_path = os.path.join(base, cart, nome)
-                etichetta = "%s/%s" % (cart, nome)
-            try:
-                size = os.path.getsize(full_path) // 1024
-            except OSError:
-                size = 0
-            file_list.insert("end", "  %s  (%d KB)" % (etichetta, size))
-        # Salvo per usarlo nello status sotto
-        self._prep_files_count = len(files_map)
-
-        tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(4), _S(4)))
-
-        # Destinazione: USB trovate
-        tk.Label(self._vista, text="Destinazione:", bg=c["sfondo"],
-                 fg=c["label"], font=self._f_label).pack(anchor="w", padx=_S(10), pady=(_S(4), _S(2)))
-
-        dest_frame = tk.Frame(self._vista, bg=c["sfondo"])
-        dest_frame.pack(fill="x", padx=_S(10))
-        self._prep_dest_lb = tk.Listbox(dest_frame, font=self._f_list, height=4,
-                                         bg=c["sfondo_celle"], fg=c["dati"],
-                                         selectbackground=c["cursore"], selectforeground=c["testo_cursore"],
-                                         highlightthickness=1, highlightbackground=c["bordo_vuote"],
-                                         relief="flat", exportselection=False)
-        self._prep_dest_lb.pack(side="left", fill="x", expand=True)
-
-        self._prep_unita = _trova_unita_usb()
-        # Aggiungi anche la cartella locale come opzione
-        self._prep_unita.append({"path": base, "label": "LOCALE (cartella progetto)"})
-        for u in self._prep_unita:
-            self._prep_dest_lb.insert("end", "  %s  [%s]" % (u["label"], u["path"]))
-        if self._prep_unita:
-            self._prep_dest_lb.selection_set(0)
-
-        tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(4), _S(4)))
-
-        self._prep_status = tk.Label(self._vista, text="%d file pronti (root + addons + core + tabelle) - seleziona destinazione e premi CREA" % self._prep_files_count,
-                                      bg=c["sfondo"], fg=c["testo_dim"], font=self._f_label)
-        self._prep_status.pack(pady=(_S(4), _S(4)))
-
-        # Bottone
-        bar = tk.Frame(self._vista, bg=c["sfondo"])
-        bar.pack(pady=(_S(4), _S(4)))
-
-        btn_crea = tk.Button(bar, text="CREA ZIP", font=self._f_btn, width=_S(14),
-                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._esegui_prepara_aggiornamento)
-        btn_crea.pack(side="left", padx=_S(3))
-
-        btn_github = tk.Button(bar, text="PUBBLICA GITHUB", font=self._f_btn, width=_S(16),
-                  bg=c["pulsanti_sfondo"], fg=c["dati"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._esegui_prepara_github)
-        btn_github.pack(side="left", padx=_S(3))
-        self._kb_setup_bottoni([btn_crea, btn_github], orizzontale=True)
-
-        self.root.bind("<Escape>", lambda e: self._schermata_menu())
-        self._rimuovi_coperta()
-
-    def _esegui_prepara_aggiornamento(self):
-        """Crea lo zip di aggiornamento."""
-        c = carica_colori()
-        sel = self._prep_dest_lb.curselection()
-        if not sel or not self._prep_unita:
-            self._prep_status.config(text="Seleziona una destinazione!", fg=c["stato_avviso"])
-            return
-
-        dest = self._prep_unita[sel[0]]["path"]
-        base = self._get_base()
-
-        self._prep_status.config(text="Creazione zip...", fg=c["testo_dim"])
-        self.root.update()
-
-        ok, msg, zip_path = prepara_aggiornamento(dest, APP_VERSION, base)
-        if ok:
-            self._prep_status.config(text="Creato: %s" % msg, fg=c["stato_ok"])
-        else:
-            self._prep_status.config(text=msg, fg=c["stato_errore"])
-
-    def _esegui_prepara_github(self):
-        """Copia i file nella cartella del repository GitHub locale.
-
-        Legge il percorso dalla chiave `github_repo_dir` di conf.dat
-        (configurabile dalla tabella CONFI, sezione Percorsi). Se quella
-        cartella esiste ed e' valida, la usa subito senza chiedere nulla.
-        Se non e' valorizzata o non esiste, apre il filedialog come
-        fallback e salva la scelta in conf.dat.
-
-        Scrive version.json + tutti i file nella struttura attesa dal
-        canale GitHub. L'utente dopo fa git add + commit + push.
-        """
-        c = carica_colori()
-        base = self._get_base()
-
-        # 1) Prova a usare il path gia' configurato in conf.dat
-        dest = (self.conf.get("github_repo_dir") or "").strip()
-        if dest and os.path.isdir(dest):
-            # Path valido: procedi diretto
-            pass
-        else:
-            # 2) Fallback: filedialog per sceglierlo (solo la prima volta
-            #    o se l'utente ha cancellato la cartella precedente).
-            if dest:
-                self._prep_status.config(
-                    text="Percorso '%s' non valido, seleziona la cartella..." % dest,
-                    fg=c["stato_avviso"])
-                self.root.update()
-            init_dir = dest if dest else os.path.expanduser("~")
-            dest = _filedialog.askdirectory(
-                parent=self.root,
-                title="Seleziona la cartella del repository GitHub (locale)",
-                initialdir=init_dir,
-                mustexist=True)
-            if not dest:
-                self._prep_status.config(text="Annullato.", fg=c["testo_dim"])
-                return
-            # Salva subito in conf.dat cosi' la prossima volta non chiede piu'
-            try:
-                self.conf["github_repo_dir"] = dest
-                salva_conf(self.conf)
-            except Exception:
-                pass
-
-        # Sicurezza: non permettere di usare la cartella del progetto stesso
-        # come destinazione (sovrascriverebbe i file che stai modificando)
-        try:
-            if os.path.normcase(os.path.abspath(dest)) == os.path.normcase(os.path.abspath(base)):
-                self._prep_status.config(
-                    text="La cartella destinazione non puo' essere la cartella del progetto!",
-                    fg=c["stato_errore"])
-                return
-        except Exception:
-            pass
-
-        # Sicurezza: verifica che dest sia un vero repo git (.git/ presente)
-        # PRIMA di copiare. Se non lo e', probabilmente l'utente ha puntato
-        # a una cartella sbagliata (es. 'dev' invece di 'dev/trackmind-updates'):
-        # copiare li' produrrebbe solo file sparsi fuori posto.
-        if not os.path.isdir(os.path.join(dest, ".git")):
-            self._prep_status.config(
-                text="'%s' NON e' un repo git (manca .git/). Clona prima 'trackmind-updates' e correggi github_repo_dir in CONFI." % dest,
-                fg=c["stato_errore"])
-            return
-
-        self._prep_status.config(text="Copia in corso verso %s..." % dest,
-                                  fg=c["testo_dim"])
-        self.root.update()
-
-        ok, msg, _ = prepara_aggiornamento_github(dest, APP_VERSION, base)
-        if not ok:
-            self._prep_status.config(text=msg, fg=c["stato_errore"])
-            return
-
-        # Ricorda la cartella per le prossime volte
-        try:
-            self.conf["github_repo_dir"] = dest
-            salva_conf(self.conf)
-        except Exception:
-            pass
-
-        # Dopo la copia, pubblica davvero: git add + commit + push.
-        # Se git non e' configurato o manca la rete, segnaliamo chiaramente
-        # all'utente senza rompere nulla (i file sono gia' nel repo locale).
-        self._prep_status.config(
-            text="File copiati. Eseguo git add/commit/push...",
-            fg=c["testo_dim"])
-        self.root.update()
-
-        git_ok, git_msg = self._git_push_repo(dest, APP_VERSION)
-        if git_ok:
-            self._prep_status.config(
-                text="PUBBLICATO su GitHub: v%s - %s" % (APP_VERSION, git_msg),
-                fg=c["stato_ok"])
-        else:
-            self._prep_status.config(
-                text="File nel repo OK, push FALLITO: %s" % git_msg,
-                fg=c["stato_avviso"])
-
-    def _git_push_repo(self, repo_dir, app_version):
-        """Esegue git add/commit/push sul repo locale trackmind-updates.
-
-        Ritorna (successo: bool, messaggio: str). Non solleva eccezioni:
-        qualunque errore viene incapsulato nel messaggio, cosi' il chiamante
-        puo' mostrarlo nella status bar senza crash.
-        """
-        import subprocess as _sp
-        try:
-            if not os.path.isdir(os.path.join(repo_dir, ".git")):
-                return False, "non e' un repo git (manca .git/)"
-
-            # git add .
-            r = _sp.run(["git", "-C", repo_dir, "add", "."],
-                        capture_output=True, text=True, timeout=30)
-            if r.returncode != 0:
-                return False, "git add: %s" % (r.stderr.strip()[:120] or "errore")
-
-            # Controlla se ci sono modifiche da committare
-            r = _sp.run(["git", "-C", repo_dir, "status", "--porcelain"],
-                        capture_output=True, text=True, timeout=30)
-            if r.returncode == 0 and not r.stdout.strip():
-                return True, "nessuna modifica (gia' pubblicato)"
-
-            # git commit
-            msg_commit = "Release v%s" % app_version
-            r = _sp.run(["git", "-C", repo_dir, "commit", "-m", msg_commit],
-                        capture_output=True, text=True, timeout=30)
-            if r.returncode != 0:
-                return False, "git commit: %s" % (r.stderr.strip()[:120] or "errore")
-
-            # git push
-            r = _sp.run(["git", "-C", repo_dir, "push"],
-                        capture_output=True, text=True, timeout=60)
-            if r.returncode != 0:
-                stderr_short = (r.stderr.strip() or r.stdout.strip())[:160]
-                return False, "git push: %s" % (stderr_short or "errore")
-
-            return True, "commit + push eseguiti"
-        except FileNotFoundError:
-            return False, "git non installato"
-        except _sp.TimeoutExpired:
-            return False, "timeout (connessione lenta?)"
-        except Exception as e:
-            return False, "errore: %s" % e
 
     # =========================================================================
     #  BACKUP E RIPRISTINO
