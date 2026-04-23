@@ -565,6 +565,12 @@ def attiva_licenza(conf, chiave_inserita):
     conf["chiave_attivazione"] = chiave_inserita
     conf["codice_macchina"] = codice_macchina
     conf["data_fine_licenza"] = data_decodificata
+    # Reset degli eventuali flag di revoca: una ri-attivazione deve
+    # davvero ripristinare l'accesso. Senza questi due reset, il
+    # client rifiuterebbe ancora il login per 'licenza_revocata'
+    # anche dopo aver reinserito una chiave valida.
+    conf["licenza_revocata"] = ""
+    conf["motivo_revoca"] = ""
     salva_conf(conf)
     if data_decodificata == "2099-12-31":
         return True, "Attivazione completata! Licenza illimitata"
