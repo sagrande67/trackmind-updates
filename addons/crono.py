@@ -1008,10 +1008,30 @@ class Crono:
                 # Visibile se: pista matchata + (data O transponder)
                 should_show = has_pista and (data or (has_shid and transp))
                 if should_show and not self._speedhive_live_visible:
-                    self._btn_speedhive_live.pack(side="left", padx=4)
+                    # Pack PRIMA di CRONOMETRO cosi' RICERCA appare a
+                    # sinistra, che e' l'azione naturale dopo aver
+                    # compilato pista+data.
+                    self._btn_speedhive_live.pack(
+                        side="left", padx=4, before=self._btn_crono_man)
+                    # Disabilita takefocus su CRONOMETRO cosi' TAB
+                    # dall'ultimo campo del form salta CRONOMETRO e va
+                    # direttamente a RICERCA (tk_focusNext() rispetta
+                    # takefocus=0 e salta il widget). CRONOMETRO resta
+                    # cliccabile col mouse.
+                    try:
+                        self._btn_crono_man.config(takefocus=0)
+                    except Exception:
+                        pass
                     self._speedhive_live_visible = True
                 elif not should_show and self._speedhive_live_visible:
                     self._btn_speedhive_live.pack_forget()
+                    # Ripristina takefocus su CRONOMETRO: adesso il
+                    # TAB dai campi deve tornare a lui come default
+                    # (RICERCA non e' piu' disponibile).
+                    try:
+                        self._btn_crono_man.config(takefocus=1)
+                    except Exception:
+                        pass
                     self._speedhive_live_visible = False
 
             # ── AUTO-DOWNLOAD: quando pista + data sono pronti ──
