@@ -338,9 +338,12 @@ class Crono:
                   "<plus>", "<equal>", "<minus>",
                   "<KP_Add>", "<KP_Subtract>", "<0>",
                   "<e>", "<p>", "<v>", "<a>", "<s>",
-                  "<l>", "<L>", "<g>", "<G>", "<P>"):
+                  "<l>", "<L>", "<g>", "<G>", "<P>",
+                  "<space>", "<r>", "<R>"):
             try: self._top.unbind(k)
             except: pass
+        # Ferma animazione Ghost se attiva
+        self._ghost_running = False
 
     def _chiudi(self):
         if self._on_close:
@@ -2053,6 +2056,7 @@ class Crono:
             ("RIVEDI", 10, c["pulsanti_testo"], self._rivedi_tutti),
             ("SEL.DATA\nA", 10, c["pulsanti_testo"], self._seleziona_stessa_data),
             ("GRAFICO", 10, c["stato_avviso"], self._schermata_grafico),
+            ("GHOST", 10, c["stato_ok"], self._schermata_ghost_race),
             ("ANALISI IA", 12, c["cerca_testo"], self._analisi_giornata),
             ("ALIAS", 8, c["stato_avviso"], self._alias_pilota),
             ("ELIMINA", 10, c["stato_errore"], self._elimina_tutti),
@@ -2064,7 +2068,7 @@ class Crono:
                           cursor="hand2", command=cmd)
             b.pack(side="left", padx=3)
             self._at_btns.append(b)
-        self._btn_analisi = self._at_btns[3]  # riferimento per flash
+        self._btn_analisi = self._at_btns[4]  # riferimento per flash (index spostato +1 dopo bottone GHOST)
 
         # Frecce sx/dx tra bottoni, TAB dall'ultimo -> CERCA
         for i, b in enumerate(self._at_btns):
@@ -2164,8 +2168,344 @@ class Crono:
         self._at_search_entry.bindtags((str(self._at_search_entry), ) + tuple(t for t in tags_s if t != str(self._at_search_entry)))
         self._top.bind("<Escape>", lambda e: back_cmd())
 
-    def _seleziona_stessa_data(self):
-        """Seleziona sessioni con stessa data + pilota, salta quelle con 3 giri o meno."""
+    # =================================================================
+    #  GHOST RACE - Animazione overlay gara delle sessioni selezionate
+    # =================================================================
+    def _schermata_ghost_race(self):
+        """Replay animato in stile F1-TV delle sessioni selezionate:
+        barre orizzontali che avanzano in tempo scalato, leader sempre
+        in alto, visibilita' dei sorpassi in tempo reale.
+        Richiede almeno 2 sessioni selezionate."""
+        sel = self._at.selection()
+        if len(sel) < 2:
+            if hasattr(self, "_tutti_status"):
+                try:
+                    self._tutti_status.config(
+                        text="Seleziona almeno 2 sessioni per GHOST RACE!",
+                        fg=self.c["stato_errore"])
+                except Exception:
+                    pass
+            return
+
+        # Estrai sessioni con giri validi
+        sessioni = []
+        for iid in sel:
+            try:
+                idx = int(iid)
+            except (ValueError, TypeError):
+                continue
+            if not (0 <= idx < len(self._tutti_sessioni)):
+                continue
+            s = self._tutti_sessioni[idx]
+            validi = [g for g in s.get("giri", [])
+                       if g.get("stato") == "valido"
+                       and g.get("tempo", 0) > 0]
+            if not validi:
+                continue
+            tempi = [g["tempo"] for g in validi]
+            # Cumulativi pre-calcolati per _laps_at_time
+            cumul = []
+            tot = 0.0
+            for t in tempi:
+                tot += t
+                cumul.append(tot)
+            sessioni.append({
+                "pilota": (s.get("pilota") or "?")[:14],
+                "data": s.get("data", ""),
+                "tempi": tempi,
+                "cumul": cumul,
+                "total_time": tot,
+                "total_laps": len(tempi),
+                "best": min(tempi),
+            })
+
+        if len(sessioni) < 2:
+            if hasattr(self, "_tutti_status"):
+                try:
+                    self._tutti_status.config(
+                        text="Servono almeno 2 sessioni con giri validi.",
+                        fg=self.c["stato_errore"])
+                except Exception:
+                    pass
+            return
+
+        # Salva selezione per il ritorno
+        self._saved_selection = list(sel)
+        self._saved_focus = self._at.focus()
+
+        # Assegna colore stabile per indice
+        for i, ss in enumerate(sessioni):
+            ss["color"] = self._GRAPH_COLORS[i % len(self._GRAPH_COLORS)]
+
+        self._ghost_sessioni = sessioni
+        # Tempo massimo = il pilota che ha girato piu' a lungo
+        self._ghost_max_time = max(ss["total_time"] for ss in sessioni)
+        self._ghost_t = 0.0
+        self._ghost_speed = 10.0        # 10x realtime default
+        self._ghost_paused = False
+        self._ghost_prev_order = None   # per highlight sorpassi
+        self._ghost_flash = {}          # pilot_idx -> frame counter di flash
+
+        self._pulisci()
+        c = self.c
+
+        # Header
+        header = tk.Frame(self.root, bg=c["sfondo"])
+        header.pack(fill="x", padx=10, pady=(6, 0))
+        tk.Button(header, text="< TEMPI", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._ghost_esci).pack(side="left")
+        tk.Label(header,
+                 text="  GHOST RACE  |  %d piloti in pista" % len(sessioni),
+                 bg=c["sfondo"], fg=c["dati"],
+                 font=self._f_title).pack(side="left", padx=(8, 0))
+
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(
+            fill="x", padx=10, pady=(4, 4))
+
+        # Canvas grande per l'animazione
+        self._ghost_canvas = tk.Canvas(self.root, bg=c["sfondo"],
+                                        highlightthickness=0, bd=0)
+        self._ghost_canvas.pack(fill="both", expand=True,
+                                 padx=6, pady=(0, 4))
+
+        # Status bar con controlli
+        self._ghost_status = self._status_label(self.root,
+            "SPAZIO = pausa  |  +/- velocita'  |  R = riavvolgi  |  ESC = esci")
+
+        # Bindings
+        self._top.bind("<space>", lambda e: self._ghost_toggle_pause())
+        self._top.bind("<Escape>", lambda e: self._ghost_esci())
+        self._top.bind("<plus>", lambda e: self._ghost_speed_up())
+        self._top.bind("<equal>", lambda e: self._ghost_speed_up())
+        self._top.bind("<KP_Add>", lambda e: self._ghost_speed_up())
+        self._top.bind("<minus>", lambda e: self._ghost_speed_down())
+        self._top.bind("<KP_Subtract>", lambda e: self._ghost_speed_down())
+        self._top.bind("<r>", lambda e: self._ghost_rewind())
+        self._top.bind("<R>", lambda e: self._ghost_rewind())
+
+        self._ghost_running = True
+        self._ghost_loop()
+
+    # --- helpers Ghost Race ---
+    def _ghost_laps_at_time(self, sess, t):
+        """Ritorna il numero di giri (float) completati dal pilota
+        al tempo t. Interpola nel giro in corso."""
+        if t <= 0:
+            return 0.0
+        cumul = sess["cumul"]
+        tempi = sess["tempi"]
+        if t >= cumul[-1]:
+            return float(len(tempi))
+        # Binary search non serve: i dataset sono piccoli (decine di giri)
+        prev = 0.0
+        for i, ct in enumerate(cumul):
+            if ct >= t:
+                frac = (t - prev) / tempi[i] if tempi[i] > 0 else 0
+                return float(i) + frac
+            prev = ct
+        return float(len(tempi))
+
+    def _ghost_toggle_pause(self):
+        self._ghost_paused = not self._ghost_paused
+        try:
+            stato = "PAUSA" if self._ghost_paused else "PLAY"
+            self._ghost_status.config(
+                text="%s  |  SPAZIO pausa  +/- velocita' (%.1fx)  R riavvolgi  ESC esci"
+                     % (stato, self._ghost_speed),
+                fg=self.c["stato_avviso"] if self._ghost_paused else self.c["stato_ok"])
+        except Exception:
+            pass
+
+    def _ghost_speed_up(self):
+        self._ghost_speed = min(100.0, self._ghost_speed * 1.5)
+        self._ghost_aggiorna_status()
+
+    def _ghost_speed_down(self):
+        self._ghost_speed = max(0.5, self._ghost_speed / 1.5)
+        self._ghost_aggiorna_status()
+
+    def _ghost_rewind(self):
+        self._ghost_t = 0.0
+        self._ghost_prev_order = None
+
+    def _ghost_aggiorna_status(self):
+        try:
+            stato = "PAUSA" if self._ghost_paused else "PLAY"
+            self._ghost_status.config(
+                text="%s  |  SPAZIO pausa  +/- velocita' (%.1fx)  R riavvolgi  ESC esci"
+                     % (stato, self._ghost_speed))
+        except Exception:
+            pass
+
+    def _ghost_esci(self):
+        self._ghost_running = False
+        try:
+            self._top.unbind("<space>")
+            self._top.unbind("<plus>")
+            self._top.unbind("<equal>")
+            self._top.unbind("<KP_Add>")
+            self._top.unbind("<minus>")
+            self._top.unbind("<KP_Subtract>")
+            self._top.unbind("<r>")
+            self._top.unbind("<R>")
+        except Exception:
+            pass
+        self._tempi_on_close()
+
+    def _ghost_loop(self):
+        """Loop animazione: avanza _ghost_t e ridisegna."""
+        if not getattr(self, "_ghost_running", False):
+            return
+        try:
+            if not self._ghost_canvas.winfo_exists():
+                return
+        except (tk.TclError, Exception):
+            return
+
+        # Avanza tempo sim (30 fps)
+        dt = 0.033
+        if not self._ghost_paused:
+            self._ghost_t += dt * self._ghost_speed
+            if self._ghost_t >= self._ghost_max_time:
+                self._ghost_t = self._ghost_max_time
+                self._ghost_paused = True  # auto-pause a fine gara
+                self._ghost_aggiorna_status()
+
+        self._ghost_draw()
+        try:
+            self.root.after(33, self._ghost_loop)
+        except Exception:
+            pass
+
+    def _ghost_draw(self):
+        """Disegna frame corrente: barre orizzontali ordinate, leader in alto."""
+        canvas = self._ghost_canvas
+        c = self.c
+        canvas.delete("all")
+        W = canvas.winfo_width()
+        H = canvas.winfo_height()
+        if W < 100 or H < 100:
+            return
+
+        # Calcola posizione corrente di ogni pilota
+        posizioni = []
+        for i, sess in enumerate(self._ghost_sessioni):
+            laps = self._ghost_laps_at_time(sess, self._ghost_t)
+            posizioni.append({"idx": i, "sess": sess, "laps": laps})
+        posizioni.sort(key=lambda p: -p["laps"])
+
+        # Detecta sorpassi: confronta con ordine precedente
+        nuovo_ordine = tuple(p["idx"] for p in posizioni)
+        if self._ghost_prev_order is not None:
+            for pos, idx in enumerate(nuovo_ordine):
+                try:
+                    vecchia_pos = self._ghost_prev_order.index(idx)
+                except ValueError:
+                    continue
+                if pos < vecchia_pos:
+                    # Ha guadagnato posizioni -> flash per ~10 frame
+                    self._ghost_flash[idx] = 10
+        self._ghost_prev_order = nuovo_ordine
+
+        # Header grande: tempo corrente
+        t_min = int(self._ghost_t) // 60
+        t_sec = self._ghost_t - t_min * 60
+        tempo_str = "%02d:%05.2f" % (t_min, t_sec)
+        pct = int(100.0 * self._ghost_t / self._ghost_max_time) \
+            if self._ghost_max_time > 0 else 100
+        canvas.create_text(W // 2, 24, text=tempo_str,
+                            fill=c["dati"],
+                            font=(FONT_MONO, 28, "bold"),
+                            anchor="center")
+        canvas.create_text(W // 2, 54, text="gara: %d%%  (x%.1f)"
+                            % (pct, self._ghost_speed),
+                            fill=c["testo_dim"],
+                            font=(FONT_MONO, 10))
+
+        # Righe piloti
+        leader_laps = posizioni[0]["laps"]
+        if leader_laps < 0.1:
+            leader_laps = 0.1
+
+        top_y = 78
+        bottom_margin = 20
+        n = len(posizioni)
+        avail_h = H - top_y - bottom_margin
+        row_h = min(70, max(36, avail_h // n))
+        bar_left = 200
+        bar_right = W - 180
+        bar_width = max(100, bar_right - bar_left)
+
+        for rank, p in enumerate(posizioni):
+            y = top_y + rank * row_h + 2
+            sess = p["sess"]
+            laps = p["laps"]
+            color = sess["color"]
+            idx = p["idx"]
+
+            # Flash giallo se ha appena sorpassato
+            flash_count = self._ghost_flash.get(idx, 0)
+            if flash_count > 0:
+                self._ghost_flash[idx] = flash_count - 1
+                border = c["stato_avviso"]  # giallo
+                border_w = 3
+            else:
+                border = color
+                border_w = 1
+
+            # Posizione + nome a sx
+            etichetta = "%d. %s" % (rank + 1, sess["pilota"])
+            canvas.create_text(10, y + row_h // 2,
+                                text=etichetta,
+                                fill=color,
+                                font=(FONT_MONO, 13, "bold"),
+                                anchor="w")
+
+            # Barra
+            bar_len = int((laps / leader_laps) * bar_width)
+            if bar_len < 2:
+                bar_len = 2
+            # Sfondo barra (pista)
+            canvas.create_rectangle(bar_left, y + 4,
+                                     bar_left + bar_width, y + row_h - 4,
+                                     outline=c["linee"], fill=c["sfondo_celle"])
+            # Barra progresso
+            canvas.create_rectangle(bar_left, y + 4,
+                                     bar_left + bar_len, y + row_h - 4,
+                                     outline=border, fill=color,
+                                     width=border_w)
+
+            # Testo gap/giri a dx
+            giri_int = int(laps)
+            if rank == 0:
+                # Leader: numero giri grande + LEADER
+                gap_str = "%d giri   LEADER" % giri_int
+            else:
+                # Differenza: tempo indietro rispetto al leader
+                gap_laps = leader_laps - laps
+                # Stima gap in secondi usando la media dei tempi del leader
+                leader_sess = posizioni[0]["sess"]
+                avg_leader = (leader_sess["total_time"]
+                               / leader_sess["total_laps"]) if leader_sess["total_laps"] else 0
+                gap_sec = gap_laps * avg_leader
+                gap_str = "%d giri   -%d.%02d s" % (
+                    giri_int, int(gap_sec), int((gap_sec * 100) % 100))
+            canvas.create_text(W - 10, y + row_h // 2, text=gap_str,
+                                fill=c["dati"],
+                                font=(FONT_MONO, 11), anchor="e")
+
+        # Bar progresso gara in basso
+        bar_y = H - 10
+        canvas.create_line(20, bar_y, W - 20, bar_y,
+                            fill=c["linee"], width=1)
+        if self._ghost_max_time > 0:
+            fx = 20 + int((W - 40) * (self._ghost_t / self._ghost_max_time))
+            canvas.create_line(20, bar_y, fx, bar_y,
+                                fill=c["stato_ok"], width=3)
+            canvas.create_oval(fx - 4, bar_y - 4, fx + 4, bar_y + 4,
+                                fill=c["stato_ok"], outline=c["stato_ok"])
         MIN_GIRI = 4  # salta solo sessioni brevissime (1-3 giri)
         focused = self._at.focus()
         if not focused:
