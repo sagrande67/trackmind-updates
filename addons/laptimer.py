@@ -250,6 +250,8 @@ class LapTimer:
         self._live_banner = None
         self._live_mapping = {}
         self._live_connecting = False  # True durante lo scan/connect
+        self._live_last_order = None   # cache ordine colonne (perf)
+        self._live_prev_passo_pending = False  # debounce flag
 
         # Saltiamo la schermata di scelta carburante: non serve piu'.
         # Se in futuro serve, si puo' memorizzare come campo IA nel
@@ -1137,8 +1139,10 @@ class LapTimer:
 
         self._live_aggiorna_colonna(pilot_num)
         self._live_riordina_colonne()
-        # Aggiorna pannelli laterali (previsione + passo)
-        self._live_aggiorna_prev_passo()
+        # Pannelli laterali aggiornati in modo debounced (max 1/800ms)
+        # per evitare micro-freeze su uConsole quando arrivano passaggi
+        # fitti in rapida successione.
+        self._live_aggiorna_prev_passo_debounced()
 
     # Larghezza fissa colonna pilota in px (abbastanza per 10 char
     # monospace a 12pt circa). Cosi' con 1 pilota la colonna resta
@@ -1276,7 +1280,10 @@ class LapTimer:
     def _live_riordina_colonne(self):
         """Ordina colonne per GARA: piu' giri prima; se parita',
         tempo totale minore. Leader sempre a sinistra.
-        Usa pack_forget + re-pack in ordine per spostare le colonne."""
+        Usa pack_forget + re-pack in ordine per spostare le colonne.
+        OTTIMIZZAZIONE: se l'ordine non e' cambiato dall'ultima volta,
+        skippa il re-pack (costoso su uConsole ARM: provoca layout
+        reflow visibile come micro-freeze ad ogni giro)."""
         def _sort_key(item):
             pid, d = item
             validi = [l for l in d["laps"]
@@ -1286,6 +1293,13 @@ class LapTimer:
             return (-n, tot)
 
         ordered = sorted(self._live_pilots.items(), key=_sort_key)
+        ordered_ids = tuple(pid for pid, _ in ordered)
+        # Skip se l'ordine non e' cambiato (caso piu' frequente: giro
+        # successivo del leader che resta leader)
+        if getattr(self, "_live_last_order", None) == ordered_ids:
+            return
+        self._live_last_order = ordered_ids
+
         # pack_forget su tutti, poi ri-pack a side="left" nell'ordine
         # corretto: la prima packata va piu' a sinistra.
         for pid, col in self._live_columns.items():
@@ -1300,6 +1314,28 @@ class LapTimer:
                     col.pack(side="left", fill="y", padx=2, pady=2)
                 except Exception:
                     pass
+
+    def _live_aggiorna_prev_passo_debounced(self):
+        """Throttle per i pannelli laterali: al massimo un refresh ogni
+        800ms. Evita di ricostruire i Text widget di PREVISIONE+PASSO
+        ad ogni giro quando i passaggi arrivano fitti (es. piloti
+        veloci con tempi 20s su pista piccola = molti giri/minuto
+        cumulati tra tutti i piloti). Su uConsole ARM il rebuild
+        dei due Text e' visibile come micro-freeze."""
+        if getattr(self, "_live_prev_passo_pending", False):
+            return
+        self._live_prev_passo_pending = True
+        try:
+            self.root.after(800, self._live_prev_passo_flush)
+        except Exception:
+            self._live_prev_passo_pending = False
+
+    def _live_prev_passo_flush(self):
+        self._live_prev_passo_pending = False
+        try:
+            self._live_aggiorna_prev_passo()
+        except Exception:
+            pass
 
     def _live_entra_analisi(self):
         """Primo ESC in LIVE+RUNNING: ferma il ricevitore BLE ma tiene
