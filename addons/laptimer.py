@@ -61,6 +61,78 @@ except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
 
+# LapMonitor BLE (opzionale): import protetto. Se bleak o il modulo
+# mancano, LapTimer gira in modalita' manuale mono-pilota come sempre.
+# Se bleak c'e', all'ingresso della schermata cronometro viene lanciato
+# uno scan BLE in background (5s): se trova un dispositivo 'LapM*' si
+# connette automaticamente e passa a modalita' LIVE multi-pilota.
+try:
+    from core.lapmonitor import (LapMonitorClient, scan_devices_async,
+                                 _HAS_BLEAK)
+    _HAS_LAPMONITOR = True
+except Exception:
+    _HAS_LAPMONITOR = False
+    _HAS_BLEAK = False
+    LapMonitorClient = None
+    scan_devices_async = None
+
+# Colori colonne pilota in modalita' LIVE (stessi del grafico Crono).
+_LIVE_COLORS = [
+    "#39ff14", "#ffaa00", "#6688ff", "#ff5555", "#00ffff",
+    "#ff66ff", "#ffff00", "#ff8844", "#88ff88", "#ff88cc",
+    "#bbbbff", "#ffbb88",
+]
+
+
+def _live_carica_trasponder_mapping(dati_dir_parent):
+    """Legge dati/trasponder.json (se esiste) e ritorna
+    {numero_int: nome_str}. dati_dir_parent e' il path alla cartella
+    'dati/' (contenitore di scouting/ e id_XXXX/). Ritorna dict vuoto
+    se il file manca o e' malformato."""
+    mapping = {}
+    if not dati_dir_parent:
+        return mapping
+    path = os.path.join(dati_dir_parent, "trasponder.json")
+    if not os.path.exists(path):
+        return mapping
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        records = data.get("records", []) if isinstance(data, dict) else data
+        for r in records:
+            try:
+                num = int(r.get("Numero", 0))
+            except (ValueError, TypeError):
+                continue
+            nome = (r.get("Pilota") or "").strip()
+            if num > 0 and nome:
+                mapping[num] = nome
+    except Exception:
+        pass
+    return mapping
+
+
+def _live_nome_display(nome_mapping_or_none, pilot_num, max_len=10):
+    """Calcola il nome compatto da mostrare nella colonna live.
+    Regole:
+      - Trasponder non mappato -> 'T<num>' (es. 'T26')
+      - Nome multi-parola -> iniziali con punti: 'Sandro Grandesso' -> 'S.G.',
+        'Marco Aurelio Rossi' -> 'M.A.R.'. Preciso e sempre leggibile.
+      - Nome mono-parola <= max_len -> usa as-is (es. 'SG', 'Sandro')
+      - Nome mono-parola troppo lungo -> tronca a max_len."""
+    nome = nome_mapping_or_none
+    if not nome:
+        return "T%d" % pilot_num
+    nome = nome.strip()
+    parti = [p for p in nome.split() if p]
+    if len(parti) >= 2:
+        # Iniziali con punti: 'Sandro Grandesso' -> 'S.G.'
+        return ".".join(p[0].upper() for p in parti) + "."
+    # Mono-parola
+    if len(nome) <= max_len:
+        return nome
+    return nome[:max_len]
+
 # Font monospace + helper colori centralizzati
 try:
     from config_colori import FONT_MONO, carica_colori as _carica_colori
@@ -161,6 +233,31 @@ class LapTimer:
         self.stato = self.FUEL_SELECT
         self.serbatoio = 0
         self.t_start = 0.0
+
+        # ── Stato LIVE (multi-pilota via ricevitore LapMonitor BT) ──
+        # _live_mode=True solo quando il ricevitore e' connesso.
+        # _live_client: istanza LapMonitorClient del thread BLE.
+        # _live_pilots: {pilot_num: {"laps":[], "best":f, "total":f}}.
+        # _live_columns: {pilot_num: tk.Frame} - colonna UI del pilota.
+        # _live_colwidgets: {pilot_num: {"last":L, "stats":L, "list":T}}.
+        # _live_banner: Label nell'header per stato connessione BLE.
+        # _live_mapping: {num: nome} caricato da dati/trasponder.json.
+        self._live_mode = False
+        self._live_client = None
+        self._live_pilots = {}
+        self._live_columns = {}
+        self._live_colwidgets = {}
+        self._live_banner = None
+        self._live_mapping = {}
+        self._live_connecting = False  # True durante lo scan/connect
+
+        # Saltiamo la schermata di scelta carburante: non serve piu'.
+        # Se in futuro serve, si puo' memorizzare come campo IA nel
+        # record setup. Andiamo direttamente alla schermata cronometro
+        # in stato ATTESA (il timer partira' col primo passaggio o con
+        # la pressione di SPAZIO).
+        self.serbatoio = 0
+        self.stato = self.ATTESA
         self.t_ultimo_giro = 0.0
         self.giri = []
         self.miglior_tempo = None
@@ -169,7 +266,8 @@ class LapTimer:
         self.colori = _carica_colori()
         self._init_root(parent)
         self._init_fonts()
-        self._schermata_carburante()
+        # Direttamente alla schermata timer (fuel select rimosso)
+        self._schermata_timer()
 
     def _init_root(self, parent=None):
         c = self.colori
@@ -254,6 +352,12 @@ class LapTimer:
         self.root.unbind("<Home>")
         self.root.unbind("<End>")
         self.root.unbind("<Key>")
+        # Cleanup tasti digit di simulazione LIVE (1-9, 0)
+        for i in range(10):
+            try:
+                self.root.unbind("<Key-%d>" % i)
+            except Exception:
+                pass
         # Canvas distrutti dal winfo_children: rimuovi anche le ref cached
         for attr in ("_grid_canvas", "_grid_header_canvas", "_mini_canvas",
                      "_proiezioni_canvas"):
@@ -416,7 +520,8 @@ class LapTimer:
         header.pack(fill="x", padx=20, pady=(10, 0))
         tk.Label(header, text="LAPTIMER", bg=c["sfondo"], fg=c["dati"],
                  font=tkfont.Font(family=FONT_MONO, size=16, weight="bold")).pack()
-        info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
+        # Info subtitle: pilota + setup (niente piu' serbatoio cc)
+        info_txt = "%s  |  %s" % (self.pilota, self.setup)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
         # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,
@@ -523,7 +628,7 @@ class LapTimer:
         tk.Frame(self.root, bg=c["linee"], height=1).pack(fill="x", padx=20, side="bottom")
         status_bar = tk.Frame(self.root, bg=c["sfondo"])
         status_bar.pack(fill="x", side="bottom", padx=20, pady=(6, 8))
-        self._lbl_status = tk.Label(status_bar, text="SPAZIO = Avvia  |  \u2191\u2193 Scorri  |  S = Stampa  |  ESC = Indietro",
+        self._lbl_status = tk.Label(status_bar, text="SPAZIO = Avvia  |  1-0 = simula pilota (test)  |  S = Stampa  |  ESC = Indietro",
                                      bg=c["sfondo"], fg=c["stato_ok"], font=self._f_status,
                                      anchor="w")
         self._lbl_status.pack(side="left")
@@ -544,6 +649,821 @@ class LapTimer:
         self.root.bind("<s>", lambda e: self._stampa_termica())
         self.root.bind("<S>", lambda e: self._stampa_termica())
 
+        # Tasti numerici 1-9 e 0: simulano un passaggio trasponder per
+        # test multi-pilota senza hardware (tasto 1 -> trasp 1, tasto 2
+        # -> trasp 2, ..., tasto 0 -> trasp 10). Attivano automaticamente
+        # la modalita' LIVE al primo press. Utili quando ho un solo
+        # trasponder reale ma voglio verificare l'ordinamento GARA e
+        # il riordino colonne.
+        for i in range(1, 10):
+            self.root.bind("<Key-%d>" % i,
+                            lambda e, n=i: self._sim_trasponder(n))
+        self.root.bind("<Key-0>", lambda e: self._sim_trasponder(10))
+
+        # Avvia scan BLE LapMonitor in background (5s). Se trova e
+        # connette -> passa a modalita' LIVE multi-pilota. Se non
+        # trova, resta tutto come oggi (manuale mono-pilota).
+        self._avvia_scan_lapmonitor()
+
+    def _sim_trasponder(self, pilot_num):
+        """Simula un passaggio trasponder per un numero pilota dato.
+        Usato dai tasti 1-9, 0 per test multi-pilota senza hardware.
+        La logica e' identica a quella del LapMonitorClient reale:
+        primo passaggio -> delta=None (solo baseline), successivi
+        -> delta = tempo dall'ultimo passaggio stesso pilota."""
+        # Attiva LIVE se non ancora attivo (primo keypress)
+        if not self._live_mode:
+            # Serve che il timer sia in ATTESA o RUNNING
+            if self.stato not in (self.ATTESA, self.RUNNING):
+                return
+            self._live_attiva_modo()
+            # Se _live_attiva_modo non e' andato a buon fine, esci
+            if not self._live_mode:
+                return
+
+        # State per-pilota per calcolare delta tra press consecutivi
+        if not hasattr(self, "_live_sim_state"):
+            self._live_sim_state = {}
+        now = time.perf_counter()
+        st = self._live_sim_state.get(pilot_num)
+        if st is None:
+            delta = None  # primo passaggio del pilota (baseline)
+        else:
+            delta = now - st["last_t"]
+            if delta < 0.5:
+                # Anti-raffica: se ripremo troppo veloce ignora
+                return
+        self._live_sim_state[pilot_num] = {"last_t": now}
+        # Dispatcha come farebbe il client BLE reale
+        self._live_on_lap(pilot_num, 0, delta, None, "sim")
+
+    # -----------------------------------------------------------------
+    #  LIVE: scan BLE, connessione, griglia multi-colonna
+    # -----------------------------------------------------------------
+    # Numero massimo di tentativi di scan consecutivi se non trova
+    # nessun dispositivo (BlueZ su Linux a volte richiede piu' tentativi
+    # specie dopo una sessione precedente). Dopo max tentativi rinuncia
+    # silenziosamente e resta in modalita' manuale.
+    _LIVE_SCAN_MAX_RETRY = 6
+    _LIVE_SCAN_INTERVAL_MS = 6000  # 6 sec tra tentativi
+
+    def _avvia_scan_lapmonitor(self):
+        """Lancia scan BLE in background per trovare ricevitori LapM*.
+        Se bleak manca o il modulo non e' disponibile, esce subito
+        senza mostrare nulla (manuale funziona normalmente).
+        Se nessun dispositivo viene trovato al primo scan, riprova
+        automaticamente ogni 6 secondi (fino a max tentativi).
+        Utile quando il ricevitore viene acceso dopo l'app, o quando
+        BlueZ e' in cooldown dopo una sessione precedente."""
+        if not _HAS_LAPMONITOR or not _HAS_BLEAK:
+            return
+        if self._live_connecting or self._live_mode:
+            return
+        self._live_connecting = True
+        self._live_scan_attempt = 1
+        c = self.colori
+        # Banner fisso in alto a sinistra: vive per tutta la ricerca
+        try:
+            self._live_banner = tk.Label(self.root,
+                text="  BT: ricerca LapMonitor...",
+                bg=c["sfondo"], fg=c["stato_avviso"],
+                font=self._f_status, anchor="w")
+            self._live_banner.place(relx=0.01, rely=0.0, anchor="nw")
+        except Exception:
+            self._live_banner = None
+
+        self._fai_scan_iterativo()
+
+    def _fai_scan_iterativo(self):
+        """Esegue un tentativo di scan. Se trova dispositivi connette
+        al primo. Se non trova, ripianifica fra
+        _LIVE_SCAN_INTERVAL_MS fino a _LIVE_SCAN_MAX_RETRY tentativi."""
+        if self._live_mode:
+            return
+        # Se la schermata cronometro e' stata lasciata, smetti
+        if self.stato not in (self.ATTESA, self.RUNNING):
+            self._live_connecting = False
+            return
+        # Aggiorna banner col numero di tentativo
+        try:
+            if self._live_banner is not None and self._live_banner.winfo_exists():
+                self._live_banner.config(
+                    text="  BT: ricerca LapMonitor... (tent. %d/%d)"
+                         % (self._live_scan_attempt, self._LIVE_SCAN_MAX_RETRY),
+                    fg=self.colori["stato_avviso"])
+        except Exception:
+            pass
+
+        def _on_scan_done(result):
+            if self._live_mode:
+                return
+            # Widget distrutti nel frattempo: esci
+            try:
+                if self._live_banner is None or not self._live_banner.winfo_exists():
+                    self._live_connecting = False
+                    return
+            except Exception:
+                self._live_connecting = False
+                return
+
+            if result:
+                # Trovato: connetti al primo
+                name, addr = result[0]
+                try:
+                    self._live_banner.config(
+                        text="  BT: connessione a %s..." % name,
+                        fg=self.colori["stato_avviso"])
+                except Exception:
+                    pass
+                self._live_connetti(addr, name)
+                return
+
+            # Zero dispositivi: retry se sotto la soglia
+            self._live_scan_attempt += 1
+            if self._live_scan_attempt > self._LIVE_SCAN_MAX_RETRY:
+                # Rinuncia: lascia un banner neutro, resta in manuale
+                try:
+                    self._live_banner.config(
+                        text="  BT: nessun LapMonitor - manuale attivo",
+                        fg=self.colori["testo_dim"])
+                except Exception:
+                    pass
+                self._live_connecting = False
+                return
+            # Ripianifica prossimo tentativo
+            try:
+                self._live_banner.config(
+                    text="  BT: ritento fra %ds..."
+                         % (self._LIVE_SCAN_INTERVAL_MS // 1000),
+                    fg=self.colori["testo_dim"])
+            except Exception:
+                pass
+            try:
+                self.root.after(self._LIVE_SCAN_INTERVAL_MS,
+                                 self._fai_scan_iterativo)
+            except Exception:
+                self._live_connecting = False
+
+        scan_devices_async(prefix="LapM", timeout=5.0,
+                           on_done=_on_scan_done, tk_root=self.root)
+
+    def _live_connetti(self, addr, name):
+        """Crea il LapMonitorClient e lo fa partire in thread BLE."""
+        self._live_client = LapMonitorClient(
+            address=addr, tk_root=self.root,
+            on_lap=self._live_on_lap,
+            on_status=self._live_on_status,
+            on_connected=self._live_on_connected)
+        self._live_client_name = name
+        self._live_client.start()
+
+    def _live_on_status(self, msg, livello="info"):
+        """Aggiorna il banner header con lo stato BLE (thread-safe:
+        invocato gia' sul main thread)."""
+        try:
+            if self._live_banner is None or not self._live_banner.winfo_exists():
+                return
+            c = self.colori
+            colore = {
+                "ok":     c["stato_ok"],
+                "errore": c["stato_errore"],
+                "avviso": c["stato_avviso"],
+            }.get(livello, c["testo_dim"])
+            self._live_banner.config(text="  BT: " + msg, fg=colore)
+        except (tk.TclError, Exception):
+            pass
+
+    def _live_on_connected(self, connected):
+        """Callback cambio stato connessione."""
+        if connected:
+            # Attiva modalita' LIVE: sostituisci griglia bottom e
+            # auto-avvia il cronometro (visto che non c'e' piu' SPAZIO).
+            self._live_attiva_modo()
+            try:
+                self._live_banner.config(
+                    text="  LIVE: %s" % self._live_client_name,
+                    fg=self.colori["stato_ok"])
+            except Exception:
+                pass
+        else:
+            # Disconnessione o connessione fallita.
+            # Se eravamo in LIVE, e' stata una disconnessione vera e propria:
+            # tenta di ricollegare automaticamente (l'utente ha acceso/spento).
+            # Se eravamo ancora in fase di connessione (es. errore InProgress
+            # di BlueZ), ripianifica un nuovo scan con backoff piu' lungo.
+            try:
+                if self._live_client is not None:
+                    self._live_client = None
+            except Exception:
+                pass
+            if self.stato not in (self.ATTESA, self.RUNNING):
+                # Utente uscito dalla schermata: non ritentare
+                return
+            # Backoff: aspetta piu' a lungo per dare tempo a BlueZ di
+            # liberare il device (tipicamente 5-10s dopo un InProgress).
+            try:
+                if self._live_banner is not None and self._live_banner.winfo_exists():
+                    self._live_banner.config(
+                        text="  BT: connessione fallita, ritento fra 10s...",
+                        fg=self.colori["stato_avviso"])
+            except Exception:
+                pass
+            # Reset flag e ripianifica scan dopo 10s
+            self._live_connecting = False
+            self._live_scan_attempt = 1
+            try:
+                self.root.after(10000, self._avvia_scan_lapmonitor)
+            except Exception:
+                pass
+
+    def _live_attiva_modo(self):
+        """Passa a modalita' LIVE: carica mapping trasponder, disabilita
+        SPAZIO, sostituisce la griglia mono-pilota con multi-colonna,
+        avvia automaticamente il cronometro (t_start = now)."""
+        if self._live_mode:
+            return
+        # Guardia: se nel frattempo l'utente ha lasciato la schermata
+        # cronometro (es. ESC prima che la connessione completasse),
+        # non attivare LIVE. Stato valido: ATTESA o RUNNING.
+        if self.stato not in (self.ATTESA, self.RUNNING):
+            # Scollega il client per non lasciare thread BLE appeso
+            try:
+                if self._live_client is not None:
+                    self._live_client.stop()
+                    self._live_client = None
+            except Exception:
+                pass
+            return
+        self._live_mode = True
+
+        # Carica mappatura trasponder -> pilota dalla cartella dati/
+        try:
+            parent = (os.path.dirname(self.dati_dir.rstrip("/\\"))
+                       if self.dati_dir else "")
+            self._live_mapping = _live_carica_trasponder_mapping(parent)
+        except Exception:
+            self._live_mapping = {}
+
+        # NON disabilitiamo SPAZIO: serve per avviare il cronometro
+        # (l'utente preme SPAZIO per partire anche in LIVE). Durante
+        # RUNNING il SPAZIO viene ignorato (guardia in _on_spazio),
+        # i giri arrivano dal ricevitore BLE.
+
+        # Smonta i widget non necessari in LIVE:
+        # - Griglia mono-pilota GIRO/TEMPO/DELTA/TOTALE (bottom)
+        # - Mini grafico SX e proiezioni DX (li sostituiamo con pannelli
+        #   previsione/passo multi-pilota, vedi sotto)
+        # - Labels duplicate: totale (gia' mostrato dal _lbl_timer),
+        #   passo, best, fuel, ultimo, delta (tutte mono-pilota)
+        c = self.colori
+        # Grab reference a top_area prima di distruggere (serve per
+        # agganciare i nuovi pannelli SX/DX alle stesse celle grid)
+        top_area = None
+        try:
+            if hasattr(self, "_lbl_timer"):
+                top_area = self._lbl_timer.master.master
+        except Exception:
+            top_area = None
+        for attr in ("_grid_header_canvas", "_grid_canvas",
+                     "_mini_canvas", "_proiezioni_canvas",
+                     "_lbl_totale", "_lbl_passo", "_lbl_best",
+                     "_lbl_fuel", "_lbl_ultimo", "_lbl_delta"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+
+        # Pannelli LIVE: previsione arrivo (SX) e passo gara (DX),
+        # allocati nelle stesse celle grid dei canvas rimossi
+        if top_area is not None:
+            self._live_crea_pannelli_laterali(top_area)
+
+        # Nuovo container colonne: usa pack a side="left" per colonne
+        # di larghezza fissa che si impacchettano da sinistra. Quando
+        # arriva un nuovo pilota appare una colonna piccola accanto
+        # alle esistenti; il riordino GARA le rimescola senza stretch.
+        self._live_grid_frame = tk.Frame(self.root, bg=c["sfondo"])
+        self._live_grid_frame.pack(fill="both", expand=True, padx=10,
+                                    pady=(2, 2), side="top")
+
+        # Auto-avvio al primo passaggio: il cronometro parte quando
+        # arriva il primissimo trasponder (vedi _live_on_lap).
+        if hasattr(self, "_lbl_status"):
+            self._lbl_status.config(
+                text="LIVE: in attesa del primo passaggio trasponder...",
+                fg=c["stato_ok"])
+
+    # Orizzonti temporali (in minuti) per il pannello "PREVISIONE ARRIVO"
+    _LIVE_HORIZONS = [5, 20, 30, 45]
+
+    def _live_crea_pannelli_laterali(self, top_area):
+        """Crea i due pannelli laterali in LIVE:
+          - SX: PREVISIONE ARRIVO (giri previsti a 5/20/30/45 min per pilota)
+          - DX: PASSO GARA (media ultimi 3 giri per pilota + trend)
+        Entrambi sono Text read-only aggiornati a ogni lap ricevuto."""
+        c = self.colori
+
+        # Pannello sinistro: PREVISIONE
+        self._live_prev_frame = tk.Frame(top_area, bg=c["sfondo_celle"],
+                relief="ridge", bd=1,
+                highlightbackground=c["linee"], highlightthickness=1)
+        self._live_prev_frame.grid(row=0, column=0, sticky="nsew",
+                                    padx=(10, 5), pady=(0, 4))
+        tk.Label(self._live_prev_frame, text="PREVISIONE ARRIVO",
+                 bg=c["sfondo_celle"], fg=c["dati"],
+                 font=self._f_status).pack(pady=(4, 0))
+        self._live_prev_text = tk.Text(self._live_prev_frame,
+                 bg=c["sfondo_celle"], fg=c["dati"],
+                 font=self._f_status, relief="flat",
+                 highlightthickness=0, bd=0,
+                 wrap="none", cursor="arrow",
+                 width=26, height=10)
+        self._live_prev_text.pack(fill="both", expand=True,
+                                   padx=4, pady=(2, 4))
+        self._live_prev_text.config(state="disabled")
+
+        # Pannello destro: PASSO
+        self._live_passo_frame = tk.Frame(top_area, bg=c["sfondo_celle"],
+                relief="ridge", bd=1,
+                highlightbackground=c["linee"], highlightthickness=1)
+        self._live_passo_frame.grid(row=0, column=2, sticky="nsew",
+                                     padx=(5, 10), pady=(0, 4))
+        tk.Label(self._live_passo_frame, text="PASSO GARA",
+                 bg=c["sfondo_celle"], fg=c["dati"],
+                 font=self._f_status).pack(pady=(4, 0))
+        self._live_passo_text = tk.Text(self._live_passo_frame,
+                 bg=c["sfondo_celle"], fg=c["dati"],
+                 font=self._f_status, relief="flat",
+                 highlightthickness=0, bd=0,
+                 wrap="none", cursor="arrow",
+                 width=26, height=10)
+        self._live_passo_text.pack(fill="both", expand=True,
+                                    padx=4, pady=(2, 4))
+        self._live_passo_text.config(state="disabled")
+
+        # Render iniziale con stato vuoto
+        self._live_aggiorna_prev_passo()
+
+    def _live_aggiorna_prev_passo(self):
+        """Ricalcola e aggiorna i pannelli laterali PREVISIONE e PASSO.
+        Chiamato dopo ogni giro ricevuto (BLE o simulato)."""
+        c = self.colori
+
+        # ── PREVISIONE ARRIVO ──
+        # Per ogni pilota calcola: media_lap -> giri_previsti a
+        # 5/20/30/45 minuti. Ranking per media ascendente (piu' veloce
+        # = piu' giri stimati). I piloti senza giri validi vengono
+        # saltati (non si puo' proiettare senza dati).
+        pilot_info = []  # lista (pid, nome_vis, media, tempi, tot_time)
+        for pid, d in self._live_pilots.items():
+            validi = [l for l in d["laps"]
+                       if l.get("stato") == "valido" and l.get("tempo", 0) > 0]
+            if not validi:
+                continue
+            tempi = [l["tempo"] for l in validi]
+            media = sum(tempi) / len(tempi)
+            nome_vis = _live_nome_display(
+                self._live_mapping.get(pid), pid, max_len=6)
+            pilot_info.append((pid, nome_vis, media, tempi, sum(tempi)))
+        # Sort per media (piu' veloce prima)
+        pilot_info.sort(key=lambda x: x[2])
+
+        prev_lines = []
+        header = " %-6s %5s %5s %5s %5s" % (
+            "Pil.", "5m", "20m", "30m", "45m")
+        prev_lines.append(header)
+        prev_lines.append("-" * len(header))
+        if not pilot_info:
+            prev_lines.append(" (in attesa giri)")
+        for pid, nome, media, _, _ in pilot_info:
+            row = [int((mm * 60) / media) if media > 0 else 0
+                    for mm in self._LIVE_HORIZONS]
+            prev_lines.append(" %-6s %5d %5d %5d %5d" % (
+                nome, row[0], row[1], row[2], row[3]))
+
+        try:
+            self._live_prev_text.config(state="normal")
+            self._live_prev_text.delete("1.0", "end")
+            self._live_prev_text.insert("end", "\n".join(prev_lines))
+            self._live_prev_text.config(state="disabled")
+        except (tk.TclError, Exception):
+            pass
+
+        # ── PASSO GARA ──
+        # Per ogni pilota: media ultimi 3 giri validi (passo recente)
+        # + confronto con media globale del pilota -> trend UP/DN/==.
+        passo_lines = []
+        header_p = " %-6s %7s %s" % ("Pil.", "Passo", "Trend")
+        passo_lines.append(header_p)
+        passo_lines.append("-" * len(header_p))
+        if not pilot_info:
+            passo_lines.append(" (in attesa giri)")
+        # Ordine: piloti con passo migliore in alto
+        passo_rows = []
+        for pid, nome, media_glob, tempi, _ in pilot_info:
+            ultimi = tempi[-3:]
+            passo = sum(ultimi) / len(ultimi)
+            delta = passo - media_glob
+            if delta < -0.05:
+                trend = "migl."  # verde in senso semantico
+            elif delta > 0.15:
+                trend = "lento"
+            else:
+                trend = "stab."
+            passo_rows.append((pid, nome, passo, trend, delta))
+        passo_rows.sort(key=lambda x: x[2])  # passo ascendente
+        for pid, nome, passo, trend, delta in passo_rows:
+            sign = "+" if delta >= 0 else ""
+            passo_lines.append(" %-6s %s  %s %s%.2f" % (
+                nome, _fmt(passo), trend, sign, delta))
+
+        try:
+            self._live_passo_text.config(state="normal")
+            self._live_passo_text.delete("1.0", "end")
+            self._live_passo_text.insert("end", "\n".join(passo_lines))
+            self._live_passo_text.config(state="disabled")
+        except (tk.TclError, Exception):
+            pass
+
+    def _live_on_lap(self, pilot_num, device_cnt, delta, ts, raw_hex):
+        """Callback giro BLE (gia' nel main thread). Aggiunge il giro
+        al pilota, crea la colonna se e' nuovo, riordina per GARA.
+        Al primissimo passaggio trasponder in assoluto, avvia il
+        cronometro centrale (session timer) e passa a RUNNING."""
+        # Protezione: se i widget sono stati distrutti ignora
+        try:
+            if not hasattr(self, "_live_grid_frame"):
+                return
+            if not self._live_grid_frame.winfo_exists():
+                return
+        except (tk.TclError, Exception):
+            return
+
+        # Auto-start al primo passaggio: partiamo il cronometro
+        # quando vediamo il primo trasponder, non aspettiamo SPAZIO
+        if self.stato == self.ATTESA:
+            self._avvia()
+
+        if pilot_num not in self._live_pilots:
+            self._live_pilots[pilot_num] = {
+                "laps": [], "best": None, "total": 0.0,
+            }
+            self._live_crea_colonna(pilot_num)
+
+        data = self._live_pilots[pilot_num]
+        if delta is None or delta <= 0:
+            # Primo passaggio del trasponder: nessun tempo disponibile,
+            # serve solo a far comparire la colonna e a dare a LapMonitor
+            # la baseline per i delta successivi. NON aggiungiamo nulla
+            # alla lista giri (altrimenti si vedrebbe un "1 --" fantasma
+            # e poi il vero primo giro appare di nuovo come "1").
+            self._live_aggiorna_colonna(pilot_num)
+            return
+
+        data["laps"].append({
+            "giro": len(data["laps"]) + 1,
+            "tempo": round(delta, 3),
+            "stato": "valido",
+        })
+        data["total"] += delta
+        if data["best"] is None or delta < data["best"]:
+            data["best"] = delta
+
+        self._live_aggiorna_colonna(pilot_num)
+        self._live_riordina_colonne()
+        # Aggiorna pannelli laterali (previsione + passo)
+        self._live_aggiorna_prev_passo()
+
+    # Larghezza fissa colonna pilota in px (abbastanza per 10 char
+    # monospace a 12pt circa). Cosi' con 1 pilota la colonna resta
+    # piccola a sinistra senza stretchare a tutto schermo.
+    _LIVE_COL_WIDTH = 130
+
+    def _live_crea_colonna(self, pilot_num):
+        """Crea una colonna per il nuovo pilota. Le colonne vengono
+        impacchettate con pack(side='left') a larghezza fissa: con un
+        solo pilota resta piccola a sinistra, con piu' piloti si
+        affiancano da sx a dx. Il riordino GARA le rimescola."""
+        c = self.colori
+        colore = _LIVE_COLORS[pilot_num % len(_LIVE_COLORS)]
+        nome_raw = self._live_mapping.get(pilot_num)
+        nome_vis = _live_nome_display(nome_raw, pilot_num, max_len=10)
+
+        col = tk.Frame(self._live_grid_frame, bg=c["sfondo_celle"],
+                        relief="ridge", bd=1,
+                        highlightbackground=colore, highlightthickness=1,
+                        width=self._LIVE_COL_WIDTH)
+        # pack_propagate False per forzare la width fissa (senza, la
+        # Frame si ridimensiona ai figli)
+        col.pack_propagate(False)
+        col.pack(side="left", fill="y", padx=2, pady=2)
+
+        # Header: nome pilota (grande) + numero trasponder (piccolo)
+        tk.Label(col, text=nome_vis, bg=c["sfondo_celle"], fg=colore,
+                 font=self._f_best, anchor="center").pack(
+            fill="x", padx=2, pady=(3, 0))
+        tk.Label(col, text="#%d" % pilot_num,
+                 bg=c["sfondo_celle"], fg=c["testo_dim"],
+                 font=self._f_status).pack()
+
+        tk.Frame(col, bg=c["linee"], height=1).pack(
+            fill="x", padx=2, pady=2)
+
+        # Stats compatte (giri + best)
+        stats_lbl = tk.Label(col, text="0g  B:--",
+                 bg=c["sfondo_celle"], fg=c["testo_dim"],
+                 font=self._f_status)
+        stats_lbl.pack(fill="x", padx=2)
+
+        # Ultimo tempo grande
+        last_lbl = tk.Label(col, text="--",
+                 bg=c["sfondo_celle"], fg=colore,
+                 font=tkfont.Font(family=FONT_MONO, size=20, weight="bold"))
+        last_lbl.pack(pady=(4, 4))
+
+        tk.Frame(col, bg=c["linee"], height=1).pack(
+            fill="x", padx=2, pady=2)
+
+        # Lista ultimi giri (Text fissa: altezza 12 righe, newest al top,
+        # NON scrollabile - i giri piu' vecchi di 12 cadono fuori).
+        list_txt = tk.Text(col, bg=c["sfondo_celle"], fg=c["dati"],
+                 font=self._f_status, relief="flat",
+                 highlightthickness=0, bd=0,
+                 wrap="none", cursor="arrow",
+                 height=12)
+        list_txt.pack(fill="x", padx=2, pady=(0, 3))
+        list_txt.config(state="disabled")
+
+        # Separatore + resoconto totale in fondo (totale giri + tempo).
+        # Si popola solo quando ci sono giri validi.
+        tk.Frame(col, bg=c["linee"], height=1).pack(
+            fill="x", padx=2, pady=(2, 0), side="bottom")
+        tot_lbl = tk.Label(col, text="0g  --",
+                 bg=c["sfondo_celle"], fg=c["stato_avviso"],
+                 font=self._f_status, anchor="center")
+        tot_lbl.pack(fill="x", padx=2, pady=(1, 3), side="bottom")
+
+        self._live_columns[pilot_num] = col
+        self._live_colwidgets[pilot_num] = {
+            "stats": stats_lbl, "last": last_lbl,
+            "list": list_txt, "tot": tot_lbl, "color": colore,
+        }
+
+    def _live_aggiorna_colonna(self, pilot_num):
+        """Aggiorna stats, ultimo tempo e lista della colonna pilota."""
+        w = self._live_colwidgets.get(pilot_num)
+        if not w:
+            return
+        data = self._live_pilots[pilot_num]
+        validi = [l for l in data["laps"]
+                   if l.get("stato") == "valido" and l.get("tempo", 0) > 0]
+        if validi:
+            tempi = [l["tempo"] for l in validi]
+            best = min(tempi)
+            ultimo = validi[-1]["tempo"]
+            totale_tempo = sum(tempi)
+            w["stats"].config(text="%dg  B:%s" % (len(validi), _fmt(best)))
+            c = self.colori
+            if ultimo == best:
+                w["last"].config(text=_fmt(ultimo), fg=c["stato_ok"])
+            elif ultimo <= best * 1.05:
+                w["last"].config(text=_fmt(ultimo), fg=c["stato_avviso"])
+            else:
+                w["last"].config(text=_fmt(ultimo), fg=w["color"])
+            # Resoconto totale: N giri + tempo cumulato (senza prefisso
+            # "Tot:" per risparmiare spazio nelle colonne strette).
+            # Il colore arancione gia' distingue la riga.
+            tot_lbl = w.get("tot")
+            if tot_lbl is not None:
+                try:
+                    tot_lbl.config(
+                        text="%dg  %s" % (len(validi), _fmt(totale_tempo)))
+                except Exception:
+                    pass
+        else:
+            w["stats"].config(text="0g")
+            w["last"].config(text="--")
+            tot_lbl = w.get("tot")
+            if tot_lbl is not None:
+                try:
+                    tot_lbl.config(text="0g  --")
+                except Exception:
+                    pass
+
+        # Lista recente: ultimi 12 giri, dal piu' nuovo in cima.
+        # Cancella e ricostruisce ogni volta cosi' il newest resta
+        # sempre in posizione 1.0 (top), la tabella non scrolla mai.
+        w["list"].config(state="normal")
+        w["list"].delete("1.0", "end")
+        recenti = data["laps"][-12:]
+        recenti = list(reversed(recenti))
+        for l in recenti:
+            num = l.get("giro", 0)
+            t = l.get("tempo", 0)
+            if l.get("stato") == "parziale":
+                riga = "%2d  --\n" % num
+            else:
+                riga = "%2d  %s\n" % (num, _fmt(t))
+            w["list"].insert("end", riga)
+        w["list"].config(state="disabled")
+
+    def _live_riordina_colonne(self):
+        """Ordina colonne per GARA: piu' giri prima; se parita',
+        tempo totale minore. Leader sempre a sinistra.
+        Usa pack_forget + re-pack in ordine per spostare le colonne."""
+        def _sort_key(item):
+            pid, d = item
+            validi = [l for l in d["laps"]
+                       if l.get("stato") == "valido" and l.get("tempo", 0) > 0]
+            n = len(validi)
+            tot = sum(l["tempo"] for l in validi)
+            return (-n, tot)
+
+        ordered = sorted(self._live_pilots.items(), key=_sort_key)
+        # pack_forget su tutti, poi ri-pack a side="left" nell'ordine
+        # corretto: la prima packata va piu' a sinistra.
+        for pid, col in self._live_columns.items():
+            try:
+                col.pack_forget()
+            except Exception:
+                pass
+        for pid, _ in ordered:
+            col = self._live_columns.get(pid)
+            if col:
+                try:
+                    col.pack(side="left", fill="y", padx=2, pady=2)
+                except Exception:
+                    pass
+
+    def _live_entra_analisi(self):
+        """Primo ESC in LIVE+RUNNING: ferma il ricevitore BLE ma tiene
+        la griglia visibile, stoppa il timer e mostra i bottoni di
+        azione (SALVA / STAMPA / IA / ESCI) in fondo - equivalente della
+        modalita' analisi di LapTimer manuale.
+        Secondo ESC chiamera' _live_stop_e_salva."""
+        # Ferma il client BLE cosi' non arrivano piu' giri
+        cli = self._live_client
+        if cli is not None:
+            try:
+                cli.stop()
+            except Exception:
+                pass
+        # Non azzeriamo self._live_client subito: serve a _on_stop per
+        # riconoscere che e' LIVE; lo azzera _live_stop_e_salva.
+
+        # Stoppa il timer e registra il totale di sessione
+        self.stato = self.FERMO
+        try:
+            self._totale = time.perf_counter() - self.t_start
+        except Exception:
+            self._totale = 0.0
+
+        c = self.colori
+
+        # Aggiorna label stato nell'header
+        if hasattr(self, "_lbl_status"):
+            try:
+                self._lbl_status.config(
+                    text=("LIVE FERMO - %d piloti, %d passaggi totali. "
+                          "ESC = salva e esci")
+                         % (len(self._live_pilots),
+                            sum(len(d["laps"]) for d in self._live_pilots.values())),
+                    fg=c["stato_avviso"])
+            except Exception:
+                pass
+
+        # Bottoniera analisi in fondo (sopra lo status bar originale)
+        try:
+            if hasattr(self, "_live_analisi_bar") and self._live_analisi_bar.winfo_exists():
+                return  # gia' creata, niente da fare
+        except Exception:
+            pass
+
+        self._live_analisi_bar = tk.Frame(self.root, bg=c["sfondo"])
+        # Impacchettiamo come side="bottom" prima della status bar
+        self._live_analisi_bar.pack(fill="x", side="bottom",
+                                     padx=20, pady=(2, 2))
+
+        def _mk_btn(text, bg, fg, cmd):
+            return tk.Button(self._live_analisi_bar, text=text,
+                             font=self._f_status,
+                             bg=bg, fg=fg, relief="ridge", bd=1,
+                             cursor="hand2", command=cmd, padx=8)
+
+        _mk_btn("SALVA E ESCI", c["stato_ok"], c["sfondo"],
+                self._live_stop_e_salva).pack(side="left", padx=3)
+        if _HAS_PRINT:
+            _mk_btn("STAMPA", c["pulsanti_sfondo"], c["pulsanti_testo"],
+                    self._stampa_termica).pack(side="left", padx=3)
+        _mk_btn("ESCI SENZA SALVARE", c["stato_errore"], c["sfondo"],
+                self._chiudi).pack(side="left", padx=3)
+
+    def _live_stop_e_salva(self):
+        """Ferma il client BLE e salva un file scouting per ogni
+        pilota con almeno un giro valido. Chiamato da _on_stop in
+        modalita' LIVE."""
+        cli = self._live_client
+        if cli is not None:
+            try:
+                cli.stop()
+            except Exception:
+                pass
+            self._live_client = None
+
+        scouting_dir = ""
+        if self.dati_dir:
+            # Se dati_dir contiene 'scouting' o e' dati/id_XXXX,
+            # il parent e' sempre dati/
+            parent = os.path.dirname(self.dati_dir.rstrip("/\\"))
+            scouting_dir = os.path.join(parent, "scouting")
+            try:
+                os.makedirs(scouting_dir, exist_ok=True)
+            except Exception:
+                scouting_dir = ""
+
+        salvate = 0
+        if scouting_dir and self._live_pilots:
+            now = datetime.now()
+            data_str = now.strftime("%Y-%m-%d")
+            ora_str = now.strftime("%H:%M:%S")
+            ts_file = now.strftime("%Y%m%d_%H%M%S")
+
+            for pnum, d in self._live_pilots.items():
+                validi = [l for l in d["laps"]
+                           if l.get("stato") == "valido" and l.get("tempo", 0) > 0]
+                if not validi:
+                    continue
+                tempi = [l["tempo"] for l in validi]
+                nome_raw = self._live_mapping.get(pnum)
+                nome_out = nome_raw if nome_raw else "Trasp. %d" % pnum
+
+                giri_out = []
+                cumul = 0.0
+                for i, l in enumerate(validi, start=1):
+                    cumul += l["tempo"]
+                    giri_out.append({
+                        "giro": i, "tempo": l["tempo"],
+                        "cumulativo": round(cumul, 3),
+                        "stato": "valido", "segnalato": False,
+                    })
+
+                sess = {
+                    "tipo": "lapmonitor",
+                    "versione": __version__,
+                    "setup": self.setup or "Ricevitore LapMonitor",
+                    "pista": self.pista or "",
+                    "record_id": "lapmon_%s_%d" % (ts_file, pnum),
+                    "pilota": nome_out,
+                    "trasponder": pnum,
+                    "data": data_str,
+                    "ora": ora_str,
+                    "serbatoio_cc": 0,
+                    "tempo_totale": round(sum(tempi), 3),
+                    "num_giri": len(validi),
+                    "num_giri_validi": len(validi),
+                    "num_pit_stop": 0,
+                    "miglior_tempo": round(min(tempi), 3),
+                    "miglior_giro": tempi.index(min(tempi)) + 1,
+                    "media": round(sum(tempi) / len(tempi), 3),
+                    "sessione_carburante": False,
+                    "giri": giri_out,
+                }
+                # setup_snapshot solo per il pilota del setup corrente
+                try:
+                    if (self.pilota and nome_out.lower() == self.pilota.lower()
+                        and self.setup_snapshot):
+                        sess["setup_snapshot"] = dict(self.setup_snapshot)
+                except Exception:
+                    pass
+
+                fname = "lap_lapmonitor_%s_%d.json" % (ts_file, pnum)
+                try:
+                    with open(os.path.join(scouting_dir, fname),
+                              "w", encoding="utf-8") as f:
+                        json.dump(sess, f, ensure_ascii=False, indent=2)
+                    salvate += 1
+                except Exception:
+                    pass
+
+        # Chiudi LapTimer via on_close come gli altri path
+        if self._on_close:
+            try:
+                self._pulisci()
+            except Exception:
+                pass
+            self._on_close()
+        elif not self._embedded:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
     # -----------------------------------------------------------------
     #  LOGICA TIMER
     # -----------------------------------------------------------------
@@ -551,6 +1471,11 @@ class LapTimer:
         if self.stato == self.ATTESA:
             self._avvia()
         elif self.stato == self.RUNNING:
+            # In LIVE multi-pilota i giri arrivano dal ricevitore BLE:
+            # SPAZIO non deve aggiungere giri manuali alla colonna
+            # mono-pilota (che tra l'altro non esiste piu').
+            if self._live_mode:
+                return
             if self._space_locked:
                 return
             self._segna_giro()
@@ -588,15 +1513,28 @@ class LapTimer:
             fg = c["stato_errore"]
         min_int = int(minuti)
         sec_rest = int((minuti - min_int) * 60)
-        self._lbl_fuel.config(text="%dcc | %d:%02d" % (self.serbatoio, min_int, sec_rest), fg=fg)
-        # Aggiorna tempo totale trascorso hh:mm:ss.d
-        if hasattr(self, '_lbl_totale'):
-            ore = int(totale_sec) // 3600
-            resto = totale_sec - ore * 3600
-            min_t = int(resto) // 60
-            sec_t = resto - min_t * 60
-            self._lbl_totale.config(
-                text="%02d:%02d:%04.1f" % (ore, min_t, sec_t))
+        # In LIVE questi widget vengono distrutti e messi a None:
+        # proteggiamo la config per non far crashare _aggiorna_timer
+        lbl_fuel = getattr(self, '_lbl_fuel', None)
+        if lbl_fuel is not None:
+            try:
+                lbl_fuel.config(
+                    text="%dcc | %d:%02d" % (self.serbatoio, min_int, sec_rest),
+                    fg=fg)
+            except (tk.TclError, Exception):
+                pass
+        # Aggiorna tempo totale trascorso hh:mm:ss.d (solo se widget esiste)
+        lbl_totale = getattr(self, '_lbl_totale', None)
+        if lbl_totale is not None:
+            try:
+                ore = int(totale_sec) // 3600
+                resto = totale_sec - ore * 3600
+                min_t = int(resto) // 60
+                sec_t = resto - min_t * 60
+                lbl_totale.config(
+                    text="%02d:%02d:%04.1f" % (ore, min_t, sec_t))
+            except (tk.TclError, Exception):
+                pass
 
     def _segna_giro(self):
         ora = time.perf_counter()
@@ -997,6 +1935,24 @@ class LapTimer:
     #  STOP E RISULTATI
     # -----------------------------------------------------------------
     def _on_stop(self, event=None):
+        # In modalita' LIVE ESC fa due step come in manuale:
+        # - primo ESC (da RUNNING): ferma BLE, entra in analisi LIVE,
+        #   mostra bottoni in fondo (SALVA / ESCI SENZA SALVARE)
+        # - secondo ESC (da FERMO): salva tutti i file e esce
+        if self._live_mode:
+            if self.stato == self.RUNNING:
+                self._live_entra_analisi()
+                return
+            elif self.stato == self.FERMO:
+                self._live_stop_e_salva()
+                return
+            elif self.stato == self.ATTESA:
+                # Cronometro non ancora avviato: ESC = esci senza salvare
+                if self._live_client is not None:
+                    try: self._live_client.stop()
+                    except Exception: pass
+                self._chiudi()
+                return
         if self.stato == self.RUNNING:
             # ESC = segna ultimo giro in corso + ferma + entra in modalita analisi
             self._segna_giro()
@@ -1008,7 +1964,8 @@ class LapTimer:
             self._salva_risultati()
             self._chiudi()
         elif self.stato == self.ATTESA:
-            self._schermata_carburante()
+            # Cronometro non ancora avviato: ESC = esci
+            self._chiudi()
 
     def _entra_modalita_analisi(self):
         """Trasforma la schermata timer in analisi integrata.
@@ -1566,7 +2523,8 @@ class LapTimer:
         header.pack(fill="x", padx=20, pady=(10, 0))
         tk.Label(header, text="LAPTIMER", bg=c["sfondo"], fg=c["dati"],
                  font=tkfont.Font(family=FONT_MONO, size=16, weight="bold")).pack()
-        info_txt = "%s  |  %s  |  %dcc" % (self.pilota, self.setup, self.serbatoio)
+        # Info subtitle: pilota + setup (niente piu' serbatoio cc)
+        info_txt = "%s  |  %s" % (self.pilota, self.setup)
         tk.Label(header, text=info_txt, bg=c["sfondo"], fg=c["label"],
                  font=self._f_info).pack(pady=(2, 0))
         # Barra batteria: place() sul TOPLEVEL (self.root), NON sull'header,

@@ -506,6 +506,12 @@ class Crono:
 
     # =================================================================
     #  2. CRONOMETRA (lancia LapTimer con dati setup)
+    #
+    #  NOTA: il modo LIVE (multi-pilota via ricevitore LapMonitor BT)
+    #  e' integrato dentro LapTimer stesso. Se il ricevitore viene
+    #  rilevato all'avvio della schermata cronometro, LapTimer
+    #  passa automaticamente a multi-colonna; se no resta in manuale
+    #  con barra spazio. Vedi laptimer.py.
     # =================================================================
     def _avvia_cronometro(self):
         if not LapTimer:
@@ -530,6 +536,7 @@ class Crono:
                  dati_dir=dati_dir, record_id=record_id,
                  parent=self.root, on_close=_on_close_setup,
                  setup_snapshot=self._build_setup_snapshot())
+
 
     def _tutti_tempi_da_setup(self):
         """Apre Tutti i tempi (archivio scouting) dal contesto setup."""
@@ -905,7 +912,9 @@ class Crono:
         # Bottoni azione
         bar = tk.Frame(self.root, bg=c["sfondo"])
         bar.pack(pady=8)
-        # CRONOMETRO MANUALE - sempre visibile
+        # CRONOMETRO MANUALE - sempre visibile.
+        # NB: se il ricevitore LapMonitor BT e' acceso, LapTimer passa
+        # automaticamente a modalita' LIVE multi-pilota (vedi laptimer.py).
         self._btn_crono_man = tk.Button(bar, text="CRONOMETRO", font=self._f_btn, width=14,
                   bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
                   relief="ridge", bd=2, cursor="hand2",
@@ -1208,12 +1217,16 @@ class Crono:
             pass
 
     def _avvia_scouting(self):
-        """Lancia LapTimer in modalita' scouting."""
+        """Lancia LapTimer in modalita' scouting.
+        Pilota vuoto e' ammesso: LapTimer parte comunque e, se il
+        ricevitore LapMonitor BT e' acceso, passa a modalita' LIVE
+        multi-pilota (i nomi arrivano dalla tabella Trasponder)."""
         if not LapTimer:
             return
         pilota = self._sf_pilota.get().strip()
-        if not pilota:
-            return
+        pilota_vuoto = not pilota
+        if pilota_vuoto:
+            pilota = "Multi-pilota"  # placeholder; LIVE lo sostituisce
         pista = self._sf_pista.get().strip()
         transponder = self._sf_transponder.get().strip()
         pilota_note = self._sf_pilota_note.get().strip()
@@ -1231,8 +1244,9 @@ class Crono:
 
         serbatoio = self._sf_serbatoio.get().strip()
 
-        # Salva pilota nel registro persistente
-        self._save_pilota(pilota, transponder, serbatoio, pilota_note)
+        # Salva pilota nel registro persistente (solo se compilato)
+        if not pilota_vuoto:
+            self._save_pilota(pilota, transponder, serbatoio, pilota_note)
 
         # Salva prefill per prossima volta
         self._scouting_prefill = {
@@ -1581,7 +1595,7 @@ class Crono:
         btns = []
         descs = []
         voci = [
-            ("NUOVA LETTURA", "Compila dati e cronometra / SpeedHive Live", self._schermata_scouting),
+            ("NUOVA LETTURA", "Compila dati e cronometra / SpeedHive / LIVE BT", self._schermata_scouting),
             ("TUTTI I TEMPI", "Rivedi sessioni di tutti i piloti", self._schermata_tutti_tempi),
         ]
 

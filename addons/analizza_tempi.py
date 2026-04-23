@@ -56,6 +56,15 @@ except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
 
+# Stampa termica Bluetooth (opzionale: se manca, il bottone STAMPA
+# resta grigio)
+try:
+    from core.thermal_print import (stampa_bluetooth,
+                                     _fmt_tempo, _linea, _centra, _riga, W)
+    _HAS_PRINT = True
+except ImportError:
+    _HAS_PRINT = False
+
 # Analisi IA (opzionale)
 try:
     from ai_analisi import AIAnalisi
@@ -301,7 +310,7 @@ class AnalizzaTempi:
         for w in self.root.winfo_children():
             w.destroy()
         top = self.root.winfo_toplevel()
-        for k in ("<e>", "<p>", "<v>", "<a>", "<s>",
+        for k in ("<e>", "<p>", "<v>", "<a>", "<s>", "<S>",
                   "<Control-s>", "<Control-S>",
                   "<Escape>", "<Up>", "<Down>"):
             try: top.unbind(k)
@@ -407,11 +416,15 @@ class AnalizzaTempi:
         # Bottoni
         bar = tk.Frame(self.root, bg=c["sfondo"])
         bar.pack(pady=(3, 3))
+        _print_ok = _HAS_PRINT
+        _print_fg = c["stato_ok"] if _print_ok else c["testo_dim"]
+        _print_cmd = self._stampa if _print_ok else (lambda: None)
         for txt, fg, cmd in [
             ("AUTO\nA", c["stato_avviso"], self._auto),
             ("ESCLUDI\nE", c["stato_errore"], lambda: self._toggle("escluso")),
             ("PIT\nP", c["stato_avviso"], lambda: self._toggle("pit")),
             ("VALIDO\nV", c["stato_ok"], lambda: self._toggle("valido")),
+            ("STAMPA\nS", _print_fg, _print_cmd),
             ("SALVA\nCtrl+S", c["stato_ok"], self._salva)]:
             b = tk.Button(bar, text=txt, font=self._f_small, width=9,
                       bg=c["pulsanti_sfondo"], fg=fg,
@@ -434,6 +447,8 @@ class AnalizzaTempi:
         top.bind("<a>", lambda e: self._auto())
         top.bind("<Control-s>", lambda e: self._salva())
         top.bind("<Control-S>", lambda e: self._salva())
+        top.bind("<s>", lambda e: self._stampa())
+        top.bind("<S>", lambda e: self._stampa())
         top.bind("<Escape>", lambda e: self._chiudi())
 
         # Popola e calcola
@@ -576,6 +591,145 @@ class AnalizzaTempi:
     # -----------------------------------------------------------------
     #  SALVA
     # -----------------------------------------------------------------
+    def _genera_scheda_stampa(self):
+        """Costruisce righe testo per la stampa termica della sessione
+        rivisitata. Usa dati da self.sessione + self.giri (con stati
+        aggiornati dall'utente nell'editor)."""
+        s = self.sessione
+        righe = []
+        r = righe.append
+
+        validi = [g for g in self.giri if g.get("stato") == "valido"]
+        pit_g = [g for g in self.giri if g.get("stato") == "pit"]
+        tempi_v = [g["tempo"] for g in validi]
+        best = min(tempi_v) if tempi_v else 0
+        media = sum(tempi_v) / len(tempi_v) if tempi_v else 0
+        totale = sum(tempi_v) if tempi_v else s.get("tempo_totale", 0)
+        n_giri = len(self.giri)
+        n_validi = len(validi)
+        n_pit = len(pit_g)
+
+        tot_min = int(totale) // 60
+        tot_sec = totale - tot_min * 60
+
+        # Header
+        r("=" * 42)
+        r("CRONOMETRAGGIO".center(42))
+        r(("TrackMind v%s" % __version__).center(42))
+        r("=" * 42)
+        r("")
+        r("%-20s %21s" % ("Pilota:", str(s.get("pilota", ""))[:21]))
+        if s.get("setup"):
+            r("%-20s %21s" % ("Setup:", str(s.get("setup", ""))[:21]))
+        if s.get("pista"):
+            r("%-20s %21s" % ("Pista:", str(s.get("pista", ""))[:21]))
+        data = s.get("data", "") or ""
+        ora = s.get("ora", "") or ""
+        if data or ora:
+            r("%-20s %21s" % ("Data:", ("%s %s" % (data, ora)).strip()[:21]))
+        serb = s.get("serbatoio_cc", 0) or 0
+        if serb:
+            r("%-20s %21s" % ("Serbatoio:", "%dcc" % serb))
+        trasp = s.get("trasponder") or s.get("transponder")
+        if trasp:
+            r("%-20s %21s" % ("Trasponder:", str(trasp)))
+        r("")
+
+        # Riepilogo
+        r("-" * 42)
+        r("RIEPILOGO".center(42))
+        r("-" * 42)
+        r("")
+        r("%-20s %21s" % ("Tempo totale:", "%d:%06.3f" % (tot_min, tot_sec)))
+        r("%-20s %21s" % ("Giri totali:", "%d (%d validi)" % (n_giri, n_validi)))
+        if n_pit:
+            r("%-20s %21s" % ("Pit stop:", "%d" % n_pit))
+        r("%-20s %21s" % ("BEST LAP:",
+                            _fmt_tempo(best) if _HAS_PRINT else "%05.2f" % best))
+        r("%-20s %21s" % ("MEDIA:",
+                            _fmt_tempo(media) if _HAS_PRINT else "%05.2f" % media))
+        r("")
+
+        # Dettaglio giri
+        r("-" * 42)
+        r("DETTAGLIO GIRI".center(42))
+        r("-" * 42)
+        r("%-5s %10s %8s  %-10s" % ("GIRO", "TEMPO", "DELTA", "STATO"))
+        r("-" * 42)
+        for g in self.giri:
+            num = g.get("giro", 0)
+            stato = g.get("stato", "valido")
+            tempo = g.get("tempo", 0) or 0
+            delta_s = ""
+            if best and tempo:
+                d = tempo - best
+                delta_s = "+%05.2f" % d if d > 0 else "-----"
+            stato_s = stato.upper()[:10]
+            mark = ""
+            if tempo == best and stato == "valido":
+                mark = "*"
+            tempo_s = _fmt_tempo(tempo) if _HAS_PRINT else "%05.2f" % tempo
+            r("%-5s %10s %8s  %-10s%s" % (num, tempo_s, delta_s, stato_s, mark))
+
+        r("")
+        r("=" * 42)
+        r("".center(42))
+        r("")  # feed finale per strappare il foglio
+        r("")
+        return righe
+
+    def _stampa(self):
+        """Invia la scheda giri alla stampante termica Bluetooth (stessa
+        logica di laptimer._stampa_termica ma a partire da sessione
+        salvata)."""
+        c = self.colori
+        if not _HAS_PRINT:
+            try:
+                self._lbl_status.config(
+                    text="Modulo stampa non disponibile",
+                    fg=c["stato_errore"])
+            except Exception:
+                pass
+            return
+        if not self.giri:
+            try:
+                self._lbl_status.config(
+                    text="Nessun giro da stampare",
+                    fg=c["stato_avviso"])
+            except Exception:
+                pass
+            return
+        try:
+            self._lbl_status.config(
+                text="Stampa in corso...", fg=c["stato_avviso"])
+            self._lbl_status.update_idletasks()
+        except Exception:
+            pass
+
+        # MAC stampante da conf.dat (come retrodb/laptimer)
+        mac = "auto"
+        try:
+            from conf_manager import carica_conf
+            _conf = carica_conf()
+            _mac = (_conf.get("stampante_bt", "") or "").strip()
+            if _mac:
+                mac = _mac
+        except Exception:
+            pass
+
+        righe = self._genera_scheda_stampa()
+
+        def _stampa_thread():
+            ok, msg = stampa_bluetooth(righe, mac)
+            try:
+                fg = c["stato_ok"] if ok else c["stato_errore"]
+                self._lbl_status.config(text=msg, fg=fg)
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(target=_stampa_thread, daemon=True).start()
+
     def _salva(self):
         c = self.colori
         self.sessione["giri"] = self.giri
