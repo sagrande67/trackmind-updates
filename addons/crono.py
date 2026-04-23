@@ -2506,6 +2506,9 @@ class Crono:
                                 fill=c["stato_ok"], width=3)
             canvas.create_oval(fx - 4, bar_y - 4, fx + 4, bar_y + 4,
                                 fill=c["stato_ok"], outline=c["stato_ok"])
+
+    def _seleziona_stessa_data(self):
+        """Seleziona sessioni con stessa data + pilota, salta quelle con 3 giri o meno."""
         MIN_GIRI = 4  # salta solo sessioni brevissime (1-3 giri)
         focused = self._at.focus()
         if not focused:
