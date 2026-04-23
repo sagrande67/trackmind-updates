@@ -2400,23 +2400,106 @@ class Crono:
             pass
 
     def _ghost_draw(self):
-        """Disegna frame corrente: barre orizzontali ordinate, leader in alto."""
+        """Disegna frame corrente: grafico a LINEE stile F1-TV.
+        Asse X = giri completati, asse Y = tempo cumulato. Ogni pilota
+        ha una curva che si disegna progressivamente col tempo sim.
+        Pallino + nome in testa a ogni curva (posizione istantanea).
+        Asse Y cresce verso l'alto: curva piu' bassa = ritmo migliore."""
+        import math
         canvas = self._ghost_canvas
         c = self.c
         canvas.delete("all")
         W = canvas.winfo_width()
         H = canvas.winfo_height()
-        if W < 100 or H < 100:
+        if W < 120 or H < 100:
             return
 
-        # Calcola posizione corrente di ogni pilota
+        # Margini: top alto per header+classifica, left largo per label Y,
+        # bottom piu' alto per asse + progress bar
+        ml, mr, mt, mb = 60, 20, 110, 40
+        pw = W - ml - mr
+        ph = H - mt - mb
+        if pw < 50 or ph < 50:
+            return
+
+        # Range fisso basato sulla sessione piu' lunga (leader reale)
+        # cosi' le curve crescono dall'origine senza rescale continuo.
+        max_giri = max(s["total_laps"] for s in self._ghost_sessioni)
+        max_tempo = max(s["total_time"] for s in self._ghost_sessioni)
+        if max_giri < 1: max_giri = 1
+        if max_tempo < 1: max_tempo = 1
+        # Piccolo padding Y
+        vt_max = max_tempo * 1.05
+
+        def xp(giri):
+            return ml + int(giri / max_giri * pw)
+
+        def yp(tempo):
+            # Y cresce verso l'alto nel grafico (ma tk Y cresce verso il
+            # basso): inverti cosi' tempo=0 sta in basso, tempo_max in alto
+            return mt + int((1.0 - tempo / vt_max) * ph)
+
+        fg_grid = c["linee"]
+        fg_label = c["testo_dim"]
+
+        # Assi + griglia verticale (giri)
+        n_ticks_x = min(10, max_giri)
+        step_x = max(1, max_giri // n_ticks_x)
+        gi = 0
+        while gi <= max_giri:
+            x = xp(gi)
+            canvas.create_line(x, mt, x, mt + ph,
+                                fill=fg_grid, dash=(2, 4))
+            canvas.create_text(x, mt + ph + 4, text=str(gi),
+                                fill=fg_label, font=(FONT_MONO, 8), anchor="n")
+            gi += step_x
+        # Griglia orizzontale (tempi) ogni ~60s
+        tick_step = 60.0
+        while vt_max / tick_step > 8:
+            tick_step *= 2
+        while vt_max / tick_step < 3 and tick_step > 15:
+            tick_step /= 2
+        v = tick_step
+        while v < vt_max:
+            y = yp(v)
+            canvas.create_line(ml, y, ml + pw, y,
+                                fill=fg_grid, dash=(2, 4))
+            mm = int(v) // 60
+            ss = int(v) % 60
+            canvas.create_text(ml - 4, y,
+                                text="%d:%02d" % (mm, ss),
+                                fill=fg_label, font=(FONT_MONO, 8), anchor="e")
+            v += tick_step
+        # Assi principali
+        canvas.create_line(ml, mt, ml, mt + ph,
+                            fill=c["label"], width=2)
+        canvas.create_line(ml, mt + ph, ml + pw, mt + ph,
+                            fill=c["label"], width=2)
+        canvas.create_text(ml + pw // 2, H - 8, text="Giro",
+                            fill=c["label"], font=(FONT_MONO, 9), anchor="s")
+
+        # Calcola posizioni attuali per ogni pilota + ranking
         posizioni = []
         for i, sess in enumerate(self._ghost_sessioni):
-            laps = self._ghost_laps_at_time(sess, self._ghost_t)
-            posizioni.append({"idx": i, "sess": sess, "laps": laps})
-        posizioni.sort(key=lambda p: -p["laps"])
+            laps_at_t = self._ghost_laps_at_time(sess, self._ghost_t)
+            # tempo cumulato al punto raggiunto (interpolato)
+            n_full = int(laps_at_t)
+            if n_full == 0:
+                tempo_acc = 0.0
+            elif n_full >= len(sess["cumul"]):
+                tempo_acc = sess["cumul"][-1]
+                laps_at_t = float(len(sess["cumul"]))
+            else:
+                tempo_acc = sess["cumul"][n_full - 1]
+            frac = laps_at_t - n_full
+            if frac > 0 and n_full < len(sess["tempi"]):
+                tempo_acc += sess["tempi"][n_full] * frac
+            posizioni.append({"idx": i, "sess": sess,
+                               "laps": laps_at_t, "tempo": tempo_acc})
+        # Sort per giri desc, poi tempo asc (leader prima)
+        posizioni.sort(key=lambda p: (-p["laps"], p["tempo"]))
 
-        # Detecta sorpassi: confronta con ordine precedente
+        # Rileva sorpassi (flash giallo punto incrocio)
         nuovo_ordine = tuple(p["idx"] for p in posizioni)
         if self._ghost_prev_order is not None:
             for pos, idx in enumerate(nuovo_ordine):
@@ -2425,99 +2508,115 @@ class Crono:
                 except ValueError:
                     continue
                 if pos < vecchia_pos:
-                    # Ha guadagnato posizioni -> flash per ~10 frame
                     self._ghost_flash[idx] = 10
         self._ghost_prev_order = nuovo_ordine
 
-        # Header grande: tempo corrente
+        # Disegna le linee di ogni pilota (in ordine: prima i non-leader
+        # cosi' le teste del leader vanno in cima visivamente)
+        for p in reversed(posizioni):
+            sess = p["sess"]
+            laps_at_t = p["laps"]
+            if laps_at_t <= 0:
+                continue
+            color = sess["color"]
+            idx = p["idx"]
+
+            # Costruisci punti: (0,0), (1, cumul[0]), ...
+            pts_xy = [xp(0), yp(0)]
+            n_full = int(laps_at_t)
+            for i in range(min(n_full, len(sess["cumul"]))):
+                pts_xy.extend([xp(i + 1), yp(sess["cumul"][i])])
+            # Punto parziale
+            frac = laps_at_t - n_full
+            if frac > 0 and n_full < len(sess["tempi"]):
+                prev_cumul = sess["cumul"][n_full - 1] if n_full > 0 else 0.0
+                partial_tempo = prev_cumul + sess["tempi"][n_full] * frac
+                pts_xy.extend([xp(laps_at_t), yp(partial_tempo)])
+            # Disegna linea
+            if len(pts_xy) >= 4:
+                canvas.create_line(*pts_xy, fill=color, width=2,
+                                    smooth=False)
+
+            # Pallino sulla testa
+            head_x = pts_xy[-2]
+            head_y = pts_xy[-1]
+            # Flash se appena sorpassato
+            flash_count = self._ghost_flash.get(idx, 0)
+            if flash_count > 0:
+                self._ghost_flash[idx] = flash_count - 1
+                canvas.create_oval(head_x - 10, head_y - 10,
+                                    head_x + 10, head_y + 10,
+                                    outline=c["stato_avviso"], width=3)
+            canvas.create_oval(head_x - 5, head_y - 5,
+                                head_x + 5, head_y + 5,
+                                fill=color, outline=color)
+
+            # Etichetta nome pilota accanto al pallino
+            nome_x = head_x + 10
+            nome_y = head_y
+            # Se la testa e' troppo vicino al bordo destro, metti l'etichetta
+            # a sinistra del pallino
+            if head_x > ml + pw - 80:
+                nome_x = head_x - 10
+                anchor = "e"
+            else:
+                anchor = "w"
+            canvas.create_text(nome_x, nome_y,
+                                text=sess["pilota"][:12],
+                                fill=color,
+                                font=(FONT_MONO, 10, "bold"),
+                                anchor=anchor)
+
+        # Header tempo gara (sopra il grafico)
         t_min = int(self._ghost_t) // 60
         t_sec = self._ghost_t - t_min * 60
         tempo_str = "%02d:%05.2f" % (t_min, t_sec)
         pct = int(100.0 * self._ghost_t / self._ghost_max_time) \
             if self._ghost_max_time > 0 else 100
-        canvas.create_text(W // 2, 24, text=tempo_str,
+        canvas.create_text(W // 2, 20, text=tempo_str,
                             fill=c["dati"],
-                            font=(FONT_MONO, 28, "bold"),
+                            font=(FONT_MONO, 24, "bold"),
                             anchor="center")
-        canvas.create_text(W // 2, 54, text="gara: %d%%  (x%.1f)"
-                            % (pct, self._ghost_speed),
+        canvas.create_text(W // 2, 48, text="gara: %d%%   x%.1f" %
+                            (pct, self._ghost_speed),
                             fill=c["testo_dim"],
                             font=(FONT_MONO, 10))
 
-        # Righe piloti
-        leader_laps = posizioni[0]["laps"]
-        if leader_laps < 0.1:
-            leader_laps = 0.1
-
-        top_y = 78
-        bottom_margin = 20
-        n = len(posizioni)
-        avail_h = H - top_y - bottom_margin
-        row_h = min(70, max(36, avail_h // n))
-        bar_left = 200
-        bar_right = W - 180
-        bar_width = max(100, bar_right - bar_left)
-
+        # Classifica compatta nell'header (sotto al tempo)
+        cls_y = 78
+        x_cur = 20
         for rank, p in enumerate(posizioni):
-            y = top_y + rank * row_h + 2
             sess = p["sess"]
             laps = p["laps"]
             color = sess["color"]
-            idx = p["idx"]
-
-            # Flash giallo se ha appena sorpassato
-            flash_count = self._ghost_flash.get(idx, 0)
-            if flash_count > 0:
-                self._ghost_flash[idx] = flash_count - 1
-                border = c["stato_avviso"]  # giallo
-                border_w = 3
-            else:
-                border = color
-                border_w = 1
-
-            # Posizione + nome a sx
-            etichetta = "%d. %s" % (rank + 1, sess["pilota"])
-            canvas.create_text(10, y + row_h // 2,
-                                text=etichetta,
-                                fill=color,
-                                font=(FONT_MONO, 13, "bold"),
-                                anchor="w")
-
-            # Barra
-            bar_len = int((laps / leader_laps) * bar_width)
-            if bar_len < 2:
-                bar_len = 2
-            # Sfondo barra (pista)
-            canvas.create_rectangle(bar_left, y + 4,
-                                     bar_left + bar_width, y + row_h - 4,
-                                     outline=c["linee"], fill=c["sfondo_celle"])
-            # Barra progresso
-            canvas.create_rectangle(bar_left, y + 4,
-                                     bar_left + bar_len, y + row_h - 4,
-                                     outline=border, fill=color,
-                                     width=border_w)
-
-            # Testo gap/giri a dx
             giri_int = int(laps)
             if rank == 0:
-                # Leader: numero giri grande + LEADER
-                gap_str = "%d giri   LEADER" % giri_int
+                txt = "%d.%s %dg*" % (rank + 1, sess["pilota"][:8], giri_int)
             else:
-                # Differenza: tempo indietro rispetto al leader
-                gap_laps = leader_laps - laps
-                # Stima gap in secondi usando la media dei tempi del leader
+                leader_laps = posizioni[0]["laps"]
                 leader_sess = posizioni[0]["sess"]
-                avg_leader = (leader_sess["total_time"]
-                               / leader_sess["total_laps"]) if leader_sess["total_laps"] else 0
-                gap_sec = gap_laps * avg_leader
-                gap_str = "%d giri   -%d.%02d s" % (
-                    giri_int, int(gap_sec), int((gap_sec * 100) % 100))
-            canvas.create_text(W - 10, y + row_h // 2, text=gap_str,
-                                fill=c["dati"],
-                                font=(FONT_MONO, 11), anchor="e")
+                avg_l = (leader_sess["total_time"] / leader_sess["total_laps"]) \
+                         if leader_sess["total_laps"] else 0
+                gap_laps = leader_laps - laps
+                gap_sec = gap_laps * avg_l
+                txt = "%d.%s %dg -%.1fs" % (
+                    rank + 1, sess["pilota"][:8], giri_int, gap_sec)
+            # A capo se finisce spazio
+            # (larghezza stimata in monospace)
+            w_text = len(txt) * 8 + 16
+            if x_cur + w_text > W - 10:
+                cls_y += 18
+                x_cur = 20
+                if cls_y > mt - 10:
+                    break  # niente spazio
+            canvas.create_text(x_cur, cls_y, text=txt,
+                                fill=color,
+                                font=(FONT_MONO, 10, "bold"),
+                                anchor="w")
+            x_cur += w_text
 
-        # Bar progresso gara in basso
-        bar_y = H - 10
+        # Progress bar globale in fondo
+        bar_y = H - 14
         canvas.create_line(20, bar_y, W - 20, bar_y,
                             fill=c["linee"], width=1)
         if self._ghost_max_time > 0:
