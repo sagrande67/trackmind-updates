@@ -1,7 +1,7 @@
 {
-  "version": "05.05.35",
-  "date": "2026-04-22",
-  "time": "08:45:22",
+  "version": "05.05.36",
+  "date": "2026-04-23",
+  "time": "17:42:54",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -13,6 +13,7 @@
     "confronta_setup.py": "addons",
     "crono.py": "addons",
     "laptimer.py": "addons",
+    "laptimer_REAL.py": "addons",
     "myrcm_import.py": "addons",
     "prompt_editor.py": "addons",
     "speedhive_import.py": "addons",
@@ -22,6 +23,7 @@
     "batteria.py": "core",
     "editor_tabelle.py": "core",
     "focus_guard.py": "core",
+    "lapmonitor.py": "core",
     "meteo.py": "core",
     "sd_bar.py": "core",
     "sd_health.py": "core",
