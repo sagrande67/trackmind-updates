@@ -743,20 +743,41 @@ class AIAnalisi:
                 self._sel_btn = 0
                 self._evidenzia_bottone()
 
-                # Verifica stampante in thread separato (non blocca UI)
+                # Verifica stampante in thread separato (non blocca UI).
+                # Strategia (post v05.05.44): se nel conf.dat c'e' un MAC
+                # BT configurato, lo consideriamo "stampante associata" e
+                # abilitiamo il bottone subito senza pre-flight. Il vero
+                # check avviene al click via stampa_bluetooth, che gestisce
+                # gia' retry + socket connect (vedi core/thermal_print.py).
+                # In questo modo evitiamo che il bottone resti grigio
+                # quando un BLE scan satura il radio o la stampante e'
+                # in sleep mode (hcitool name in entrambi i casi torna
+                # vuoto). Se l'utente clicca e la stampante e' davvero
+                # spenta, l'errore appare nel feedback.
                 import threading
                 def _check_stampante():
+                    _mac = "auto"
                     try:
-                        from thermal_print import stampante_disponibile
                         from conf_manager import carica_conf
                         _conf = carica_conf()
-                        _mac = _conf.get("stampante_bt", "").strip() or "auto"
+                        _mac_conf = (_conf.get("stampante_bt", "")
+                                     or "").strip()
+                        if _mac_conf:
+                            _mac = _mac_conf
                     except Exception:
-                        _mac = "auto"
-                    try:
-                        ok = stampante_disponibile(_mac)
-                    except Exception:
-                        ok = False
+                        pass
+                    # MAC valido formato BT (XX:XX:XX:XX:XX:XX)?
+                    mac_bt_valido = (":" in _mac and len(_mac) == 17)
+                    if mac_bt_valido:
+                        ok = True  # Stampante associata, abilita subito
+                    else:
+                        # MAC non configurato (o non BT): fallback al
+                        # check classico per USB / auto-detect Windows.
+                        try:
+                            from thermal_print import stampante_disponibile
+                            ok = stampante_disponibile(_mac)
+                        except Exception:
+                            ok = False
                     if ok:
                         def _abilita():
                             try:
