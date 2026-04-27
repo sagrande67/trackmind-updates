@@ -1039,14 +1039,17 @@ class AssistenteGara:
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left", padx=(8, 0))
 
-        # Riga 2: apri per ID o URL evento
+        # Riga 2: apri per ID o URL evento (NIENTE bottone inline:
+        # l'utente compila ID + altri campi, poi preme APRI EVENTO
+        # in fondo alla schermata cosi' tutti i campi sono pronti).
+        # Enter sul campo NON apre piu' subito, lascia tempo di
+        # compilare gli altri campi.
         bar2 = tk.Frame(form_frame, bg=c["sfondo"])
         bar2.pack(fill="x", pady=(2, 2))
         if _HAS_RETROFIELD:
             self._sf_evt_id = RetroField(bar2,
                                           label="Apri ID o URL",
                                           tipo="S", lunghezza=42,
-                                          on_enter=lambda: self._apri_evento_per_id(),
                                           label_width=22)
             self._sf_evt_id.pack(side="left", padx=(0, 8))
         else:
@@ -1060,13 +1063,11 @@ class AssistenteGara:
                                insertbackground=c["dati"],
                                relief="solid", bd=1)
             ent_id.pack(side="left", padx=(0, 8))
-            ent_id.bind("<Return>",
-                         lambda e: self._apri_evento_per_id())
-        tk.Button(bar2, text="APRI ID", font=self._f_btn,
-                  bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._apri_evento_per_id).pack(side="left",
-                                                          padx=4)
+        tk.Label(bar2,
+                 text="(opzionale: compila gli altri campi, "
+                      "poi APRI EVENTO)",
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(side="left", padx=(0, 8))
 
         # Riga 3: simulazione (test su data passata/futura)
         bar3 = tk.Frame(form_frame, bg=c["sfondo"])
@@ -1150,13 +1151,21 @@ class AssistenteGara:
         self._lb_eventi.bind("<Return>",
                               lambda e: self._scegli_evento())
 
-        # Bottoni in fondo
+        # Bottoni in fondo: UNICO "APRI EVENTO" che usa l'ID se
+        # compilato, altrimenti la selezione della lista. Cosi' sai
+        # sempre cosa cliccare a fine compilazione, e tutti i campi
+        # (ID, simulazione, nome) sono gia' pronti al momento dell'apri.
         btnbar = tk.Frame(self.root, bg=c["sfondo"])
         btnbar.pack(fill="x", padx=10, pady=(0, 4))
         tk.Button(btnbar, text="APRI EVENTO", font=self._f_btn,
                   bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._scegli_evento).pack(side="left", padx=4)
+                  relief="ridge", bd=2, cursor="hand2",
+                  command=self._apri_evento).pack(side="left", padx=4)
+        tk.Label(btnbar,
+                 text="(usa ID se compilato, altrimenti la selezione "
+                      "in lista)",
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(side="left", padx=(8, 0))
 
         self._footer_status("Pronto. Premi AGGIORNA per caricare la "
                             "lista eventi MyRCM.")
@@ -1254,8 +1263,22 @@ class AssistenteGara:
             self._lb_eventi.insert("end", riga)
         self._lb_eventi.selection_set(0)
         self._lb_eventi.activate(0)
-        self._set_status("Trovati %d eventi. Doppio click per aprire."
-                          % len(self._eventi), "ok")
+        # Niente focus auto qui: l'utente puo' voler compilare prima
+        # i campi (ID, simulazione, nome) e poi premere APRI EVENTO.
+        # Se preferisce usare la lista basta cliccarla o premere Tab.
+        self._set_status(
+            "Trovati %d eventi. \u2191\u2193 in lista o compila "
+            "ID/Simulazione/Nome poi APRI EVENTO."
+            % len(self._eventi), "ok")
+
+    def _apri_evento(self):
+        """Dispatcher unico: se il campo "Apri ID o URL" e' compilato,
+        apri quell'evento; altrimenti usa la selezione della lista."""
+        raw = self._leggi_evt_id()
+        if raw:
+            self._apri_evento_per_id()
+        else:
+            self._scegli_evento()
 
     def _apri_evento_per_id(self):
         """Apre direttamente un evento dato il suo ID MyRCM (o un URL
@@ -1345,14 +1368,27 @@ class AssistenteGara:
                            lambda e: self._scegli_categoria())
         self._lb_cat.bind("<Return>",
                            lambda e: self._scegli_categoria())
+        # Frecce su/giu sono native nella listbox tk, ma servono
+        # con il widget che ha il focus. Diamo focus alla listbox
+        # appena le categorie sono caricate (in _mostra_categorie).
+        # TAB esce verso il bottone APRI CATEGORIA.
+        self._lb_cat.bind("<Tab>", lambda e: (
+            btn_apri_cat.focus_set(), "break")[-1])
         self._lb_cat.insert("end", "  Caricamento categorie...")
 
         btnbar = tk.Frame(self.root, bg=c["sfondo"])
         btnbar.pack(fill="x", padx=10, pady=(0, 4))
-        tk.Button(btnbar, text="APRI CATEGORIA", font=self._f_btn,
+        btn_apri_cat = tk.Button(btnbar, text="APRI CATEGORIA",
+                  font=self._f_btn,
                   bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._scegli_categoria).pack(side="left", padx=4)
+                  relief="ridge", bd=2, cursor="hand2",
+                  command=self._scegli_categoria)
+        btn_apri_cat.pack(side="left", padx=4)
+        # Enter sul bottone -> apri. Shift+Tab torna alla listbox.
+        btn_apri_cat.bind("<Return>",
+            lambda e: (self._scegli_categoria(), "break")[-1])
+        btn_apri_cat.bind("<Shift-Tab>",
+            lambda e: (self._lb_cat.focus_set(), "break")[-1])
 
         self._footer_status("Carico categorie...", "avviso")
 
@@ -1392,10 +1428,16 @@ class AssistenteGara:
             self._lb_cat.insert("end", riga)
         self._lb_cat.selection_set(0)
         self._lb_cat.activate(0)
+        # Focus sulla listbox cosi' frecce su/giu' (native) e
+        # Enter/Tab funzionano subito senza dover cliccare.
+        try:
+            self._lb_cat.focus_set()
+        except Exception:
+            pass
 
         self._set_status(
-            "%d categorie. Doppio click per aprire (scarico time "
-            "table delle giornate dopo la scelta)."
+            "%d categorie. \u2191\u2193 = naviga | Enter o doppio "
+            "click = apri | Tab = vai a APRI CATEGORIA"
             % len(self._categorie), "ok")
 
     def _parsa_simulazione(self):
