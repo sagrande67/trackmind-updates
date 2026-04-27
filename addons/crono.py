@@ -1896,10 +1896,12 @@ class Crono:
         alias_per_chip = self._build_alias_per_trasponder()
 
         def _applica_alias(sess):
-            """Se il nome pilota sembra anonimo (numero nudo, "Trasp"
-            o "Pilota_NNN") e c'e' un alias per il suo transponder,
-            sostituisce il nome al volo (NON tocca il file su disco:
-            la modifica e' solo sulla vista di TUTTI I TEMPI)."""
+            """Se il nome pilota sembra anonimo (numero nudo,
+            "Trasp", "Pilota_NNN" o stringhe tipo "1137349 [0]"
+            che SpeedHive usa quando il pilota non ha nome) e c'e'
+            un alias per il suo transponder, sostituisce il nome
+            al volo (NON tocca il file su disco: la modifica e'
+            solo sulla vista di TUTTI I TEMPI)."""
             if not alias_per_chip:
                 return
             chip = str(sess.get("transponder", "")).strip()
@@ -1909,18 +1911,20 @@ class Crono:
             if not nome_giusto:
                 return
             nome_attuale = (sess.get("pilota", "") or "").strip()
-            # Considera "anonimo" un nome che e':
-            # - vuoto / "?"
-            # - tutto cifre (numero trasponder usato come nome)
-            # - inizia con "Trasp" o "Pilota_"
-            # - coincide col transponder
+            # "Anonimo" se NON contiene LETTERE (a-z): cosi' matcha
+            # numeri nudi tipo "1137349", "1137349 [0]", "12345/0",
+            # ma NON nomi reali tipo "Mollo Felice" o "Bosa Raffaello".
+            # Match anche per prefissi noti "Trasp"/"Pilota_" che
+            # contengono lettere ma sono placeholder generici.
+            ha_lettere = any(ch.isalpha() for ch in nome_attuale)
+            nome_low = nome_attuale.lower()
             anon = (
                 not nome_attuale or
                 nome_attuale == "?" or
                 nome_attuale == chip or
-                nome_attuale.replace(" ", "").isdigit() or
-                nome_attuale.lower().startswith("trasp") or
-                nome_attuale.lower().startswith("pilota_")
+                not ha_lettere or
+                nome_low.startswith("trasp") or
+                nome_low.startswith("pilota_")
             )
             if anon:
                 sess["pilota"] = nome_giusto
