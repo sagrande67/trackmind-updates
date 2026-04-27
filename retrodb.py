@@ -4372,13 +4372,14 @@ class RetroDBApp:
                                (_mon.categoria or {}).get("nome", "?"))
                         cat = cat[:18]
                         c = carica_colori()
-                        mins = secs // 60
-                        if mins <= 1:
-                            col = c["stato_errore"]   # rosso
-                        elif mins <= 3:
-                            col = "#ff8800"           # arancio (zona attesa)
-                        elif mins <= 15:
-                            col = c["stato_avviso"]   # giallo (prep vettura)
+                        # Confronto su SECONDI esatti, non su mins
+                        # interi (sarebbe in anticipo di ~30s).
+                        if secs <= 60:
+                            col = c["stato_errore"]   # rosso (-1m)
+                        elif secs <= 180:
+                            col = "#ff8800"           # arancio (-3m)
+                        elif secs <= 900:
+                            col = c["stato_avviso"]   # giallo (-15m)
                         else:
                             col = c["stato_ok"]       # verde
                         lbl.config(

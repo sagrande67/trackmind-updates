@@ -884,6 +884,11 @@ class AssistenteGara:
         self._f_title = tkfont.Font(family=FONT_MONO, size=16, weight="bold")
         self._f_btn = tkfont.Font(family=FONT_MONO, size=10, weight="bold")
         self._f_info = tkfont.Font(family=FONT_MONO, size=11)
+        # Variante con strikethrough per le sessioni gia' fatte
+        # (durata trascorsa). Cosi' colpo d'occhio: le righe sbarrate
+        # sono sessioni completate, le altre ancora da fare.
+        self._f_info_strike = tkfont.Font(family=FONT_MONO, size=11,
+                                            overstrike=1)
         self._f_small = tkfont.Font(family=FONT_MONO, size=9)
         self._f_count = tkfont.Font(family=FONT_MONO, size=22, weight="bold")
         self._f_count_big = tkfont.Font(family=FONT_MONO, size=36,
@@ -1882,19 +1887,24 @@ class AssistenteGara:
             secs_to_start = (dt - now).total_seconds()
 
             if now >= fine_turno:
-                # PASSATO
+                # PASSATO / FATTA: sessione completata. Sbarriamo
+                # con strikethrough cosi' a colpo d'occhio si
+                # distinguono dalle non-fatte e dall'IN CORSO.
                 bg = c["sfondo"]
                 fg_main = c["testo_dim"]
                 fg_dim = c["testo_dim"]
-                stato_txt = "PASSATO"
+                stato_txt = "FATTA"
+                font_riga = self._f_info_strike
             elif now >= dt:
                 # IN CORSO
                 bg = "#0a3a0a"
                 fg_main = c["stato_ok"]
                 fg_dim = c["stato_ok"]
                 stato_txt = "IN CORSO"
+                font_riga = self._f_info
             elif dt == prossimo_dt:
                 # PROSSIMO turno - 4 stati progressivi
+                font_riga = self._f_info
                 if secs_to_start <= 60:
                     # AVVIA MOTORE (lampeggia)
                     if int(now.timestamp()) % 2 == 0:
@@ -1933,12 +1943,15 @@ class AssistenteGara:
                 fg_main = c["testo_dim"]
                 fg_dim = c["testo_dim"]
                 stato_txt = ""
+                font_riga = self._f_info
             try:
                 row["frame"].config(bg=bg)
-                row["lbl_ora"].config(bg=bg, fg=fg_main)
-                row["lbl_man"].config(bg=bg, fg=fg_dim)
-                row["lbl_grp"].config(bg=bg, fg=fg_dim)
-                row["lbl_stato"].config(bg=bg, fg=fg_main, text=stato_txt)
+                row["lbl_ora"].config(bg=bg, fg=fg_main, font=font_riga)
+                row["lbl_man"].config(bg=bg, fg=fg_dim, font=font_riga)
+                row["lbl_grp"].config(bg=bg, fg=fg_dim, font=font_riga)
+                row["lbl_stato"].config(bg=bg, fg=fg_main,
+                                         text=stato_txt,
+                                         font=font_riga)
             except Exception:
                 pass
 
@@ -2017,8 +2030,10 @@ class AssistenteGara:
             cd_str = "%d:%02d:%02d" % (ore, mm, ss)
         else:
             cd_str = "%02d:%02d" % (mm, ss)
-        # Stato visivo (4 livelli)
-        if mins <= self.SOGLIA_AVVIA_MIN:
+        # Stato visivo (4 livelli). NB: confronto su SECONDI esatti,
+        # non su minuti interi: a 90 secondi mancanti `mins` sarebbe
+        # gia' 1 e attiverebbe AVVIA MOTORE in anticipo di 30 secondi.
+        if secs <= self.SOGLIA_AVVIA_MIN * 60:  # <= 60 sec
             # Lampeggia: rosso pieno alternato
             bg = "#660000"
             fg = "#ff4444"
@@ -2026,11 +2041,11 @@ class AssistenteGara:
             if (now.second % 2) == 0:
                 bg = "#ff4444"
                 fg = "#000000"
-        elif mins <= self.SOGLIA_ATTESA_MIN:
+        elif secs <= self.SOGLIA_ATTESA_MIN * 60:  # <= 180 sec
             bg = "#663300"
             fg = "#ff8800"
             alert = ">>> AVVICINARSI ALLA ZONA ATTESA <<<"
-        elif mins <= self.SOGLIA_PREP_MIN:
+        elif secs <= self.SOGLIA_PREP_MIN * 60:  # <= 900 sec
             bg = "#664400"
             fg = "#ffaa00"
             alert = ">>> PREPARARE LA VETTURA <<<"
