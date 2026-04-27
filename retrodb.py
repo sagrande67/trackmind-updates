@@ -1738,31 +1738,11 @@ class RetroDBApp:
         else:
             self._lbl_stampante = None
 
-        # Widget ASSISTENTE GARA: riga DEDICATA sotto info_line.
-        # Su uConsole (480px alto, ~80 char larghezza) la riga
-        # info_line con utente|wifi|stampante e' gia' piena, la
-        # label GARA non ci sta in fila. Mettiamola su una riga sua
-        # cosi' ha tutta la larghezza disponibile e si vede sempre.
-        # Visibile solo se monitor attivo (pack/pack_forget).
-        self._lbl_assist_gara = None
-        if _HAS_ASSISTENTE:
-            try:
-                self._info_line_gara = tk.Frame(pannello_dx,
-                                                  bg=c["sfondo"])
-                self._info_line_gara.pack(fill="x")
-                self._lbl_assist_gara = tk.Label(
-                    self._info_line_gara, text="GARA: ...",
-                    bg=c["sfondo"], fg=c["stato_avviso"],
-                    font=self._f_small, cursor="hand2")
-                self._lbl_assist_gara.bind(
-                    "<Button-1>",
-                    lambda e: self._lancia_assistente_gara())
-                # Mostra solo se monitor gia' attivo
-                _mon = AssistenteGaraMonitor.get(self.root)
-                if _mon is not None and _mon.attivo:
-                    self._lbl_assist_gara.pack(side="left")
-            except Exception:
-                self._lbl_assist_gara = None
+        # NB: il widget ASSISTENTE GARA non e' creato qui ma come
+        # OVERLAY figlia del Toplevel in _bootstrap_assistente_gara,
+        # cosi' resta visibile in QUALUNQUE schermata (CRONO, setup,
+        # ecc.) e non solo nel menu. Vedi _aggiorna_widget_assistente
+        # per il place/lift periodico.
 
         # Indicatore Batteria: barra LED sulla stessa riga del titolo,
         # a destra di "TRACKMIND vX". Solo se disponibile (uConsole).
@@ -4239,10 +4219,11 @@ class RetroDBApp:
 
     def _bootstrap_assistente_gara(self):
         """Inizializza il monitor singleton dell'Assistente Gara al
-        login. Carica lo stato salvato su disco (se presente),
-        registra l'alert listener globale (solo BEEP sonoro, niente
-        popup) e avvia il refresh periodico della label header.
-        Idempotente: chiamarlo piu' volte non duplica nulla."""
+        login. Carica lo stato salvato su disco, registra l'alert
+        listener (BEEP sonoro), e crea un OVERLAY label figlia
+        diretta del Toplevel: cosi' resta visibile in QUALUNQUE
+        schermata (menu, CRONO, setup, ecc.), e' il vero "centro di
+        controllo" del countdown gara. Idempotente."""
         if not _HAS_ASSISTENTE:
             return
         try:
@@ -4258,11 +4239,28 @@ class RetroDBApp:
                 _mon.carica_stato_persistito()
             except Exception:
                 pass
+        # Crea il widget OVERLAY come figlia diretta del Toplevel.
+        # Sopravvive a tutti i _pulisci() che agiscono su _vista o
+        # _base. Posizionato in alto a destra con place(). Visibile
+        # solo se monitor attivo (place_forget altrimenti).
+        if (not hasattr(self, "_lbl_assist_gara")
+                or self._lbl_assist_gara is None):
+            try:
+                c = carica_colori()
+                self._lbl_assist_gara = tk.Label(
+                    self.root, text="GARA: ...",
+                    bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
+                    font=tkfont.Font(family=FONT_MONO, size=_S(9),
+                                      weight="bold"),
+                    cursor="hand2", padx=6, pady=2,
+                    relief="ridge", bd=1)
+                self._lbl_assist_gara.bind(
+                    "<Button-1>",
+                    lambda e: self._lancia_assistente_gara())
+            except Exception:
+                self._lbl_assist_gara = None
         # Arma l'alert listener una volta sola (idempotente).
-        # Niente popup invadenti: solo BEEP sonoro al cambio soglia
-        # (-15min, -1min). L'utente vede il countdown nella label
-        # del menu (centro di controllo, accanto a batteria/wifi/
-        # stampante).
+        # Niente popup invadenti: solo BEEP sonoro al cambio soglia.
         if not getattr(self, "_assist_listeners_armati", False):
             def _on_alert(stato, prossimo, dt_target):
                 try:
@@ -4274,7 +4272,7 @@ class RetroDBApp:
             except Exception:
                 pass
             self._assist_listeners_armati = True
-            # Avvia il refresh periodico del widget header
+            # Avvia il refresh periodico dell'overlay
             self._aggiorna_widget_assistente()
 
     def _lancia_assistente_gara(self):
@@ -4323,12 +4321,12 @@ class RetroDBApp:
         self._rimuovi_coperta()
 
     def _aggiorna_widget_assistente(self):
-        """Aggiorna periodicamente la label "GARA: ... fra HH:MM:SS"
-        nella riga info del menu (accanto a Wi-Fi/Stampante/Batteria).
-        Gira a 1 Hz finche' il monitor e' attivo. Quando l'utente
-        esce dal menu (es. va in CRONO), la label viene distrutta
-        col resto del menu: il prossimo tick salta e quando l'utente
-        torna al menu la label viene ricreata."""
+        """Aggiorna periodicamente l'OVERLAY "GARA: ... fra HH:MM:SS"
+        in alto a destra del Toplevel. lift() ogni tick per stare
+        sopra qualunque schermata (menu, CRONO, setup, addon vari).
+        Sotto la soglia 15 min lo sfondo della label vira a
+        giallo/arancio/rosso per attirare l'attenzione anche con la
+        coda dell'occhio."""
         if not _HAS_ASSISTENTE:
             return
         try:
@@ -4348,14 +4346,16 @@ class RetroDBApp:
             if lbl is not None:
                 if _mon is None or not _mon.attivo:
                     try:
-                        lbl.pack_forget()
+                        lbl.place_forget()
                     except Exception:
                         pass
                 else:
                     prossimo, dt_target = _mon.trova_prossimo()
+                    c = carica_colori()
                     if prossimo is None or dt_target is None:
                         lbl.config(text="GARA: nessun turno",
-                                   fg=carica_colori()["testo_dim"])
+                                   bg=c["pulsanti_sfondo"],
+                                   fg=c["testo_dim"])
                     else:
                         secs = int((dt_target - _mon._now())
                                     .total_seconds())
@@ -4370,24 +4370,29 @@ class RetroDBApp:
                             cd = "%02d:%02d" % (mm, ss)
                         cat = (prossimo.get("categoria", "") or
                                (_mon.categoria or {}).get("nome", "?"))
-                        cat = cat[:18]
-                        c = carica_colori()
-                        # Confronto su SECONDI esatti, non su mins
-                        # interi (sarebbe in anticipo di ~30s).
+                        cat = cat[:14]
+                        # Sfondo + testo cambiano in base alla
+                        # soglia. Confronto su SECONDI esatti.
                         if secs <= 60:
-                            col = c["stato_errore"]   # rosso (-1m)
+                            bg = "#ff4444"; fg = "#000000"
                         elif secs <= 180:
-                            col = "#ff8800"           # arancio (-3m)
+                            bg = "#ff8800"; fg = "#000000"
                         elif secs <= 900:
-                            col = c["stato_avviso"]   # giallo (-15m)
+                            bg = "#ffaa00"; fg = "#000000"
                         else:
-                            col = c["stato_ok"]       # verde
+                            bg = c["pulsanti_sfondo"]
+                            fg = c["stato_ok"]
                         lbl.config(
-                            text="GARA: %s fra %s" % (cat, cd),
-                            fg=col)
-                    # Assicurati che sia visibile (pack idempotente)
+                            text="GARA %s -%s" % (cat, cd),
+                            bg=bg, fg=fg)
+                    # Mostra l'overlay e fallo stare sopra a tutto.
+                    # place + lift idempotenti: ogni tick ribadisco
+                    # la posizione e lo z-order, anche se nel
+                    # frattempo qualche addon ha creato widget sopra.
                     try:
-                        lbl.pack(side="left")
+                        lbl.place(relx=1.0, rely=0.0,
+                                   anchor="ne", x=-6, y=4)
+                        lbl.lift()
                     except Exception:
                         pass
         except Exception:
