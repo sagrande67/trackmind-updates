@@ -301,8 +301,13 @@ def costruisci_prompt(sessione, storico=None, strategia=None):
                 "best": best,
                 "media_passo": media_passo,
             })
+        # Per il confronto andamento usiamo solo sessioni dello STESSO
+        # pilota (altrimenti i delta non hanno senso).
+        # In multi-pilota stampiamo comunque la tabella, ma calcoliamo
+        # i delta separati per ogni pilota.
         prompt += "RIEPILOGO ANDAMENTO (ordine cronologico):\n"
         prompt += "  ora    pilota         giri  best     media-passo  delta\n"
+        # Tieni traccia best/media precedente per pilota
         prev_per_pil = {}
         for r in riepilogo_rows:
             pn = r["pilota"]
@@ -312,6 +317,7 @@ def costruisci_prompt(sessione, storico=None, strategia=None):
             prev = prev_per_pil.get(pn)
             if prev and prev["media_passo"] > 0 and r["media_passo"] > 0:
                 d = r["media_passo"] - prev["media_passo"]
+                # Soglia 0.05s: sotto questa il segnale e' rumore.
                 if d <= -0.05:
                     delta_str = "MIGLIORA  -%.2fs/giro" % abs(d)
                 elif d >= 0.05:
@@ -322,6 +328,9 @@ def costruisci_prompt(sessione, storico=None, strategia=None):
                 r["ora"], pn[:13], r["n_giri"],
                 best_str, media_str, delta_str)
             prev_per_pil[pn] = r
+        # Verdetto sintetico per ogni pilota: confronta prima vs ultima
+        # sessione del pilota. Questo e' il segnale "macroscopico" che
+        # l'AI DEVE riportare se diverso da zero.
         prompt += "\nVERDETTO ANDAMENTO (prima vs ultima sessione, per pilota):\n"
         per_pil = {}
         for r in riepilogo_rows:

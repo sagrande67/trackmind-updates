@@ -1119,6 +1119,9 @@ class Crono:
                 from speedhive_import import (cerca_tutte_attivita_per_data,
                                               scarica_sessioni as sh_scarica)
                 from concurrent.futures import ThreadPoolExecutor, as_completed
+                # Indice trasponder -> nome dal registro piloti.json:
+                # se l'utente ha fatto ALIAS in passato, il nome viene
+                # riusato in automatico (vedi _ricerca_completa).
                 alias_per_chip = self._build_alias_per_trasponder()
                 attivita = cerca_tutte_attivita_per_data(speedhive_id, data_str)
                 if not attivita:
@@ -1154,7 +1157,7 @@ class Crono:
                     pass
 
                 def _processa_attivita(att):
-                    local_saved = []
+                    local_saved = []  # (chip, sid, sessione_dict)
                     local_skipped = 0
                     try:
                         aid = att["activity_id"]
@@ -1580,6 +1583,11 @@ class Crono:
                                     return local_saved, local_skipped
                                 for sess in dati.get("sessions", []):
                                     sid = sess.get("id", 0)
+                                    # SKIP: sessione gia' scaricata in
+                                    # passato. Niente HTTP risparmio qui
+                                    # (la lista sessioni e' arrivata col
+                                    # singolo GET di sh_scarica), ma
+                                    # niente IO/parsing/scrittura.
                                     if sid and sid in sid_locali:
                                         local_skipped += 1
                                         continue
@@ -1635,7 +1643,7 @@ class Crono:
                         # Parallelismo controllato: 8 worker. SpeedHive
                         # regge bene questo carico e con ~500 piloti
                         # passiamo da ~10 minuti a 1-2 minuti totali.
-                        nuove_sessioni = []
+                        nuove_sessioni = []  # (chip, sid, sessione_dict)
                         completate = 0
                         n_tot = len(attivita)
                         with ThreadPoolExecutor(max_workers=8) as exe:
@@ -1649,6 +1657,7 @@ class Crono:
                                 nuove_sessioni.extend(saved_local)
                                 skipped_sh += skipped_local
                                 completate += 1
+                                # Aggiorna status di avanzamento
                                 if completate % 10 == 0 or completate == n_tot:
                                     msg_prog = ("SpeedHive %d/%d piloti "
                                                 "(%d nuove)" % (
@@ -1659,6 +1668,9 @@ class Crono:
                                             text=m)
                                         if status.winfo_exists() else None)
 
+                        # Scrittura SEQUENZIALE (no race su filesystem).
+                        # Solo le nuove sessioni: niente delete+rewrite di
+                        # file gia' presenti.
                         for chip, sid, sessione in nuove_sessioni:
                             path = os.path.join(scouting_dir,
                                 "lap_speedhive_%s_%s_s%d.json"
