@@ -187,6 +187,293 @@ def filtra_per_categoria(time_table, categoria_keyword):
 
 
 # =====================================================================
+#  ASSISTENTE GARA - MONITOR PERSISTENTE (singleton)
+# =====================================================================
+class AssistenteGaraMonitor:
+    """Monitor di sfondo che resta attivo anche quando l'UI
+    fullscreen e' chiusa. L'utente pretende di poter lavorare sui
+    setup mentre l'assistente lo avvisa quando arrivano i suoi turni:
+    questo monitor gira con root.after(1000, ...) finche' viene
+    disattivato esplicitamente, e notifica i listener registrati sia
+    ad ogni tick (per il widget header) sia agli edge dei threshold
+    (-15 min, -1 min) per scatenare popup alert.
+
+    Singleton accessibile via AssistenteGaraMonitor.get(root):
+    serve un unico monitor per processo, l'utente ha una sola gara
+    alla volta in cui correre.
+    """
+    _instance = None
+    SOGLIA_PREP_MIN = 15
+    SOGLIA_AVVIA_MIN = 1
+
+    @classmethod
+    def get(cls, root=None):
+        if cls._instance is None and root is not None:
+            cls._instance = cls(root)
+        return cls._instance
+
+    def __init__(self, root):
+        self.root = root
+        # Stato: questi sono i dati che l'utente ha scelto in UI
+        self.evento = None         # dict
+        self.categoria = None      # dict
+        self.time_table = []
+        self.tt_filtrato = []
+        self.delay_min = 0
+        # Listeners
+        self._tick_listeners = []   # f(prossimo, dt_target, now)
+        self._alert_listeners = []  # f(stato, prossimo, dt_target)
+        # Tick state
+        self._attivo = False
+        self._tick_id = None
+        self._ultimo_alert_stato = None  # 'prep' | 'avvia' | None
+
+    # ── attivazione/disattivazione ────────────────────────────────
+    def attiva(self, evento, categoria, time_table, delay_min=0):
+        self.evento = evento
+        self.categoria = categoria
+        self.time_table = time_table or []
+        self.tt_filtrato = filtra_per_categoria(
+            self.time_table, (categoria or {}).get("nome", ""))
+        self.delay_min = delay_min
+        self._ultimo_alert_stato = None
+        if not self._attivo:
+            self._attivo = True
+            self._tick()
+
+    def disattiva(self):
+        self._attivo = False
+        if self._tick_id is not None:
+            try:
+                self.root.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        self.evento = None
+        self.categoria = None
+        self.time_table = []
+        self.tt_filtrato = []
+        self.delay_min = 0
+        # Notifica un ultimo tick "spento" cosi' i listener si nascondono
+        for cb in list(self._tick_listeners):
+            try:
+                cb(None, None, datetime.now())
+            except Exception:
+                pass
+
+    @property
+    def attivo(self):
+        return self._attivo
+
+    # ── ritardo manuale ───────────────────────────────────────────
+    def imposta_delay(self, delay_min):
+        self.delay_min = int(delay_min)
+        # Reset alert: se ho appena spostato gli orari, gli edge si
+        # ricomputano alla prossima soglia raggiunta.
+        self._ultimo_alert_stato = None
+
+    def aggiungi_delay(self, delta):
+        self.imposta_delay(self.delay_min + int(delta))
+
+    # ── listeners ─────────────────────────────────────────────────
+    def add_tick_listener(self, cb):
+        if cb not in self._tick_listeners:
+            self._tick_listeners.append(cb)
+
+    def remove_tick_listener(self, cb):
+        if cb in self._tick_listeners:
+            self._tick_listeners.remove(cb)
+
+    def add_alert_listener(self, cb):
+        if cb not in self._alert_listeners:
+            self._alert_listeners.append(cb)
+
+    def remove_alert_listener(self, cb):
+        if cb in self._alert_listeners:
+            self._alert_listeners.remove(cb)
+
+    # ── core ──────────────────────────────────────────────────────
+    def trova_prossimo(self, now=None):
+        """Ritorna (turno_dict, dt_target) del prossimo turno della
+        categoria selezionata, applicando il delay manuale."""
+        if not self._attivo or not self.tt_filtrato:
+            return None, None
+        if now is None:
+            now = datetime.now()
+        prossimo = None
+        prossimo_dt = None
+        for r in self.tt_filtrato:
+            ora = r.get("ora", "")
+            dt = _ora_to_dt(ora)
+            if dt is None:
+                continue
+            dt = dt + timedelta(minutes=self.delay_min)
+            if dt <= now:
+                continue
+            if prossimo_dt is None or dt < prossimo_dt:
+                prossimo = r
+                prossimo_dt = dt
+        return prossimo, prossimo_dt
+
+    def _tick(self):
+        if not self._attivo:
+            return
+        now = datetime.now()
+        prossimo, dt_target = self.trova_prossimo(now)
+        # Notifica tick listeners (widget header, UI fullscreen, ecc.)
+        for cb in list(self._tick_listeners):
+            try:
+                cb(prossimo, dt_target, now)
+            except Exception:
+                pass
+        # Edge detection alert
+        if dt_target is not None:
+            secs = (dt_target - now).total_seconds()
+            nuovo_stato = None
+            if 0 < secs <= self.SOGLIA_AVVIA_MIN * 60:
+                nuovo_stato = "avvia"
+            elif 0 < secs <= self.SOGLIA_PREP_MIN * 60:
+                nuovo_stato = "prep"
+            # Trigger alert solo al CAMBIO di stato, e solo verso uno
+            # stato di livello superiore (non torno indietro a "prep"
+            # se ero gia' in "avvia").
+            ordine = {None: 0, "prep": 1, "avvia": 2}
+            if (nuovo_stato is not None and
+                ordine[nuovo_stato] > ordine[self._ultimo_alert_stato]):
+                self._ultimo_alert_stato = nuovo_stato
+                for cb in list(self._alert_listeners):
+                    try:
+                        cb(nuovo_stato, prossimo, dt_target)
+                    except Exception:
+                        pass
+            elif (nuovo_stato is None and
+                  self._ultimo_alert_stato is not None):
+                # Turno passato: reset stato cosi' al prossimo turno
+                # gli alert ripartono da zero.
+                self._ultimo_alert_stato = None
+        # Ripianifica
+        try:
+            self._tick_id = self.root.after(1000, self._tick)
+        except Exception:
+            self._attivo = False
+
+
+# =====================================================================
+#  POPUP ALERT (toplevel transient sopra qualsiasi schermata)
+# =====================================================================
+def mostra_popup_alert(root, stato, prossimo, dt_target, colori=None):
+    """Mostra popup grande con messaggio "PREPARARE LA VETTURA" o
+    "AVVIA MOTORE". Si chiude da solo dopo 30 sec o al click utente.
+    Usato dal monitor per avvertire anche quando l'utente sta
+    lavorando in altre schermate (setup, crono, ecc.)."""
+    c = colori or _carica_colori()
+    if stato == "avvia":
+        titolo = ">>> AVVIA MOTORE <<<"
+        sotto = "1 minuto al tuo turno!"
+        col_bg = "#330000"
+        col_fg = "#ff4444"
+    else:
+        titolo = ">>> PREPARARE LA VETTURA <<<"
+        sotto = "15 minuti al tuo turno"
+        col_bg = "#332200"
+        col_fg = "#ffaa00"
+    cat = (prossimo.get("categoria", "")
+           if prossimo else "") or "?"
+    turno = (prossimo.get("turno", "")
+             if prossimo else "") or ""
+    ora = dt_target.strftime("%H:%M") if dt_target else "?"
+
+    try:
+        popup = tk.Toplevel(root)
+    except Exception:
+        return None
+    popup.title("ASSISTENTE GARA - ALERT")
+    popup.config(bg=col_bg)
+    popup.transient(root.winfo_toplevel())
+    try:
+        popup.attributes("-topmost", True)
+    except Exception:
+        pass
+    # Centratura
+    try:
+        rw = root.winfo_toplevel().winfo_width()
+        rh = root.winfo_toplevel().winfo_height()
+        rx = root.winfo_toplevel().winfo_rootx()
+        ry = root.winfo_toplevel().winfo_rooty()
+        w, h = 540, 220
+        x = rx + (rw - w) // 2
+        y = ry + (rh - h) // 2
+        popup.geometry("%dx%d+%d+%d" % (w, h, max(0, x), max(0, y)))
+    except Exception:
+        popup.geometry("540x220")
+
+    f_titolo = tkfont.Font(family=FONT_MONO, size=20, weight="bold")
+    f_sotto = tkfont.Font(family=FONT_MONO, size=14, weight="bold")
+    f_dett = tkfont.Font(family=FONT_MONO, size=11)
+    f_btn = tkfont.Font(family=FONT_MONO, size=11, weight="bold")
+
+    tk.Label(popup, text=titolo, bg=col_bg, fg=col_fg,
+             font=f_titolo).pack(pady=(20, 6))
+    tk.Label(popup, text=sotto, bg=col_bg, fg=col_fg,
+             font=f_sotto).pack(pady=(0, 8))
+    tk.Label(popup, text="%s   %s   %s" % (cat[:25], turno[:30], ora),
+             bg=col_bg, fg="#ffffff", font=f_dett).pack(pady=(0, 12))
+
+    # Bottone OK chiude e torna a ciò che si stava facendo
+    def _close():
+        try:
+            popup.destroy()
+        except Exception:
+            pass
+    tk.Button(popup, text="OK", font=f_btn, width=10,
+              bg=col_fg, fg=col_bg, relief="ridge", bd=2,
+              cursor="hand2", command=_close).pack(pady=(0, 12))
+
+    popup.bind("<Return>", lambda e: _close())
+    popup.bind("<Escape>", lambda e: _close())
+    popup.protocol("WM_DELETE_WINDOW", _close)
+
+    # Auto-close dopo 30s cosi' non resta li' tipo modale infinito
+    try:
+        popup.after(30000, _close)
+    except Exception:
+        pass
+
+    # Lampeggio del titolo per attirare l'attenzione (10 cicli)
+    state = {"alt": False, "n": 0}
+    lbl_titolo = popup.winfo_children()[0]
+    def _flash():
+        if state["n"] >= 20:
+            return
+        try:
+            if not popup.winfo_exists():
+                return
+        except Exception:
+            return
+        state["alt"] = not state["alt"]
+        try:
+            if state["alt"]:
+                lbl_titolo.config(bg=col_fg, fg=col_bg)
+            else:
+                lbl_titolo.config(bg=col_bg, fg=col_fg)
+        except Exception:
+            return
+        state["n"] += 1
+        try:
+            popup.after(400, _flash)
+        except Exception:
+            pass
+    _flash()
+
+    try:
+        popup.lift()
+        popup.focus_force()
+    except Exception:
+        pass
+    return popup
+
+
+# =====================================================================
 #  ASSISTENTE GARA - UI
 # =====================================================================
 class AssistenteGara:
@@ -222,18 +509,21 @@ class AssistenteGara:
         self._f_count_big = tkfont.Font(family=FONT_MONO, size=36,
                                          weight="bold")
 
-        # Stato
-        self._eventi = []           # lista eventi MyRCM caricati
-        self._evento_sel = None     # dict evento scelto
-        self._categorie = []        # lista categorie dell'evento
-        self._categoria_sel = None  # dict categoria scelta
-        self._time_table = []       # time table parsato
-        self._tt_filtrato = []      # time table per categoria scelta
-        self._delay_min = 0         # ritardo manuale applicato (+5 min)
-        self._countdown_id = None   # tk after id del countdown
-        self._html_evento = ""       # HTML cache dell'evento
+        # Stato locale (in fase di scelta evento/categoria)
+        self._eventi = []
+        self._categorie = []
+        self._html_evento = ""
+        self._tick_listener = None  # callback registrato sul monitor
 
-        self._schermata_iniziale()
+        # Monitor singleton: se gia' attivo, salta dritto al countdown
+        # cosi' chi rientra in ASSIST. GARA dal menu non ripassa per la
+        # lista eventi/categorie. Lo stato (evento, categoria, time
+        # table, delay) sopravvive tra una sessione UI e l'altra.
+        monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor and monitor.attivo:
+            self._schermata_timetable_monitor()
+        else:
+            self._schermata_iniziale()
 
     # =================================================================
     #  Helper UI
@@ -535,37 +825,72 @@ class AssistenteGara:
         idx = sel[0]
         if idx < 0 or idx >= len(self._categorie):
             return
-        self._categoria_sel = self._categorie[idx]
-        self._schermata_timetable()
+        cat = self._categorie[idx]
+        # Attiva il monitor singleton: da questo momento il countdown
+        # gira anche se l'utente esce dall'addon e va sui setup.
+        monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor:
+            monitor.attiva(self._evento_sel, cat, self._time_table,
+                           delay_min=0)
+        self._schermata_timetable_monitor()
 
     # =================================================================
-    #  Step 3: time table + countdown live + alert
+    #  Step 3: time table + countdown live + alert (legge dal MONITOR)
     # =================================================================
-    def _schermata_timetable(self):
+    def _schermata_timetable_monitor(self):
+        """Schermata countdown che usa il monitor singleton come
+        sorgente dati. Quando l'utente fa INDIETRO il monitor NON
+        viene fermato: e' il bottone STOP MONITOR esplicito che lo
+        spegne."""
         self._pulisci()
         c = self.c
-        cat_nome = (self._categoria_sel.get("nome", "?")
-                    if self._categoria_sel else "?")
-        self._header("TIME TABLE - " + cat_nome[:30],
-                     back_cmd=self._schermata_categorie)
+        monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor is None or not monitor.attivo:
+            self._schermata_iniziale()
+            return
+        evento = monitor.evento or {}
+        categoria = monitor.categoria or {}
+        cat_nome = categoria.get("nome", "?")
 
-        # Filtra time table per la categoria scelta
-        self._tt_filtrato = filtra_per_categoria(
-            self._time_table, cat_nome)
+        # Header con bottoni back + stop monitor
+        h = tk.Frame(self.root, bg=c["sfondo"])
+        h.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Button(h, text="< MENU", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._chiudi_lasciando_monitor).pack(side="left")
+        tk.Button(h, text="STOP MONITOR", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._stop_monitor).pack(side="left", padx=(6, 0))
+        tk.Button(h, text="CAMBIA EVENTO", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._cambia_evento).pack(side="left", padx=(6, 0))
+        tk.Label(h, text="  TIME TABLE - " + cat_nome[:30],
+                 bg=c["sfondo"], fg=c["dati"],
+                 font=self._f_title).pack(side="left", padx=(8, 0))
+        try:
+            _aggiungi_barra_bat(self.root)
+        except Exception:
+            pass
+        tk.Frame(self.root, bg=c["linee"], height=1).pack(
+            fill="x", padx=10, pady=(6, 4))
 
         # Riga info + ritardo
         info_bar = tk.Frame(self.root, bg=c["sfondo"])
         info_bar.pack(fill="x", padx=10, pady=(0, 4))
         tk.Label(info_bar,
-                 text="Evento: %s" % (self._evento_sel.get("nome", "?")[:50]),
+                 text="Evento: %s" % (evento.get("nome", "?")[:50]),
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left")
         tk.Label(info_bar, text="   Ritardo applicato:",
                  bg=c["sfondo"], fg=c["label"],
                  font=self._f_small).pack(side="left", padx=(20, 4))
-        self._lbl_delay = tk.Label(info_bar, text="0 min",
-                                    bg=c["sfondo"], fg=c["stato_avviso"],
-                                    font=self._f_small)
+        self._lbl_delay = tk.Label(
+            info_bar, text=self._delay_str(monitor.delay_min),
+            bg=c["sfondo"], fg=c["stato_avviso"],
+            font=self._f_small)
         self._lbl_delay.pack(side="left", padx=(0, 6))
         tk.Button(info_bar, text="+5 min", font=self._f_small,
                   bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
@@ -607,7 +932,7 @@ class AssistenteGara:
                                     font=self._f_count)
         self._lbl_alert.pack(pady=(0, 8))
 
-        # Lista turni
+        # Lista turni filtrata
         list_frame = tk.Frame(self.root, bg=c["sfondo"])
         list_frame.pack(fill="both", expand=True, padx=10, pady=4)
         sb = tk.Scrollbar(list_frame, bg=c["sfondo"],
@@ -623,151 +948,193 @@ class AssistenteGara:
                                   highlightthickness=0)
         self._lb_tt.pack(side="left", fill="both", expand=True)
         sb.config(command=self._lb_tt.yview)
+        self._popola_lista_turni(monitor)
 
-        if not self._tt_filtrato:
+        self._footer_status(
+            "Monitor ATTIVO: il countdown gira anche fuori da questa "
+            "schermata. STOP MONITOR per spegnerlo.", "ok")
+
+        # Registra tick listener sul monitor cosi' la UI si aggiorna
+        # automaticamente ad ogni tick (1 Hz). Quando esci, deregistra.
+        self._tick_listener = self._on_tick_ui
+        monitor.add_tick_listener(self._tick_listener)
+        # Trigger immediato per non aspettare il primo secondo
+        self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
+
+    def _popola_lista_turni(self, monitor):
+        cat_nome = (monitor.categoria or {}).get("nome", "?")
+        try:
+            self._lb_tt.delete(0, "end")
+        except Exception:
+            return
+        if not monitor.tt_filtrato:
             self._lb_tt.insert("end",
                 "  Nessun turno rilevato per categoria '%s'." % cat_nome)
-            self._lb_tt.insert("end",
-                "  Possibili cause:")
+            self._lb_tt.insert("end", "  Possibili cause:")
             self._lb_tt.insert("end",
                 "  - Time table dell'evento non ancora pubblicato")
             self._lb_tt.insert("end",
                 "  - Parser non riconosce il layout di questa pagina")
             self._lb_tt.insert("end",
-                "  - Il nome categoria non matcha esattamente quello del "
-                "time table")
-        else:
-            for r in self._tt_filtrato:
-                cat_short = (r.get("categoria") or "")[:25]
-                turno = (r.get("turno") or "")[:30]
-                self._lb_tt.insert("end",
-                    "  %s   %-25s  %s" % (r.get("ora", "?"),
-                                           cat_short, turno))
+                "  - Il nome categoria non matcha esattamente "
+                "quello del time table")
+            return
+        for r in monitor.tt_filtrato:
+            cat_short = (r.get("categoria") or "")[:25]
+            turno = (r.get("turno") or "")[:30]
+            ora_orig = r.get("ora", "?")
+            dt = _ora_to_dt(ora_orig)
+            if dt and monitor.delay_min:
+                dt = dt + timedelta(minutes=monitor.delay_min)
+                ora_eff = dt.strftime("%H:%M")
+            else:
+                ora_eff = ora_orig
+            self._lb_tt.insert("end",
+                "  %s   %-25s  %s" % (ora_eff, cat_short, turno))
 
-        self._footer_status(
-            "Countdown attivo: aggiornamento ogni secondo. "
-            "ESC = torna a categorie", "info")
-
-        # Avvia il countdown
-        self._tick_countdown()
+    def _delay_str(self, m):
+        if not m:
+            return "0 min"
+        return "%+d min" % int(m)
 
     def _aggiungi_delay(self, minuti):
-        self._delay_min += minuti
+        monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor is None:
+            return
+        monitor.aggiungi_delay(minuti)
         try:
-            self._lbl_delay.config(
-                text="%+d min" % self._delay_min if self._delay_min
-                else "0 min")
+            self._lbl_delay.config(text=self._delay_str(monitor.delay_min))
         except Exception:
             pass
-        # Trigger refresh immediato del countdown
-        self._tick_countdown(force=True)
+        # Aggiorna lista turni con nuovi orari (effetto del delay)
+        try:
+            self._popola_lista_turni(monitor)
+        except Exception:
+            pass
+        # Trigger update immediato del countdown
+        self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
 
     def _reset_delay(self):
-        self._delay_min = 0
+        monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor is None:
+            return
+        monitor.imposta_delay(0)
         try:
             self._lbl_delay.config(text="0 min")
         except Exception:
             pass
-        self._tick_countdown(force=True)
+        try:
+            self._popola_lista_turni(monitor)
+        except Exception:
+            pass
+        self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
 
-    def _trova_prossimo_turno(self, now):
-        """Ritorna (turno_dict, dt_target) del prossimo turno della
-        categoria selezionata. Se non c'e', ritorna (None, None)."""
-        prossimo = None
-        prossimo_dt = None
-        for r in self._tt_filtrato:
-            ora = r.get("ora", "")
-            dt = _ora_to_dt(ora)
-            if dt is None:
-                continue
-            # Applica ritardo manuale
-            dt = dt + timedelta(minutes=self._delay_min)
-            if dt <= now:
-                continue
-            if prossimo_dt is None or dt < prossimo_dt:
-                prossimo = r
-                prossimo_dt = dt
-        return prossimo, prossimo_dt
-
-    def _tick_countdown(self, force=False):
+    def _on_tick_ui(self, prossimo, dt_target, now):
+        """Listener registrato sul monitor: aggiorna le label del
+        countdown ad ogni tick (1 Hz)."""
         c = self.c
-        now = datetime.now()
-        prossimo, dt_target = self._trova_prossimo_turno(now)
+        try:
+            if not self._cd_frame.winfo_exists():
+                # UI distrutta (utente ha cambiato schermata): deregistra.
+                m = AssistenteGaraMonitor.get(self._top)
+                if m and self._tick_listener:
+                    m.remove_tick_listener(self._tick_listener)
+                    self._tick_listener = None
+                return
+        except Exception:
+            return
         if prossimo is None or dt_target is None:
             try:
                 self._lbl_prossimo.config(
                     text="Nessun turno futuro per questa categoria oggi",
-                    fg=c["testo_dim"])
-                self._lbl_countdown.config(text="--:--", fg=c["testo_dim"])
-                self._lbl_alert.config(text="")
+                    bg=c["sfondo_celle"], fg=c["testo_dim"])
+                self._lbl_countdown.config(text="--:--",
+                                            bg=c["sfondo_celle"],
+                                            fg=c["testo_dim"])
+                self._lbl_alert.config(text="", bg=c["sfondo_celle"],
+                                        fg=c["sfondo_celle"])
                 self._cd_frame.config(bg=c["sfondo_celle"])
-                self._lbl_prossimo.config(bg=c["sfondo_celle"])
-                self._lbl_countdown.config(bg=c["sfondo_celle"])
-                self._lbl_alert.config(bg=c["sfondo_celle"])
             except Exception:
                 pass
+            return
+        delta = dt_target - now
+        secs = int(delta.total_seconds())
+        mins = secs // 60
+        ore = mins // 60
+        mm = mins % 60
+        ss = secs % 60
+        if ore > 0:
+            cd_str = "%d:%02d:%02d" % (ore, mm, ss)
         else:
-            delta = dt_target - now
-            secs = int(delta.total_seconds())
-            mins = secs // 60
-            ore = mins // 60
-            mm = mins % 60
-            ss = secs % 60
-            if ore > 0:
-                cd_str = "%d:%02d:%02d" % (ore, mm, ss)
-            else:
-                cd_str = "%02d:%02d" % (mm, ss)
-            # Determina stato + colore
-            if mins <= self.SOGLIA_AVVIA_MIN:
-                bg = "#660000"
-                fg = "#ff4444"
-                alert = ">>> AVVIA MOTORE <<<"
-                # Lampeggio: alterna con sfondo nero
-                if (now.second % 2) == 0:
-                    bg = "#ff4444"
-                    fg = "#000000"
-            elif mins <= self.SOGLIA_PREP_MIN:
-                bg = "#664400"
-                fg = "#ffaa00"
-                alert = ">>> PREPARARE LA VETTURA <<<"
-            else:
-                bg = c["sfondo_celle"]
-                fg = c["dati"]
-                alert = ""
-            try:
-                txt_prox = "Prossimo: %s   %s   alle %s" % (
-                    prossimo.get("categoria", "?")[:25],
-                    prossimo.get("turno", "")[:30],
-                    dt_target.strftime("%H:%M"))
-                self._lbl_prossimo.config(text=txt_prox, bg=bg, fg=fg)
-                self._lbl_countdown.config(text=cd_str, bg=bg, fg=fg)
-                self._lbl_alert.config(text=alert, bg=bg, fg=fg)
-                self._cd_frame.config(bg=bg)
-            except Exception:
-                return
-
-        # Riprogramma tick
+            cd_str = "%02d:%02d" % (mm, ss)
+        # Stato visivo
+        if mins <= self.SOGLIA_AVVIA_MIN:
+            bg = "#660000"
+            fg = "#ff4444"
+            alert = ">>> AVVIA MOTORE <<<"
+            if (now.second % 2) == 0:
+                bg = "#ff4444"
+                fg = "#000000"
+        elif mins <= self.SOGLIA_PREP_MIN:
+            bg = "#664400"
+            fg = "#ffaa00"
+            alert = ">>> PREPARARE LA VETTURA <<<"
+        else:
+            bg = c["sfondo_celle"]
+            fg = c["dati"]
+            alert = ""
         try:
-            self._countdown_id = self.root.after(
-                self.REFRESH_COUNTDOWN_MS, self._tick_countdown)
+            txt_prox = "Prossimo: %s   %s   alle %s" % (
+                prossimo.get("categoria", "?")[:25],
+                prossimo.get("turno", "")[:30],
+                dt_target.strftime("%H:%M"))
+            self._lbl_prossimo.config(text=txt_prox, bg=bg, fg=fg)
+            self._lbl_countdown.config(text=cd_str, bg=bg, fg=fg)
+            self._lbl_alert.config(text=alert, bg=bg, fg=fg)
+            self._cd_frame.config(bg=bg)
         except Exception:
             pass
 
     # =================================================================
-    #  Chiusura
+    #  Chiusura / controllo monitor
     # =================================================================
-    def _chiudi(self):
-        if self._countdown_id is not None:
+    def _chiudi_lasciando_monitor(self):
+        """L'utente torna al menu di TrackMind. Il MONITOR resta vivo:
+        il countdown continua e gli alert popup arrivano comunque."""
+        # Deregistra tick listener UI (la UI sta sparendo)
+        m = AssistenteGaraMonitor.get(self._top)
+        if m and self._tick_listener:
             try:
-                self.root.after_cancel(self._countdown_id)
+                m.remove_tick_listener(self._tick_listener)
             except Exception:
                 pass
-            self._countdown_id = None
+            self._tick_listener = None
         if self._on_close:
             self._pulisci()
             self._on_close()
         elif not self._embedded:
             self.root.destroy()
+
+    def _stop_monitor(self):
+        """Spegne completamente il monitor: niente piu' countdown,
+        niente piu' alert. L'utente vorra' rilanciare l'addon
+        (lista eventi) per riattivarlo."""
+        m = AssistenteGaraMonitor.get(self._top)
+        if m:
+            m.disattiva()
+        if self._tick_listener:
+            self._tick_listener = None
+        # Torna alla schermata iniziale (lista eventi)
+        self._schermata_iniziale()
+
+    def _cambia_evento(self):
+        """Spegne il monitor e torna alla lista eventi per scegliere
+        un altro evento/categoria. Usa lo stesso path di stop."""
+        self._stop_monitor()
+
+    def _chiudi(self):
+        # Chiamato come legacy. Non spegne il monitor.
+        self._chiudi_lasciando_monitor()
 
     def run(self):
         if not self._embedded:

@@ -177,7 +177,9 @@ except ImportError:
 
 # Assistente Gara (monitor evento MyRCM live + countdown turni)
 try:
-    from assistente_gara import AssistenteGara
+    from assistente_gara import (AssistenteGara,
+                                  AssistenteGaraMonitor,
+                                  mostra_popup_alert)
     _HAS_ASSISTENTE = True
 except ImportError:
     _HAS_ASSISTENTE = False
@@ -1730,6 +1732,27 @@ class RetroDBApp:
             self._lbl_stampante.pack(side="left")
         else:
             self._lbl_stampante = None
+
+        # Widget ASSISTENTE GARA (solo se monitor attivo): "Prossimo
+        # turno: <categoria> fra HH:MM:SS". Click apre l'addon
+        # fullscreen. Resta visibile su tutte le schermate finche' il
+        # monitor e' acceso, cosi' l'utente vede sempre quanto manca
+        # alla sua chiamata anche mentre lavora sui setup.
+        self._lbl_assist_gara = None
+        if _HAS_ASSISTENTE:
+            try:
+                _mon = AssistenteGaraMonitor.get(self._top)
+                if _mon is not None and _mon.attivo:
+                    self._lbl_assist_gara = tk.Label(
+                        info_line, text="  |  GARA: ...",
+                        bg=c["sfondo"], fg=c["stato_avviso"],
+                        font=self._f_small, cursor="hand2")
+                    self._lbl_assist_gara.pack(side="left")
+                    self._lbl_assist_gara.bind(
+                        "<Button-1>",
+                        lambda e: self._lancia_assistente_gara())
+            except Exception:
+                self._lbl_assist_gara = None
 
         # Indicatore Batteria: barra LED sulla stessa riga del titolo,
         # a destra di "TRACKMIND vX". Solo se disponibile (uConsole).
@@ -4206,13 +4229,89 @@ class RetroDBApp:
 
     def _lancia_assistente_gara(self):
         """Lancia l'addon Assistente Gara: monitor evento MyRCM live
-        con countdown turni e alert per la categoria selezionata."""
+        con countdown turni e alert per la categoria selezionata.
+        Alla prima invocazione registra anche l'alert listener
+        globale (popup -15min/-1min) e avvia l'updater del widget
+        header. Il monitor sopravvive alla chiusura dell'addon."""
         if not _HAS_ASSISTENTE:
             return
+        try:
+            _mon = AssistenteGaraMonitor.get(self._top)
+        except Exception:
+            _mon = None
+        if _mon is not None and not getattr(self,
+                                            "_assist_listeners_armati",
+                                            False):
+            def _on_alert(stato, prossimo, dt_target):
+                try:
+                    mostra_popup_alert(self._top, stato,
+                                        prossimo, dt_target,
+                                        colori=carica_colori())
+                except Exception:
+                    pass
+            _mon.add_alert_listener(_on_alert)
+            self._assist_listeners_armati = True
+            self._aggiorna_widget_assistente()
         self._pulisci()
         AssistenteGara(parent=self._vista,
                        on_close=self._schermata_menu)
         self._rimuovi_coperta()
+
+    def _aggiorna_widget_assistente(self):
+        """Aggiorna periodicamente la label "Prossimo turno..."
+        nell'header. Gira a 1 Hz finche' il monitor e' attivo."""
+        if not _HAS_ASSISTENTE:
+            return
+        try:
+            _mon = AssistenteGaraMonitor.get(self._top)
+        except Exception:
+            _mon = None
+        try:
+            lbl = getattr(self, "_lbl_assist_gara", None)
+            if lbl is not None and lbl.winfo_exists():
+                if _mon is None or not _mon.attivo:
+                    try:
+                        lbl.pack_forget()
+                    except Exception:
+                        pass
+                else:
+                    prossimo, dt_target = _mon.trova_prossimo()
+                    if prossimo is None or dt_target is None:
+                        lbl.config(text="  |  GARA: nessun turno",
+                                   fg=carica_colori()["testo_dim"])
+                    else:
+                        from datetime import datetime as _dt
+                        secs = int((dt_target - _dt.now())
+                                    .total_seconds())
+                        if secs < 0:
+                            secs = 0
+                        ore = secs // 3600
+                        mm = (secs % 3600) // 60
+                        ss = secs % 60
+                        if ore > 0:
+                            cd = "%d:%02d:%02d" % (ore, mm, ss)
+                        else:
+                            cd = "%02d:%02d" % (mm, ss)
+                        cat = (prossimo.get("categoria", "") or
+                               (_mon.categoria or {}).get("nome", "?"))
+                        cat = cat[:18]
+                        c = carica_colori()
+                        mins = secs // 60
+                        if mins <= 1:
+                            col = c["stato_errore"]
+                        elif mins <= 15:
+                            col = c["stato_avviso"]
+                        else:
+                            col = c["stato_ok"]
+                        lbl.config(
+                            text="  |  GARA: %s fra %s" % (cat, cd),
+                            fg=col)
+        except Exception:
+            pass
+        try:
+            self.root.after(1000, self._aggiorna_widget_assistente)
+        except Exception:
+            pass
 
     def _ritorno_da_crono(self):
         """Callback: torna al punto di ingresso da cui si e' entrati in Crono.
