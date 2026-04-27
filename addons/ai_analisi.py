@@ -275,6 +275,82 @@ def costruisci_prompt(sessione, storico=None, strategia=None):
         prompt += "Veicoli ELETTRICI: NO carburante/miscela/serbatoio/pit rifornimento.\n"
         prompt += "Corrono fino a scarica batteria. Pit = cambio batteria.\n\n"
 
+    # ── RIEPILOGO ANDAMENTO (pre-calcolato per l'AI) ──
+    # Senza questo blocco l'AI tendeva a dichiarare miglioramento anche
+    # quando i numeri peggioravano (probabilmente un bias del modello a
+    # essere positivo). Mettendo i delta numerici espliciti in faccia,
+    # con frecce e segno, il modello non ha piu' margine per "non
+    # vedere" la regressione.
+    if len(tutte) >= 2:
+        riepilogo_rows = []
+        for sess in tutte:
+            giri = sess.get("giri", [])
+            tempi_v = [g.get("tempo", 0) for g in giri
+                       if g.get("tempo", 0) > 0
+                       and g.get("stato", "valido") == "valido"]
+            # Filtro outlier per la media: ignora i giri > 1.5x il best
+            # (sono pit/incidenti che falserebbero il "passo gara").
+            best = min(tempi_v) if tempi_v else 0
+            tempi_passo = [t for t in tempi_v if best > 0 and t <= best * 1.5]
+            media_passo = (sum(tempi_passo) / len(tempi_passo)
+                           if tempi_passo else 0)
+            riepilogo_rows.append({
+                "ora": sess.get("ora", "?")[:5],
+                "pilota": sess.get("pilota", "?"),
+                "n_giri": len(tempi_v),
+                "best": best,
+                "media_passo": media_passo,
+            })
+        prompt += "RIEPILOGO ANDAMENTO (ordine cronologico):\n"
+        prompt += "  ora    pilota         giri  best     media-passo  delta\n"
+        prev_per_pil = {}
+        for r in riepilogo_rows:
+            pn = r["pilota"]
+            best_str = _fmt(r["best"])
+            media_str = _fmt(r["media_passo"])
+            delta_str = ""
+            prev = prev_per_pil.get(pn)
+            if prev and prev["media_passo"] > 0 and r["media_passo"] > 0:
+                d = r["media_passo"] - prev["media_passo"]
+                if d <= -0.05:
+                    delta_str = "MIGLIORA  -%.2fs/giro" % abs(d)
+                elif d >= 0.05:
+                    delta_str = "PEGGIORA  +%.2fs/giro" % d
+                else:
+                    delta_str = "stabile   %+.2fs" % d
+            prompt += "  %-6s %-13s %4d  %-8s %-12s %s\n" % (
+                r["ora"], pn[:13], r["n_giri"],
+                best_str, media_str, delta_str)
+            prev_per_pil[pn] = r
+        prompt += "\nVERDETTO ANDAMENTO (prima vs ultima sessione, per pilota):\n"
+        per_pil = {}
+        for r in riepilogo_rows:
+            per_pil.setdefault(r["pilota"], []).append(r)
+        for pn, rows in per_pil.items():
+            if len(rows) < 2:
+                continue
+            prima = rows[0]
+            ultima = rows[-1]
+            if prima["media_passo"] > 0 and ultima["media_passo"] > 0:
+                d_media = ultima["media_passo"] - prima["media_passo"]
+                d_best = ((ultima["best"] - prima["best"])
+                          if prima["best"] > 0 and ultima["best"] > 0 else 0)
+                if d_media <= -0.10:
+                    verdetto = ("MIGLIORATO: media-passo -%.2fs/giro"
+                                % abs(d_media))
+                elif d_media >= 0.10:
+                    verdetto = ("PEGGIORATO: media-passo +%.2fs/giro - "
+                                "REGRESSIONE da segnalare al pilota"
+                                % d_media)
+                else:
+                    verdetto = "STABILE: media-passo %+.2fs/giro" % d_media
+                prompt += ("  %s: best %s -> %s (%+.2fs)  |  %s\n"
+                           % (pn, _fmt(prima["best"]), _fmt(ultima["best"]),
+                              d_best, verdetto))
+        prompt += "\nIMPORTANTE: il verdetto qui sopra e' CALCOLATO sui dati " \
+                  "reali dei giri. Se dice PEGGIORATO devi riportarlo come " \
+                  "regressione, NON come miglioramento. Non e' opzionale.\n\n"
+
     # ── DATI GREZZI: tempi giro per ogni sessione ──
     for si, sess in enumerate(tutte):
         giri = sess.get("giri", [])

@@ -300,6 +300,22 @@ class Crono:
         except Exception:
             pass
 
+    def _build_alias_per_trasponder(self):
+        """Indice {transponder_str: nome} dal registro piloti.json, per
+        risolvere automaticamente il nome di chi corre senza averlo
+        registrato in SpeedHive (chipLabel = numero trasponder).
+        Usato all'import SpeedHive: se ALIAS e' stato fatto in passato,
+        il nome resta tra una sessione e l'altra senza dover rifare il
+        lavoro ad ogni gara."""
+        registro = self._load_piloti()
+        idx = {}
+        for p in registro.values():
+            t = (p.get("transponder") or "").strip()
+            n = (p.get("nome") or "").strip()
+            if t and n:
+                idx[t] = n
+        return idx
+
     def _match_pista(self, testo):
         """Cerca match pista per testo parziale. Ritorna dict pista o None.
         Restituisce match solo se univoco. Se ambiguo ritorna None
@@ -339,8 +355,12 @@ class Crono:
                   "<KP_Add>", "<KP_Subtract>", "<0>",
                   "<e>", "<p>", "<v>", "<a>", "<s>",
                   "<l>", "<L>", "<g>", "<G>", "<P>",
-                  "<space>", "<r>", "<R>"):
+                  "<space>", "<r>", "<R>",
+                  "<Control-a>", "<Control-A>",
+                  "<Control-f>", "<Control-F>"):
             try: self._top.unbind(k)
+            except: pass
+            try: self.root.unbind(k)
             except: pass
         # Ferma animazione Ghost se attiva
         self._ghost_running = False
@@ -923,12 +943,22 @@ class Crono:
                   relief="ridge", bd=2, cursor="hand2",
                   command=self._avvia_scouting)
         self._btn_crono_man.pack(side="left", padx=4)
+        # Enter sul bottone CRONOMETRO -> avvia scouting e BLOCCA propagazione
+        # cosi' il binding <Return> sul toplevel non rifa' partire _scouting_enter
+        # (che a form distrutto cadrebbe nel ramo default).
+        self._btn_crono_man.bind(
+            "<Return>", lambda e: (self._avvia_scouting(), "break")[-1])
         # RICERCA SPEEDHIVE/MYRCM (visibile quando pista matchata + data compilata)
         self._btn_speedhive_live = tk.Button(bar, text="RICERCA", font=self._f_btn, width=14,
                   bg=c["cerca_sfondo"], fg=c["cerca_testo"],
                   relief="ridge", bd=2, cursor="hand2",
                   command=self._avvia_ricerca)
-        self._btn_speedhive_live.bind("<Return>", lambda e: self._avvia_ricerca())
+        # Enter sul bottone RICERCA -> avvia ricerca e BLOCCA propagazione.
+        # Senza "break" il binding sul toplevel scattava DOPO che _pulisci
+        # aveva distrutto il form, focus_get tornava sul root, _scouting_enter
+        # cadeva nel ramo else e partiva _avvia_scouting al posto della ricerca.
+        self._btn_speedhive_live.bind(
+            "<Return>", lambda e: (self._avvia_ricerca(), "break")[-1])
         # Nascosto inizialmente
         self._speedhive_live_visible = False
 
@@ -1088,6 +1118,8 @@ class Crono:
             try:
                 from speedhive_import import (cerca_tutte_attivita_per_data,
                                               scarica_sessioni as sh_scarica)
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                alias_per_chip = self._build_alias_per_trasponder()
                 attivita = cerca_tutte_attivita_per_data(speedhive_id, data_str)
                 if not attivita:
                     self.root.after(0, lambda: self._auto_import_status(
@@ -1097,87 +1129,141 @@ class Crono:
                 scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
                 os.makedirs(scouting_dir, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                saved = 0
 
-                for att in attivita:
-                    aid = att["activity_id"]
-                    chip = att["chipCode"]
-                    label = att.get("chipLabel", "Pilota_%s" % chip[-4:])
-
-                    dati = sh_scarica(aid)
-                    if not dati or "sessions" not in dati:
-                        continue
-
-                    for sess in dati.get("sessions", []):
-                        laps = sess.get("laps", [])
-                        if not laps:
+                # Indice locale {chipCode: set(session_ids)} per skip
+                # delle sessioni gia' scaricate (vedi _ricerca_completa).
+                indice_locale = {}
+                try:
+                    for f in os.listdir(scouting_dir):
+                        if not f.endswith(".json"):
                             continue
-                        sid = sess.get("id", 0)
-                        tempi = []
-                        giri_list = []
-                        for lap in laps:
-                            try:
-                                dur = float(lap.get("duration", 0))
-                            except (ValueError, TypeError):
-                                dur = 0
-                            if dur > 0:
-                                tempi.append(dur)
-                                giri_list.append({
-                                    "giro": len(giri_list) + 1,
-                                    "tempo": round(dur, 3),
-                                    "stato": "valido",
-                                })
-                        if not giri_list:
-                            continue
-
-                        dt_start = sess.get("dateTimeStart", "")
                         try:
-                            from datetime import datetime as dt_cls
-                            dt_obj = dt_cls.fromisoformat(dt_start)
-                            ora = dt_obj.strftime("%H:%M:%S")
-                        except Exception:
-                            ora = dt_start[:8] if len(dt_start) >= 8 else "?"
-
-                        sessione = {
-                            "pilota": label,
-                            "setup": "SpeedHive - %s" % pista_nome,
-                            "data": data_str,
-                            "ora": ora,
-                            "tipo": "speedhive",
-                            "transponder": chip,
-                            "serbatoio_cc": 0,
-                            "sessione_carburante": False,
-                            "speedhive_session": sid,
-                            "speedhive_activity": aid,
-                            "num_giri": len(giri_list),
-                            "giri": giri_list,
-                            "miglior_tempo": round(min(tempi), 3),
-                            "media": round(sum(tempi) / len(tempi), 3),
-                            "tempo_totale": round(sum(tempi), 3),
-                        }
-                        # Deduplica
-                        for old_f in os.listdir(scouting_dir):
-                            if not old_f.endswith(".json"):
+                            with open(os.path.join(scouting_dir, f),
+                                      "r", encoding="utf-8") as fp:
+                                d = json.load(fp)
+                            if d.get("data") != data_str:
                                 continue
-                            old_path = os.path.join(scouting_dir, old_f)
+                            ch = str(d.get("transponder", "")).strip()
+                            sid_l = d.get("speedhive_session")
+                            if ch and sid_l:
+                                indice_locale.setdefault(
+                                    ch, set()).add(sid_l)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                def _processa_attivita(att):
+                    local_saved = []
+                    local_skipped = 0
+                    try:
+                        aid = att["activity_id"]
+                        chip = att["chipCode"]
+                        chip_str = str(chip).strip()
+                        label = (alias_per_chip.get(chip_str)
+                                 or att.get("chipLabel",
+                                            "Pilota_%s" % chip[-4:]))
+                        sid_locali = indice_locale.get(chip_str, set())
+                        dati = sh_scarica(aid)
+                        if not dati or "sessions" not in dati:
+                            return local_saved, local_skipped
+                        for sess in dati.get("sessions", []):
+                            sid = sess.get("id", 0)
+                            if sid and sid in sid_locali:
+                                local_skipped += 1
+                                continue
+                            laps = sess.get("laps", [])
+                            if not laps:
+                                continue
+                            tempi = []
+                            giri_list = []
+                            for lap in laps:
+                                try:
+                                    dur = float(lap.get("duration", 0))
+                                except (ValueError, TypeError):
+                                    dur = 0
+                                if dur > 0:
+                                    tempi.append(dur)
+                                    giri_list.append({
+                                        "giro": len(giri_list) + 1,
+                                        "tempo": round(dur, 3),
+                                        "stato": "valido",
+                                    })
+                            if not giri_list:
+                                continue
+                            dt_start = sess.get("dateTimeStart", "")
                             try:
-                                with open(old_path, "r", encoding="utf-8") as fp:
-                                    old = json.load(fp)
-                                if (old.get("transponder") == chip and
-                                    old.get("data") == data_str and
-                                    old.get("speedhive_session") == sid):
-                                    os.remove(old_path)
+                                from datetime import datetime as dt_cls
+                                dt_obj = dt_cls.fromisoformat(dt_start)
+                                ora = dt_obj.strftime("%H:%M:%S")
                             except Exception:
-                                pass
+                                ora = (dt_start[:8]
+                                       if len(dt_start) >= 8 else "?")
+                            sessione = {
+                                "pilota": label,
+                                "setup": "SpeedHive - %s" % pista_nome,
+                                "data": data_str,
+                                "ora": ora,
+                                "tipo": "speedhive",
+                                "transponder": chip,
+                                "serbatoio_cc": 0,
+                                "sessione_carburante": False,
+                                "speedhive_session": sid,
+                                "speedhive_activity": aid,
+                                "num_giri": len(giri_list),
+                                "giri": giri_list,
+                                "miglior_tempo": round(min(tempi), 3),
+                                "media": round(sum(tempi) / len(tempi), 3),
+                                "tempo_totale": round(sum(tempi), 3),
+                            }
+                            local_saved.append((chip, sid, sessione))
+                    except Exception:
+                        pass
+                    return local_saved, local_skipped
 
-                        path = os.path.join(scouting_dir,
-                            "lap_speedhive_%s_%s_s%d.json" % (ts, chip[-6:], sid))
+                # Background: 4 worker (meno aggressivo del refresh
+                # manuale che usa 8) per non saturare il radio Wi-Fi
+                # mentre l'utente compila il form.
+                nuove_sessioni = []
+                skipped = 0
+                with ThreadPoolExecutor(max_workers=4) as exe:
+                    futures = [exe.submit(_processa_attivita, att)
+                               for att in attivita]
+                    for fut in as_completed(futures):
+                        try:
+                            saved_local, skipped_local = fut.result()
+                        except Exception:
+                            saved_local, skipped_local = [], 0
+                        nuove_sessioni.extend(saved_local)
+                        skipped += skipped_local
+
+                saved = 0
+                for chip, sid, sessione in nuove_sessioni:
+                    path = os.path.join(scouting_dir,
+                        "lap_speedhive_%s_%s_s%d.json"
+                        % (ts, str(chip)[-6:], sid))
+                    try:
                         with open(path, "w", encoding="utf-8") as f:
-                            json.dump(sessione, f, ensure_ascii=False, indent=2)
+                            json.dump(sessione, f,
+                                      ensure_ascii=False, indent=2)
                         saved += 1
+                    except Exception:
+                        pass
 
-                self.root.after(0, lambda: self._auto_import_status(
-                    "SpeedHive: %d sessioni prove libere" % saved, "ok"))
+                if saved:
+                    msg = "SpeedHive: %d nuove" % saved
+                    if skipped:
+                        msg += " (+%d gia' presenti)" % skipped
+                    self.root.after(0, lambda m=msg: self._auto_import_status(
+                        m, "ok"))
+                elif skipped:
+                    self.root.after(0,
+                        lambda s=skipped: self._auto_import_status(
+                            "SpeedHive: nessuna nuova (%d gia' presenti)" % s,
+                            "ok"))
+                else:
+                    self.root.after(0, lambda: self._auto_import_status(
+                        "SpeedHive: nessuna sessione", "avviso"))
 
             except Exception as e:
                 self.root.after(0, lambda: self._auto_import_status(
@@ -1434,80 +1520,168 @@ class Crono:
                         text="Ricerca SpeedHive...") if status.winfo_exists() else None)
                     from speedhive_import import (cerca_tutte_attivita_per_data,
                                                   scarica_sessioni as sh_scarica)
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    # Indice trasponder -> nome dal registro piloti.json:
+                    # se l'utente ha gia' fatto ALIAS su quel chip in
+                    # passato, il nome viene riutilizzato in automatico
+                    # invece di ripescare chipLabel (= numero trasponder
+                    # quando il pilota in SpeedHive non si e' registrato).
+                    alias_per_chip = self._build_alias_per_trasponder()
+
+                    # Indice locale {chipCode: set(session_ids)} dei file
+                    # scouting GIA' presenti per questa data: serve per
+                    # saltare sessioni gia' scaricate. In gara con 400-500
+                    # piloti, senza questo skip ogni "ricerca" ri-processava
+                    # tutto da capo (10+ minuti). Con la cache, il refresh
+                    # successivo elabora SOLO le sessioni nuove.
+                    indice_locale = {}
+                    try:
+                        for f in os.listdir(scouting_dir):
+                            if not f.endswith(".json"):
+                                continue
+                            try:
+                                with open(os.path.join(scouting_dir, f),
+                                          "r", encoding="utf-8") as fp:
+                                    d = json.load(fp)
+                                if d.get("data") != data_str:
+                                    continue
+                                ch = str(d.get("transponder", "")).strip()
+                                sid_l = d.get("speedhive_session")
+                                if ch and sid_l:
+                                    indice_locale.setdefault(
+                                        ch, set()).add(sid_l)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                     attivita = cerca_tutte_attivita_per_data(speedhive_id, data_str)
+                    skipped_sh = 0
                     if attivita:
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        for att in attivita:
-                            aid = att["activity_id"]
-                            chip = att["chipCode"]
-                            label = att.get("chipLabel", "Pilota_%s" % chip[-4:])
-                            dati = sh_scarica(aid)
-                            if not dati or "sessions" not in dati:
-                                continue
-                            for sess in dati.get("sessions", []):
-                                laps = sess.get("laps", [])
-                                if not laps:
-                                    continue
-                                sid = sess.get("id", 0)
-                                tempi = []
-                                giri_list = []
-                                for lap in laps:
-                                    try:
-                                        dur = float(lap.get("duration", 0))
-                                    except (ValueError, TypeError):
-                                        dur = 0
-                                    if dur > 0:
-                                        tempi.append(dur)
-                                        giri_list.append({
-                                            "giro": len(giri_list) + 1,
-                                            "tempo": round(dur, 3),
-                                            "stato": "valido",
-                                        })
-                                if not giri_list:
-                                    continue
-                                dt_start = sess.get("dateTimeStart", "")
-                                try:
-                                    from datetime import datetime as dt_cls
-                                    dt_obj = dt_cls.fromisoformat(dt_start)
-                                    ora = dt_obj.strftime("%H:%M:%S")
-                                except Exception:
-                                    ora = dt_start[:8] if len(dt_start) >= 8 else "?"
-                                sessione = {
-                                    "pilota": label,
-                                    "setup": "SpeedHive - %s" % pista_nome,
-                                    "data": data_str, "ora": ora,
-                                    "tipo": "speedhive",
-                                    "transponder": chip,
-                                    "serbatoio_cc": 0,
-                                    "sessione_carburante": False,
-                                    "speedhive_session": sid,
-                                    "speedhive_activity": aid,
-                                    "num_giri": len(giri_list),
-                                    "giri": giri_list,
-                                    "miglior_tempo": round(min(tempi), 3),
-                                    "media": round(sum(tempi) / len(tempi), 3),
-                                    "tempo_totale": round(sum(tempi), 3),
-                                }
-                                # Deduplica
-                                for old_f in os.listdir(scouting_dir):
-                                    if not old_f.endswith(".json"):
+                        # Worker che elabora UNA attivita': fa la chiamata
+                        # HTTP a sh_scarica(aid) e ritorna la lista di
+                        # sessioni nuove da salvare. Le sessioni gia'
+                        # presenti (sid in indice_locale) vengono
+                        # scartate senza scrittura su disco.
+                        def _processa_attivita(att):
+                            local_skipped = 0
+                            local_saved = []  # (chip, sid, sessione_dict)
+                            try:
+                                aid = att["activity_id"]
+                                chip = att["chipCode"]
+                                chip_str = str(chip).strip()
+                                label = (alias_per_chip.get(chip_str)
+                                         or att.get("chipLabel",
+                                                    "Pilota_%s" % chip[-4:]))
+                                sid_locali = indice_locale.get(chip_str, set())
+                                dati = sh_scarica(aid)
+                                if not dati or "sessions" not in dati:
+                                    return local_saved, local_skipped
+                                for sess in dati.get("sessions", []):
+                                    sid = sess.get("id", 0)
+                                    if sid and sid in sid_locali:
+                                        local_skipped += 1
                                         continue
-                                    old_path = os.path.join(scouting_dir, old_f)
+                                    laps = sess.get("laps", [])
+                                    if not laps:
+                                        continue
+                                    tempi = []
+                                    giri_list = []
+                                    for lap in laps:
+                                        try:
+                                            dur = float(lap.get("duration", 0))
+                                        except (ValueError, TypeError):
+                                            dur = 0
+                                        if dur > 0:
+                                            tempi.append(dur)
+                                            giri_list.append({
+                                                "giro": len(giri_list) + 1,
+                                                "tempo": round(dur, 3),
+                                                "stato": "valido",
+                                            })
+                                    if not giri_list:
+                                        continue
+                                    dt_start = sess.get("dateTimeStart", "")
                                     try:
-                                        with open(old_path, "r", encoding="utf-8") as fp:
-                                            old = json.load(fp)
-                                        if (old.get("transponder") == chip and
-                                            old.get("data") == data_str and
-                                            old.get("speedhive_session") == sid):
-                                            os.remove(old_path)
+                                        from datetime import datetime as dt_cls
+                                        dt_obj = dt_cls.fromisoformat(dt_start)
+                                        ora = dt_obj.strftime("%H:%M:%S")
                                     except Exception:
-                                        pass
-                                path = os.path.join(scouting_dir,
-                                    "lap_speedhive_%s_%s_s%d.json" % (ts, chip[-6:], sid))
+                                        ora = (dt_start[:8]
+                                               if len(dt_start) >= 8 else "?")
+                                    sessione = {
+                                        "pilota": label,
+                                        "setup": "SpeedHive - %s" % pista_nome,
+                                        "data": data_str, "ora": ora,
+                                        "tipo": "speedhive",
+                                        "transponder": chip,
+                                        "serbatoio_cc": 0,
+                                        "sessione_carburante": False,
+                                        "speedhive_session": sid,
+                                        "speedhive_activity": aid,
+                                        "num_giri": len(giri_list),
+                                        "giri": giri_list,
+                                        "miglior_tempo": round(min(tempi), 3),
+                                        "media": round(
+                                            sum(tempi) / len(tempi), 3),
+                                        "tempo_totale": round(sum(tempi), 3),
+                                    }
+                                    local_saved.append((chip, sid, sessione))
+                            except Exception:
+                                pass
+                            return local_saved, local_skipped
+
+                        # Parallelismo controllato: 8 worker. SpeedHive
+                        # regge bene questo carico e con ~500 piloti
+                        # passiamo da ~10 minuti a 1-2 minuti totali.
+                        nuove_sessioni = []
+                        completate = 0
+                        n_tot = len(attivita)
+                        with ThreadPoolExecutor(max_workers=8) as exe:
+                            futures = [exe.submit(_processa_attivita, att)
+                                       for att in attivita]
+                            for fut in as_completed(futures):
+                                try:
+                                    saved_local, skipped_local = fut.result()
+                                except Exception:
+                                    saved_local, skipped_local = [], 0
+                                nuove_sessioni.extend(saved_local)
+                                skipped_sh += skipped_local
+                                completate += 1
+                                if completate % 10 == 0 or completate == n_tot:
+                                    msg_prog = ("SpeedHive %d/%d piloti "
+                                                "(%d nuove)" % (
+                                                    completate, n_tot,
+                                                    len(nuove_sessioni)))
+                                    self.root.after(
+                                        0, lambda m=msg_prog: status.config(
+                                            text=m)
+                                        if status.winfo_exists() else None)
+
+                        for chip, sid, sessione in nuove_sessioni:
+                            path = os.path.join(scouting_dir,
+                                "lap_speedhive_%s_%s_s%d.json"
+                                % (ts, str(chip)[-6:], sid))
+                            try:
                                 with open(path, "w", encoding="utf-8") as f:
-                                    json.dump(sessione, f, ensure_ascii=False, indent=2)
+                                    json.dump(sessione, f,
+                                              ensure_ascii=False, indent=2)
                                 saved_sh.append(path)
-                        messaggi.append("SpeedHive: %d sessioni" % len(saved_sh))
+                            except Exception:
+                                pass
+
+                        if saved_sh:
+                            msg = "SpeedHive: %d nuove" % len(saved_sh)
+                            if skipped_sh:
+                                msg += " (+%d gia' scaricate)" % skipped_sh
+                            messaggi.append(msg)
+                        elif skipped_sh:
+                            messaggi.append(
+                                "SpeedHive: nessuna nuova "
+                                "(%d gia' scaricate)" % skipped_sh)
+                        else:
+                            messaggi.append("SpeedHive: nessun dato")
                     else:
                         messaggi.append("SpeedHive: nessun dato")
                 except Exception as e:
@@ -2117,7 +2291,7 @@ class Crono:
             "break")[-1])
 
         self._tutti_status = self._status_label(self.root,
-            "Ctrl+F = cerca  |  \u2191\u2193 = naviga  |  Spazio = seleziona  |  A = sel.data+pilota  |  F = filtra  |  Enter = rivedi")
+            "Ctrl+F = cerca  |  \u2191\u2193 = naviga  |  Spazio = seleziona  |  A = sel.data+pilota / annulla  |  Ctrl+A = annulla  |  F = filtra  |  Enter = rivedi")
 
         self._at.bind("<Return>", lambda e: self._rivedi_tutti())
         self._at.bind("<Double-Button-1>", lambda e: self._rivedi_tutti())
@@ -2125,6 +2299,15 @@ class Crono:
         self._at.bind("<a>", lambda e: self._seleziona_stessa_data())
         self._at.bind("<g>", lambda e: self._schermata_grafico())
         self._at.bind("<f>", lambda e: self._filtra_da_selezione())
+        # Ctrl+A = annulla selezione (toggle dedicato dopo aver fatto
+        # comparazioni con GRAFICO/GHOST/ANALISI IA, per ricominciare)
+        def _ctrl_a(e=None):
+            self._deseleziona_tutto()
+            return "break"
+        self._at.bind("<Control-a>", _ctrl_a)
+        self._at.bind("<Control-A>", _ctrl_a)
+        self.root.bind("<Control-a>", _ctrl_a)
+        self.root.bind("<Control-A>", _ctrl_a)
 
         # Ctrl+F = focus sulla barra CERCA
         def _focus_cerca(e=None):
@@ -2626,14 +2809,42 @@ class Crono:
             canvas.create_oval(fx - 4, bar_y - 4, fx + 4, bar_y + 4,
                                 fill=c["stato_ok"], outline=c["stato_ok"])
 
+    def _deseleziona_tutto(self):
+        """Cancella la selezione corrente nel treeview. Usato come toggle:
+        l'utente preme SEL/Ctrl+A una seconda volta dopo aver fatto le sue
+        comparazioni (GRAFICO/GHOST/ANALISI IA) per ricominciare da zero."""
+        sel = self._at.selection()
+        if not sel:
+            return False
+        try:
+            self._at.selection_remove(*sel)
+        except Exception:
+            pass
+        try:
+            self._tutti_status.config(
+                text="Selezione annullata (%d sessioni)" % len(sel),
+                fg=self.c["stato_avviso"])
+        except Exception:
+            pass
+        return True
+
     def _seleziona_stessa_data(self):
-        """Seleziona sessioni con stessa data + pilota, salta quelle con 3 giri o meno."""
+        """Toggle: prima pressione seleziona sessioni con stessa data+pilota
+        (saltando quelle con 1-3 giri); seconda pressione (o se la selezione
+        attuale e' gia' quella prodotta dall'azione, oppure se c'e' gia' una
+        selezione multipla che NON appartiene allo stesso pilota/data)
+        annulla tutto. La selezione persiste tra schermate (GRAFICO, GHOST,
+        ANALISI IA, RIVEDI): per ricominciare basta tornare alla lista e
+        ripremere SEL."""
         MIN_GIRI = 4  # salta solo sessioni brevissime (1-3 giri)
         focused = self._at.focus()
         if not focused:
             sel = self._at.selection()
             if sel: focused = sel[0]
         if not focused:
+            # Nessun focus ma magari c'e' una selezione attiva: clear
+            if self._deseleziona_tutto():
+                return
             return
         idx = int(focused)
         if idx < 0 or idx >= len(self._tutti_sessioni):
@@ -2657,6 +2868,17 @@ class Crono:
                         to_select.append(child)
                     else:
                         skipped += 1
+        # TOGGLE: se la selezione attuale e' gia' uguale al risultato
+        # dell'azione, l'utente sta premendo SEL una seconda volta per
+        # annullare. Stessa cosa se c'e' gia' una selezione che non
+        # corrisponde a stessa-data del pilota corrente (l'utente prima
+        # ha fatto comparazioni, ora vuole ricominciare).
+        sel_attuale = set(self._at.selection())
+        to_select_set = set(to_select)
+        if sel_attuale and (sel_attuale == to_select_set or
+                            (len(sel_attuale) > 1 and not sel_attuale.issubset(to_select_set))):
+            self._deseleziona_tutto()
+            return
         if to_select:
             self._at.selection_set(to_select)
             self._at.focus(to_select[0])

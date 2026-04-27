@@ -333,7 +333,7 @@ def _bt_bind_rfcomm(mac, canale=1, dev_num=0):
         return None, "Errore bind: %s" % e
 
 
-def _bt_auto_setup(mac_configurato=""):
+def _bt_auto_setup(mac_configurato="", for_print=False):
     """
     Setup stampante BT su Linux/uConsole.
     1. Se c'e' gia' /dev/rfcomm0 funzionante, usa quello
@@ -343,6 +343,15 @@ def _bt_auto_setup(mac_configurato=""):
     IMPORTANTE: lo scan avviene SOLO se il MAC non e' configurato.
     In pista ci possono essere piu' terminali — ogni uno deve usare
     la SUA stampante, quella abbinata alla consegna.
+
+    Param `for_print`: se True salta il check `hcitool name` (pre-flight)
+    e va direttamente al socket: la stampante puo' essere in sleep
+    (auto-sleep dopo 1-2 min di inattivita') e svegliarsi solo al
+    momento del connect, oppure il radio BT puo' essere temporaneamente
+    occupato da uno scan BLE concorrente (es. LapTimer cerca LapMonitor)
+    causando hcitool name a ritornare vuoto e dare "Stampante spenta"
+    anche con la stampante accesa. Il vero arbitro e' il socket connect:
+    se la stampante e' davvero spenta, fallisce con timeout 10s.
 
     Ritorna (device_path, mac, errore) - errore e' None se ok.
     """
@@ -367,8 +376,16 @@ def _bt_auto_setup(mac_configurato=""):
     if not err and dev:
         return dev, mac, None
 
-    # Bind fallito (serve sudo). Verifica che la stampante sia ACCESA
-    # usando hcitool name (non apre socket dati, non causa "device busy").
+    # Bind fallito (serve sudo).
+    # Path stampa: skip hcitool name e vai dritto al socket. Il
+    # connect e' la verita' affidabile, il pre-flight con hcitool e'
+    # solo per il monitor di stato (label "Stampante: ON/OFF").
+    if for_print:
+        _mac_cache = mac
+        return "socket", mac, None
+
+    # Path monitor: verifica che la stampante sia ACCESA usando
+    # hcitool name (non apre socket dati, non causa "device busy").
     try:
         r = subprocess.run(["hcitool", "name", mac],
                            capture_output=True, text=True, timeout=6)
@@ -483,24 +500,45 @@ def stampa_bluetooth(righe, mac_address, porta=1):
                     pass  # Device morto, prova auto-setup
 
             # 1b: Auto-discovery + bind + stampa
-            dev, mac_trovato, err = _bt_auto_setup(mac_address)
+            # for_print=True: skip pre-flight `hcitool name` (puo' fallire
+            # se la stampante e' in sleep o se il radio e' occupato da BLE
+            # scan concorrente, dando "Stampante spenta" falsi positivi).
+            # Il socket connect sotto e' l'arbitro affidabile.
+            dev, mac_trovato, err = _bt_auto_setup(mac_address, for_print=True)
             if err:
                 return False, str(err)
 
             # 1c: Stampa via socket diretto (rfcomm bind non riuscito)
             if dev == "socket" and mac_trovato:
+                # Retry automatico fino a 3 tentativi: la stampante
+                # termica BT spesso entra in sleep dopo 1-2 min di
+                # inattivita' e si sveglia al primo connect (che pero'
+                # puo' fallire). Il secondo tentativo dopo ~1.5s di
+                # solito va. Anche utile se uno scan BLE concorrente
+                # tiene il radio occupato per qualche istante.
                 with _bt_lock:
-                    try:
-                        sock = socket.socket(socket.AF_BLUETOOTH,
-                                             socket.SOCK_STREAM,
-                                             socket.BTPROTO_RFCOMM)
-                        sock.settimeout(10)
-                        sock.connect((mac_trovato, porta))
-                        sock.send(dati)
-                        sock.close()
-                        return True, "Scheda stampata (BT)!"
-                    except Exception as e:
-                        return False, "Errore socket BT: %s" % e
+                    ultimo_err = None
+                    for tentativo in range(3):
+                        try:
+                            sock = socket.socket(socket.AF_BLUETOOTH,
+                                                 socket.SOCK_STREAM,
+                                                 socket.BTPROTO_RFCOMM)
+                            sock.settimeout(10)
+                            sock.connect((mac_trovato, porta))
+                            sock.send(dati)
+                            sock.close()
+                            return True, "Scheda stampata (BT)!"
+                        except Exception as e:
+                            ultimo_err = e
+                            try:
+                                sock.close()
+                            except Exception:
+                                pass
+                            # Wait + retry: la stampante puo' essere in
+                            # sleep, il primo connect la sveglia.
+                            if tentativo < 2:
+                                time.sleep(1.5)
+                    return False, "Stampante non raggiungibile: %s" % ultimo_err
 
             # 1d: Stampa su device rfcomm
             try:
