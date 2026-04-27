@@ -301,19 +301,50 @@ class Crono:
             pass
 
     def _build_alias_per_trasponder(self):
-        """Indice {transponder_str: nome} dal registro piloti.json, per
-        risolvere automaticamente il nome di chi corre senza averlo
-        registrato in SpeedHive (chipLabel = numero trasponder).
-        Usato all'import SpeedHive: se ALIAS e' stato fatto in passato,
-        il nome resta tra una sessione e l'altra senza dover rifare il
-        lavoro ad ogni gara."""
-        registro = self._load_piloti()
+        """Indice {transponder_str: nome} unificato da DUE fonti:
+          1. piloti.json - registro alias manuali (ALIAS dal CRONO)
+          2. trasponder.json - tabella partecipanti importata da
+             MyRCM dall'addon Assistente Gara
+
+        Usato sia all'import SpeedHive (per dare il nome ai record
+        anonimi tipo "Trasp. 12345"), sia in TUTTI I TEMPI (per
+        sostituire al volo i nomi anonimi nelle sessioni gia'
+        salvate, senza riscrivere i file).
+
+        Priorita': piloti.json vince su trasponder.json se entrambi
+        hanno il transponder (cosi' un ALIAS manuale recente non
+        viene sovrascritto da un nome MyRCM)."""
         idx = {}
-        for p in registro.values():
-            t = (p.get("transponder") or "").strip()
-            n = (p.get("nome") or "").strip()
-            if t and n:
-                idx[t] = n
+        # 1. trasponder.json (caricato per primo cosi' piloti.json
+        #    sovrascrive in caso di collisione)
+        try:
+            base = (self.dati_dir
+                    if self.dati_dir
+                    else os.path.dirname(os.path.abspath(__file__)))
+            tr_path = os.path.join(base, "trasponder.json")
+            if os.path.exists(tr_path):
+                with open(tr_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Formato TrackMind: {_meta, records}
+                records = (data.get("records", [])
+                           if isinstance(data, dict) else (data or []))
+                for r in records:
+                    t = str(r.get("Numero", "") or "").strip()
+                    n = str(r.get("Pilota", "") or "").strip()
+                    if t and n:
+                        idx[t] = n
+        except Exception:
+            pass
+        # 2. piloti.json (override manuale ALIAS)
+        try:
+            registro = self._load_piloti()
+            for p in registro.values():
+                t = (p.get("transponder") or "").strip()
+                n = (p.get("nome") or "").strip()
+                if t and n:
+                    idx[t] = n
+        except Exception:
+            pass
         return idx
 
     def _match_pista(self, testo):
@@ -1847,13 +1878,52 @@ class Crono:
         """Cerca sessioni lap_*.json.
         Modalita' setup: dati/ + dati/scouting/ (tutto del setup).
         Modalita' libera (da menu): solo dati/scouting/ (le sessioni setup
-        si vedono dal CRONO del rispettivo setup)."""
+        si vedono dal CRONO del rispettivo setup).
+        Sostituisce i nomi anonimi (es. "Trasp. 1234567" o numero
+        nudo "1234567") con il nome reale se il transponder e' nella
+        tabella trasponder.json (importata da MyRCM partecipanti)
+        o nel registro piloti.json (alias manuali)."""
         sessioni = []
         paths = []
         if not self.dati_dir or not os.path.isdir(self.dati_dir):
             return sessioni, paths
 
         modo_setup = hasattr(self, '_modo_setup') and self._modo_setup
+
+        # Indice unificato {transponder: nome} da piloti.json +
+        # trasponder.json. Costruito una sola volta qui per non
+        # rileggerlo per ogni file scouting.
+        alias_per_chip = self._build_alias_per_trasponder()
+
+        def _applica_alias(sess):
+            """Se il nome pilota sembra anonimo (numero nudo, "Trasp"
+            o "Pilota_NNN") e c'e' un alias per il suo transponder,
+            sostituisce il nome al volo (NON tocca il file su disco:
+            la modifica e' solo sulla vista di TUTTI I TEMPI)."""
+            if not alias_per_chip:
+                return
+            chip = str(sess.get("transponder", "")).strip()
+            if not chip:
+                return
+            nome_giusto = alias_per_chip.get(chip)
+            if not nome_giusto:
+                return
+            nome_attuale = (sess.get("pilota", "") or "").strip()
+            # Considera "anonimo" un nome che e':
+            # - vuoto / "?"
+            # - tutto cifre (numero trasponder usato come nome)
+            # - inizia con "Trasp" o "Pilota_"
+            # - coincide col transponder
+            anon = (
+                not nome_attuale or
+                nome_attuale == "?" or
+                nome_attuale == chip or
+                nome_attuale.replace(" ", "").isdigit() or
+                nome_attuale.lower().startswith("trasp") or
+                nome_attuale.lower().startswith("pilota_")
+            )
+            if anon:
+                sess["pilota"] = nome_giusto
 
         # Sessioni da dati/ (solo in modalita' setup)
         if modo_setup:
@@ -1864,6 +1934,7 @@ class Crono:
                         with open(fp, "r", encoding="utf-8") as fh:
                             s = json.load(fh)
                         s["_fonte"] = "Setup"
+                        _applica_alias(s)
                         sessioni.append(s)
                         paths.append(fp)
                     except Exception:
@@ -1879,6 +1950,7 @@ class Crono:
                         with open(fp, "r", encoding="utf-8") as fh:
                             s = json.load(fh)
                         s["_fonte"] = "Scouting"
+                        _applica_alias(s)
                         sessioni.append(s)
                         paths.append(fp)
                     except Exception:

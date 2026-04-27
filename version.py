@@ -7,4 +7,4 @@ tutti i file la importano da qui (retrodb.py + i moduli che la mostrano in fines
 Convenzione: 'XX.XX.XX' (major.minor.patch) - es. '05.05.00'
 """
 
-__version__ = '05.05.51'
+__version__ = '05.05.52'
