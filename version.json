@@ -1,7 +1,7 @@
 {
-  "version": "05.05.44",
+  "version": "05.05.48",
   "date": "2026-04-27",
-  "time": "10:25:01",
+  "time": "13:32:13",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -10,6 +10,7 @@
     "version.py": "root",
     "ai_analisi.py": "addons",
     "analizza_tempi.py": "addons",
+    "assistente_gara.py": "addons",
     "confronta_setup.py": "addons",
     "crono.py": "addons",
     "laptimer.py": "addons",

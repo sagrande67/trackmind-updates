@@ -4234,7 +4234,8 @@ class RetroDBApp:
         """Inizializza il monitor singleton dell'Assistente Gara al
         login. Carica lo stato salvato su disco (se presente),
         registra l'alert listener globale (solo BEEP sonoro, niente
-        popup) e avvia il refresh periodico della label header."""
+        popup) e avvia il refresh periodico della label header.
+        Idempotente: chiamarlo piu' volte non duplica nulla."""
         if not _HAS_ASSISTENTE:
             return
         try:
@@ -4243,11 +4244,18 @@ class RetroDBApp:
             return
         if _mon is None:
             return
+        # Prova a caricare lo stato dal disco. Se c'era una sessione
+        # attiva, il monitor parte gia' attivo a questo punto.
         if not _mon.attivo:
             try:
                 _mon.carica_stato_persistito()
             except Exception:
                 pass
+        # Arma l'alert listener una volta sola (idempotente).
+        # Niente popup invadenti: solo BEEP sonoro al cambio soglia
+        # (-15min, -1min). L'utente vede il countdown nella label
+        # del menu (centro di controllo, accanto a batteria/wifi/
+        # stampante).
         if not getattr(self, "_assist_listeners_armati", False):
             def _on_alert(stato, prossimo, dt_target):
                 try:
@@ -4259,6 +4267,7 @@ class RetroDBApp:
             except Exception:
                 pass
             self._assist_listeners_armati = True
+            # Avvia il refresh periodico del widget header
             self._aggiorna_widget_assistente()
 
     def _lancia_assistente_gara(self):
@@ -4276,6 +4285,8 @@ class RetroDBApp:
         if _mon is not None and not getattr(self,
                                             "_assist_listeners_armati",
                                             False):
+            # Alert popup: scatena un Toplevel a -15 min e -1 min anche
+            # se l'utente sta lavorando in altre schermate.
             def _on_alert(stato, prossimo, dt_target):
                 try:
                     mostra_popup_alert(self.root, stato,
@@ -4285,16 +4296,32 @@ class RetroDBApp:
                     pass
             _mon.add_alert_listener(_on_alert)
             self._assist_listeners_armati = True
+            # Avvia il refresh periodico del widget header
             self._aggiorna_widget_assistente()
         self._pulisci()
+        # Passa il nome dell'utente loggato come default per il
+        # filtro "Tuo nome" della schermata iniziale dell'addon
+        # (cosi' chi corre col proprio nome registrato in MyRCM
+        # vede subito le sue manche, senza dover digitare).
+        nome_loggato = ""
+        try:
+            if self.sessione:
+                nome_loggato = (get_display_name(self.sessione)
+                                or "").strip()
+        except Exception:
+            pass
         AssistenteGara(parent=self._vista,
-                       on_close=self._schermata_menu)
+                       on_close=self._schermata_menu,
+                       nome_pilota_default=nome_loggato)
         self._rimuovi_coperta()
 
     def _aggiorna_widget_assistente(self):
         """Aggiorna periodicamente la label "GARA: ... fra HH:MM:SS"
         nella riga info del menu (accanto a Wi-Fi/Stampante/Batteria).
-        Gira a 1 Hz finche' il monitor e' attivo."""
+        Gira a 1 Hz finche' il monitor e' attivo. Quando l'utente
+        esce dal menu (es. va in CRONO), la label viene distrutta
+        col resto del menu: il prossimo tick salta e quando l'utente
+        torna al menu la label viene ricreata."""
         if not _HAS_ASSISTENTE:
             return
         try:
@@ -4352,6 +4379,7 @@ class RetroDBApp:
                             fg=col)
         except Exception:
             pass
+        # Ripianifica il prossimo tick
         try:
             self.root.after(1000, self._aggiorna_widget_assistente)
         except Exception:
