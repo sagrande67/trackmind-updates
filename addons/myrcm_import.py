@@ -196,6 +196,7 @@ def lista_eventi_online_completa(filtro_nazione=""):
     naz_filter = (filtro_nazione or "").strip().lower()
 
     for row in parser.eventi:
+        # Riga: [#, Organizzatore, Evento, Nazione, C'e', A, Rapporti, streaming]
         if len(row) < 7:
             continue
         try:
@@ -209,9 +210,11 @@ def lista_eventi_online_completa(filtro_nazione=""):
         except (IndexError, KeyError):
             continue
 
+        # Filtro nazione (opzionale)
         if naz_filter and naz_filter not in nazione.lower():
             continue
 
+        # Estrai event ID dal link rapporti
         link = rapporti.get("link", "") if isinstance(rapporti, dict) else ""
         event_id = None
         m = re.search(r'dId\[E\]=(\d+)', link)
@@ -237,9 +240,243 @@ def lista_eventi_online_completa(filtro_nazione=""):
 
 def scarica_html_evento(event_id):
     """Scarica l'HTML grezzo della pagina evento. Usato dal parser
-    time table dell'Assistente Gara."""
+    time table dell'Assistente Gara (parsing fatto lato addon perche'
+    puo' variare da evento a evento)."""
     url = "%s/main?pLa=it&dId[E]=%s" % (MYRCM_BASE, event_id)
     return _http_get(url)
+
+
+def scarica_suddivisione_batteria(event_id, category_id, report_key=101):
+    """Scarica la suddivisione batterie (manche) di una categoria
+    per una fase specifica. Le fasi standard MyRCM sono:
+        101 = Prove Libere
+        102 = Prove
+        103 = Qualif
+        104 = Finale (suddivisione in Final A / Final B / ecc.)
+
+    La pagina HTML ha questa struttura per ogni manche:
+        <p id="title">Manche N</p>
+        <table>
+            <tr><th>#</th><th>Nr.</th><th>Pilota</th> ...</tr>
+            <tr><td>1</td><td/><td>Mlivic Denis</td> ...</tr>
+            ...
+        </table>
+
+    Ritorna lista di dict, una per manche:
+        [{manche: "Manche 1",
+          piloti: [{nome, transponder, club, ...}, ...]},
+         {manche: "Manche 2",
+          piloti: [...]}]
+    Se non trova nulla ritorna [].
+    """
+    url = "%s/report/it/%s/%s?reportKey=%d" % (
+        MYRCM_BASE, event_id, category_id, report_key)
+    html = _http_get(url)
+    if not html:
+        return []
+    # Spezza l'HTML sui marker <p id="title">Manche N</p>: ogni
+    # blocco contiene UNA tabella, dal titolo Manche al successivo.
+    pattern = re.compile(
+        r'<p\s+id="title"[^>]*>([^<]+)</p>\s*(<table[^>]*>.*?</table>)',
+        re.IGNORECASE | re.DOTALL)
+    risultati = []
+    for m in pattern.finditer(html):
+        manche_label = (m.group(1) or "").strip()
+        table_html = m.group(2)
+        # Parsa la singola tabella
+        parser = _TableParser()
+        try:
+            parser.feed(table_html)
+        except Exception:
+            continue
+        if not parser.tables:
+            continue
+        table = parser.tables[0]
+        if len(table) < 2:
+            continue
+        header = [(c or "").strip().lower() for c in table[0]]
+
+        def _idx(targets):
+            for i, h in enumerate(header):
+                if any(t in h for t in targets):
+                    return i
+            return None
+
+        i_pil = _idx(("pilota", "driver", "name"))
+        i_naz = _idx(("stato", "nat", "country"))
+        i_club = _idx(("club", "team"))
+        i_tr = _idx(("transp", "chip"))
+        i_nr = _idx(("nr", "n.", "num"))
+
+        def _cella(row, idx):
+            if idx is None or idx >= len(row):
+                return ""
+            return (row[idx] or "").replace("\xa0", " ").strip()
+
+        piloti = []
+        for row in table[1:]:
+            if not row:
+                continue
+            nome = _cella(row, i_pil)
+            if not nome:
+                continue
+            tr_raw = _cella(row, i_tr)
+            tr = tr_raw.split("/")[0].strip() if tr_raw else ""
+            piloti.append({
+                "nome": nome,
+                "transponder": tr,
+                "transponder_raw": tr_raw,
+                "numero_gara": _cella(row, i_nr),
+                "nazione": _cella(row, i_naz),
+                "club": _cella(row, i_club),
+            })
+        if piloti:
+            risultati.append({
+                "manche": manche_label,
+                "piloti": piloti,
+            })
+    return risultati
+
+
+# Mappa fasi standard MyRCM -> reportKey suddivisione batteria
+SUDDIVISIONE_REPORT_KEYS = {
+    "prove_libere": 101,
+    "prove": 102,
+    "qualif": 103,
+    "finale": 104,
+}
+
+
+def trova_manche_pilota_per_fase(event_id, category_id, nome_pilota):
+    """Cerca a quale Manche e' assegnato il pilota per ogni fase
+    (Prove Libere, Prove, Qualif, Finale) di una categoria.
+
+    Match nome: case-insensitive, normalizza spazi, accetta sia
+    "Cognome Nome" che "Nome Cognome" (MyRCM usa "Cognome Nome").
+
+    Ritorna dict {fase_key: manche_label}, es:
+        {"prove_libere": "Manche 1",
+         "prove": "Manche 1",
+         "qualif": "Manche 1",
+         "finale": "Final A"}
+    Se in una fase il pilota non c'e' (non ancora pubblicata o
+    eliminato), quella chiave manca dal dict. Se nome_pilota e'
+    vuoto o None, ritorna {} (nessun filtro)."""
+    if not nome_pilota:
+        return {}
+    target = re.sub(r'\s+', ' ', str(nome_pilota or "")).strip().lower()
+    if not target:
+        return {}
+    # Estrai le parti del nome (cognome, nome, ecc.)
+    parti_target = set(target.split())
+
+    risultato = {}
+    for fase_key, rk in SUDDIVISIONE_REPORT_KEYS.items():
+        try:
+            manches = scarica_suddivisione_batteria(
+                event_id, category_id, report_key=rk)
+        except Exception:
+            continue
+        for m in manches:
+            for p in m.get("piloti", []):
+                pn = re.sub(r'\s+', ' ',
+                             p.get("nome", "")).strip().lower()
+                if not pn:
+                    continue
+                # Match esatto, oppure tutte le parti del nome target
+                # sono presenti nel nome pilota (gestisce inversioni
+                # tipo "Marco Modolo" vs "Modolo Marco")
+                if pn == target or parti_target.issubset(set(pn.split())):
+                    risultato[fase_key] = m.get("manche", "?")
+                    break
+            if fase_key in risultato:
+                break
+    return risultato
+
+
+def scarica_partecipanti(event_id, category_id):
+    """Scarica la lista partecipanti di una categoria MyRCM dal
+    reportKey=100. Ritorna lista di dict:
+        [{nome, transponder, club, modello, motore, gomme,
+          radio, batteria, nazione, numero_gara}, ...]
+    Il transponder e' restituito senza il suffisso "/N" che MyRCM
+    aggiunge per la versione (es. "1053911/0" -> "1053911"). Lo
+    spazio non-breaking \\xa0 nei nomi viene normalizzato a spazio
+    normale. Se la pagina non e' parsabile ritorna []."""
+    url = "%s/report/it/%s/%s?reportKey=100" % (
+        MYRCM_BASE, event_id, category_id)
+    html = _http_get(url)
+    if not html:
+        return []
+    parser = _TableParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        return []
+
+    # Cerca la tabella con header "Pilota" e "Transponder"
+    target = None
+    for table in parser.tables:
+        if not table or len(table) < 2:
+            continue
+        header = [(c or "").strip().lower() for c in table[0]]
+        if any("pilota" in h for h in header) and \
+           any("transp" in h for h in header):
+            target = table
+            break
+    if not target:
+        return []
+
+    header = [(c or "").strip().lower() for c in target[0]]
+
+    def _idx(targets):
+        for i, h in enumerate(header):
+            if any(t in h for t in targets):
+                return i
+        return None
+
+    i_nr = _idx(("nr", "n.", "num"))
+    i_pil = _idx(("pilota", "driver", "name"))
+    i_naz = _idx(("stato", "nat", "country"))
+    i_club = _idx(("club", "team"))
+    i_tr = _idx(("transp", "chip"))
+    i_mod = _idx(("modello", "model", "car", "chass"))
+    i_mot = _idx(("motore", "engine", "motor"))
+    i_gom = _idx(("gomme", "tyre", "tires"))
+    i_rad = _idx(("radio", "remote"))
+    i_bat = _idx(("battery", "batteria"))
+
+    def _cella(row, idx):
+        if idx is None or idx >= len(row):
+            return ""
+        return (row[idx] or "").replace("\xa0", " ").strip()
+
+    risultati = []
+    for row in target[1:]:
+        if not row:
+            continue
+        nome = _cella(row, i_pil)
+        tr_raw = _cella(row, i_tr)
+        if not nome or not tr_raw:
+            continue
+        # Estrai numero trasponder pulito: "1053911/0" -> "1053911"
+        tr = tr_raw.split("/")[0].strip()
+        if not tr:
+            continue
+        risultati.append({
+            "nome": nome,
+            "transponder": tr,
+            "transponder_raw": tr_raw,
+            "numero_gara": _cella(row, i_nr),
+            "nazione": _cella(row, i_naz),
+            "club": _cella(row, i_club),
+            "modello": _cella(row, i_mod),
+            "motore": _cella(row, i_mot),
+            "gomme": _cella(row, i_gom),
+            "radio": _cella(row, i_rad),
+            "batteria": _cella(row, i_bat),
+        })
+    return risultati
 
 
 def cerca_eventi_online(nome_pista):

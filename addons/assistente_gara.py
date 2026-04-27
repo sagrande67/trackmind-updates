@@ -24,10 +24,17 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
+try:
+    from version import __version__
+except ImportError:
+    __version__ = "05.05.00"
+
 # Import myrcm_import dal modulo fratello
 try:
     from myrcm_import import (lista_eventi_online_completa,
                               scarica_categorie, scarica_html_evento,
+                              scarica_partecipanti,
+                              trova_manche_pilota_per_fase,
                               _TableParser, _http_get, MYRCM_BASE)
     _HAS_MYRCM = True
 except ImportError:
@@ -37,6 +44,8 @@ except ImportError:
             sys.path.insert(0, _here)
         from myrcm_import import (lista_eventi_online_completa,
                                   scarica_categorie, scarica_html_evento,
+                                  scarica_partecipanti,
+                                  trova_manche_pilota_per_fase,
                                   _TableParser, _http_get, MYRCM_BASE)
         _HAS_MYRCM = True
     except ImportError:
@@ -65,27 +74,61 @@ except Exception:
     def _aggiungi_barra_bat(*args, **kwargs):
         return None
 
+# RetroField (input retro-style, stesso usato in tutto il resto di
+# TrackMind: celle singole verde su nero, cursore lampeggiante)
+try:
+    from core.tm_field import RetroField
+    _HAS_RETROFIELD = True
+except Exception:
+    _HAS_RETROFIELD = False
+    RetroField = None
+
 
 # =====================================================================
 #  PARSER TIME TABLE MyRCM
 # =====================================================================
-def parse_time_table(html):
-    """Estrae il time table di un evento dall'HTML pagina principale.
+# Schema reale di una pagina "Tabella Oraria" MyRCM (verificato con
+# event 94090, categoria 379791, reportKey 46138):
+#
+#   Categoria | Manche | Gruppo | Inzio | Orario gara | Commento | Commissari
+#       0          1       2        3         4            5           6
+#
+# (NB: header e' "Inzio" non "Inizio" - typo MyRCM in italiano.)
+#
+# La pagina principale di una categoria (/report/it/<eid>/<cid>) NON
+# contiene la tabella oraria, ma una lista di reportKey via AJAX, uno
+# per giornata di gara, con pattern:
+#   doAjaxCall('/myrcm/report/it/EID/CID?reportKey=KKK',
+#              'Tabella Oraria :: DD.MM.YYYY')
 
-    MyRCM espone (di solito) una tabella con colonne tipo:
-        Ora | Categoria | Turno | Manche | ...
-    Le righe possono avere orario in formato "HH:MM" come prima cella.
+# Parole riconosciute negli header per identificare la colonna ora
+# di inizio. "Inzio" e' il typo MyRCM, "Inizio" e "Start" come
+# fallback in caso il sito venga corretto o cambino lingua.
+_HEADER_ORA = ("inzio", "inizio", "start", "time", "ora", "begin")
+_HEADER_CAT = ("categoria", "category", "class")
+_HEADER_MAN = ("manche", "round", "heat")
+_HEADER_GRP = ("gruppo", "group", "session", "tipo", "type")
 
-    Strategia: scansiona tutte le tabelle, prende quelle dove la prima
-    colonna contiene piu' valori in formato HH:MM e tiene quel match
-    come time table principale.
+
+def _normalize_ws(s):
+    """Collassa spazi multipli in uno + trim. Necessario perche' MyRCM
+    inserisce talvolta doppi spazi nei nomi categoria (rendendo poco
+    affidabile un naive substring match)."""
+    return re.sub(r"\s+", " ", str(s or "")).strip()
+
+
+def parse_time_table(html, base_date=None):
+    """Estrae le righe time table da una pagina HTML MyRCM (singola
+    giornata). Riconosce gli header italiani/inglesi e individua le
+    colonne categoria, manche, gruppo, ora-inizio per nome (case
+    insensitive). Robusto agli spazi multipli e alle varianti.
 
     Ritorna lista di dict:
-        [{"ora": "HH:MM", "categoria": "...", "turno": "...",
-          "raw": [...colonne...]}, ...]
+        [{"ora": "HH:MM", "categoria": "...", "manche": "...",
+          "gruppo": "...", "turno": "...", "base_date": datetime,
+          "raw": [...]}]
 
-    NB: il parsing e' euristico e va affinato sul dump HTML reale di
-    un evento. Se non trova un time table riconoscibile, ritorna [].
+    Se non trova nessuna tabella riconoscibile, ritorna [].
     """
     if not html:
         return []
@@ -95,93 +138,274 @@ def parse_time_table(html):
     except Exception:
         return []
 
-    re_ora = re.compile(r'^\d{1,2}[:.]\d{2}$')
-    miglior = None  # (n_righe_con_ora, righe)
+    re_ora = re.compile(r"^\d{1,2}[:.]\d{2}$")
+    risultati = []
 
     for table in parser.tables:
-        if len(table) < 3:
+        if len(table) < 2:
             continue
-        # Conto le righe (dopo eventuale header) con prima cella in
-        # formato orario.
-        n_ora = 0
-        body_rows = table[1:] if len(table) > 1 else []
-        for row in body_rows:
-            if not row:
-                continue
-            primo = (row[0] or "").strip()
-            if re_ora.match(primo):
-                n_ora += 1
-        if n_ora >= 3 and (miglior is None or n_ora > miglior[0]):
-            miglior = (n_ora, table)
+        header = [(c or "").strip().lower() for c in table[0]]
 
-    if not miglior:
+        def _find(targets):
+            for i, h in enumerate(header):
+                if any(t in h for t in targets):
+                    return i
+            return None
+
+        idx_ora = _find(_HEADER_ORA)
+        if idx_ora is None:
+            continue
+        idx_cat = _find(_HEADER_CAT)
+        idx_man = _find(_HEADER_MAN)
+        idx_grp = _find(_HEADER_GRP)
+
+        for row in table[1:]:
+            if not row or idx_ora >= len(row):
+                continue
+            ora = (row[idx_ora] or "").strip()
+            if not re_ora.match(ora):
+                continue
+            ora = ora.replace(".", ":")
+            cat = (_normalize_ws(row[idx_cat])
+                   if idx_cat is not None and idx_cat < len(row) else "")
+            manche = (_normalize_ws(row[idx_man])
+                      if idx_man is not None and idx_man < len(row) else "")
+            gruppo = (_normalize_ws(row[idx_grp])
+                      if idx_grp is not None and idx_grp < len(row) else "")
+            # turno = manche + gruppo, per testo amichevole nella UI
+            turno_parts = [p for p in (manche, gruppo) if p]
+            turno = " - ".join(turno_parts) if turno_parts else ""
+            risultati.append({
+                "ora": ora,
+                "categoria": cat,
+                "manche": manche,
+                "gruppo": gruppo,
+                "turno": turno,
+                "base_date": base_date,
+                "raw": [_normalize_ws(c) for c in row],
+            })
+    return risultati
+
+
+def scarica_timetable_evento(event_id, category_id, data_target=None):
+    """Aggrega le tabelle orarie dell'evento. Se `data_target` (date)
+    e' specificato, scarica SOLO la giornata che matcha (default:
+    nessuna data = scarica tutte le giornate). In gara con 3 giorni
+    di programma, all'utente serve solo la giornata di OGGI: scaricare
+    le altre rallenta la UI senza beneficio.
+
+    Strategia: scarica la pagina report della categoria, estrae i
+    reportKey delle giornate (via regex sul markup AJAX), poi scarica
+    e parsa solo le giornate di interesse. Aggiunge il `base_date`
+    di ciascuna riga cosi' il countdown puo' calcolare il datetime
+    assoluto del turno.
+
+    NB: il time table contiene TUTTE le categorie dell'evento, non
+    solo quella selezionata. Il filtro per categoria avviene poi via
+    `filtra_per_categoria` lato monitor.
+
+    Ritorna lista di righe time table (vedi parse_time_table). Se
+    data_target non matcha nessuna giornata pubblicata, ritorna [].
+    """
+    if not _HAS_MYRCM:
         return []
+    base_url = "https://www.myrcm.ch"
+    main_url = "%s/myrcm/report/it/%s/%s" % (base_url, event_id, category_id)
+    html_main = _http_get(main_url)
+    if not html_main:
+        return []
+    # Pattern: doAjaxCall('/myrcm/report/it/EID/CID?reportKey=NNN',
+    #                     'Tabella Oraria :: DD.MM.YYYY')
+    pat = re.compile(
+        r"doAjaxCall\s*\(\s*'([^']+\?reportKey=\d+)'\s*,"
+        r"\s*'Tabella Oraria :: (\d{2}\.\d{2}\.\d{4})'",
+        re.IGNORECASE)
+    giornate = []  # (url_path, base_date)
+    visti = set()
+    for m in pat.finditer(html_main):
+        url_path = m.group(1)
+        if url_path in visti:
+            continue
+        visti.add(url_path)
+        data_str = m.group(2)
+        try:
+            d, mo, y = data_str.split(".")
+            base_date = datetime(int(y), int(mo), int(d))
+        except Exception:
+            base_date = None
+        giornate.append((url_path, base_date))
+
+    # Filtro per data_target: scarica SOLO la giornata che corrisponde.
+    # Se data_target e' un datetime lo riduco a date per il confronto.
+    if data_target is not None:
+        try:
+            target_date = (data_target.date()
+                           if hasattr(data_target, "date")
+                           else data_target)
+        except Exception:
+            target_date = None
+        if target_date is not None:
+            giornate_filtr = [(u, bd) for (u, bd) in giornate
+                              if bd is not None
+                              and bd.date() == target_date]
+            # Se trovo la giornata target, uso solo quella; altrimenti
+            # ritorno vuoto (l'utente sapra' che oggi non ci sono turni
+            # pubblicati per questo evento)
+            giornate = giornate_filtr
 
     risultati = []
-    table = miglior[1]
-    header = [c.strip().lower() for c in table[0]]
-    # Trova indici delle colonne note (best-effort)
-    idx_cat = None
-    for i, h in enumerate(header):
-        if any(k in h for k in ("categoria", "class", "cat")):
-            idx_cat = i
-            break
-    idx_turno = None
-    for i, h in enumerate(header):
-        if any(k in h for k in ("turno", "round", "round/manche",
-                                "session", "manche", "qualif",
-                                "fase", "tipo")):
-            idx_turno = i
-            break
-
-    for row in table[1:]:
-        if not row:
+    for url_path, base_date in giornate:
+        full_url = base_url + url_path
+        html_tt = _http_get(full_url)
+        if not html_tt:
             continue
-        primo = (row[0] or "").strip()
-        if not re_ora.match(primo):
-            continue
-        ora = primo.replace(".", ":")
-        cat = ((row[idx_cat] or "").strip()
-               if idx_cat is not None and idx_cat < len(row)
-               else "")
-        turno = ((row[idx_turno] or "").strip()
-                 if idx_turno is not None and idx_turno < len(row)
-                 else "")
-        risultati.append({
-            "ora": ora,
-            "categoria": cat,
-            "turno": turno,
-            "raw": [c.strip() for c in row],
-        })
+        try:
+            rows = parse_time_table(html_tt, base_date=base_date)
+        except Exception:
+            rows = []
+        risultati.extend(rows)
     return risultati
 
 
 def _ora_to_dt(ora_str, base_date=None):
-    """Converte 'HH:MM' nel datetime di oggi (o base_date) alla
-    stessa ora. Ritorna None se non parseabile."""
+    """Converte 'HH:MM' in datetime, usando base_date come riferimento
+    di giorno. Se base_date e' None usa oggi (per test rapido)."""
     try:
         hh, mm = ora_str.split(":")
         hh = int(hh)
         mm = int(mm)
     except (ValueError, AttributeError):
         return None
-    base = base_date or datetime.now()
+    base = base_date if base_date is not None else datetime.now()
     return base.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
-def filtra_per_categoria(time_table, categoria_keyword):
-    """Ritorna le righe del time table che contengono la categoria
-    indicata (match case-insensitive su qualunque cella raw)."""
-    if not categoria_keyword:
+def classifica_fase_turno(turno):
+    """Determina a quale fase appartiene un turno del time table:
+    'prove_libere', 'prove', 'qualif', 'finale', oppure None.
+    Riconosce sia label italiane (Prove Libere, Prove, Qualif,
+    Finale) sia inglesi (Free practice, Practice/Timed practice,
+    Qualification, Final). MyRCM puo' alternare le lingue tra una
+    pagina e l'altra dello stesso evento.
+
+    Esempi reali (event 94090):
+        gruppo="Prove Libere 1", manche="Manche 1"   -> "prove_libere"
+        gruppo="Prove 1", manche="Manche 1"          -> "prove"
+        gruppo="Timed practice 1", manche="Group 1"  -> "prove"
+        gruppo="Qualif 1", manche="Manche 1"         -> "qualif"
+        gruppo="Qualification 1", manche="Group 1"   -> "qualif"
+        gruppo="Final run 1", manche="Final A"       -> "finale"
+    """
+    g = _normalize_ws(turno.get("gruppo", "")).lower()
+    m = _normalize_ws(turno.get("manche", "")).lower()
+    # Free practice (IT/EN)
+    if "prove libere" in g or "free practice" in g:
+        return "prove_libere"
+    # Qualifiche: "Qualif", "Qualification" (anche in italiano l'inizio
+    # delle qualifiche giornata e' a volte etichettato come Timed
+    # practice = ranking/cronometrata, da considerare come qualif).
+    if ("qualif" in g or "qualification" in g
+            or "timed practice" in g):
+        return "qualif"
+    # Prove (cronometrate, non libere): "Prove", "Practice"
+    if (("prove" in g and "libere" not in g)
+            or ("practice" in g and "free" not in g
+                and "timed" not in g)):
+        return "prove"
+    # Finale: "Final run", "Final A/B/C", "Finals A/B"
+    if "final" in g or "final" in m:
+        return "finale"
+    return None
+
+
+def _normalizza_manche(label):
+    """Normalizza un'etichetta manche per il match cross-lingua.
+    Estrae numero o lettera distintiva, ignora il prefisso
+    (Manche/Group/Batteria/Heat/Final/Finals).
+    Esempi:
+        "Manche 1"    -> "1"
+        "Group 1"     -> "1"
+        "Batteria 2"  -> "2"
+        "Final A"     -> "A"
+        "Finals B"    -> "B"
+        "Finals A"    -> "A"
+    """
+    if not label:
+        return ""
+    s = _normalize_ws(label).strip().lower()
+    # Cerca prima un numero
+    m = re.search(r'\d+', s)
+    if m:
+        return m.group(0)
+    # Altrimenti cerca lettera (Final A, Finals B)
+    m = re.search(r'\b([a-z])\b', s)
+    if m:
+        return m.group(1).upper()
+    return s
+
+
+def filtra_per_manche_pilota(time_table, manche_per_fase):
+    """Filtra il time table mostrando solo i turni delle Manche a
+    cui il pilota e' assegnato per ogni fase.
+
+    Param `manche_per_fase`: dict {fase_key: manche_label}, ottenuto
+    da `trova_manche_pilota_per_fase()`. Se vuoto, ritorna time_table
+    invariato (niente filtro).
+
+    Per ogni riga del time table:
+    - classifica la fase con `classifica_fase_turno`
+    - se la fase non e' nel dict, tiene la riga (best-effort)
+    - altrimenti tiene solo se la manche del turno matcha quella
+      del pilota (case-insensitive, normalizza spazi)
+    """
+    if not manche_per_fase:
         return list(time_table)
-    kw = categoria_keyword.lower().strip()
     out = []
     for r in time_table:
-        # match nella categoria o in qualsiasi cella raw
-        if kw in (r.get("categoria", "") or "").lower():
+        fase = classifica_fase_turno(r)
+        if fase is None or fase not in manche_per_fase:
+            # Non classificabile o pilota non in quella fase: tieni
+            # la riga (meglio mostrare di piu' che nascondere troppo)
             out.append(r)
             continue
-        if any(kw in (c or "").lower() for c in r.get("raw", [])):
+        # Match cross-lingua: normalizzo "Manche 1"/"Group 1" ->
+        # solo "1", "Final A"/"Finals A" -> solo "A". Cosi' il
+        # filtro funziona anche se la suddivisione batterie usa
+        # label italiane e il time table label inglesi (succede
+        # davvero in MyRCM).
+        norm_pilota = _normalizza_manche(manche_per_fase[fase])
+        norm_riga = _normalizza_manche(r.get("manche", ""))
+        if not norm_pilota or not norm_riga:
+            # Senza un match certo, tieni la riga (meglio show
+            # in piu' che nascondere)
+            out.append(r)
+            continue
+        if norm_pilota == norm_riga:
+            out.append(r)
+    return out
+
+
+def filtra_per_categoria(time_table, categoria_keyword):
+    """Ritorna le righe del time table che corrispondono alla
+    categoria indicata. Match case-insensitive con normalizzazione
+    spazi multipli (MyRCM ne usa spesso 2 o 3 di seguito) e supporto
+    bidirezionale: matcha sia se la kw e' contenuta nella categoria
+    della riga, sia viceversa (gestisce il caso in cui la lista
+    categorie usa il nome corto e il time table aggiunge il codice
+    in parentesi quadre, o viceversa)."""
+    if not categoria_keyword:
+        return list(time_table)
+    kw = _normalize_ws(categoria_keyword).lower()
+    if not kw:
+        return list(time_table)
+    out = []
+    for r in time_table:
+        cat_n = _normalize_ws(r.get("categoria", "")).lower()
+        if kw in cat_n or (cat_n and cat_n in kw):
+            out.append(r)
+            continue
+        # fallback: match in qualunque cella raw
+        if any(kw in _normalize_ws(c).lower() for c in r.get("raw", [])):
             out.append(r)
     return out
 
@@ -203,8 +427,9 @@ class AssistenteGaraMonitor:
     alla volta in cui correre.
     """
     _instance = None
-    SOGLIA_PREP_MIN = 15
-    SOGLIA_AVVIA_MIN = 1
+    SOGLIA_PREP_MIN = 15    # giallo  - PREPARARE LA VETTURA
+    SOGLIA_ATTESA_MIN = 3   # arancio - AVVICINARSI ALLA ZONA ATTESA
+    SOGLIA_AVVIA_MIN = 1    # rosso lampeggiante - AVVIA MOTORE
 
     @classmethod
     def get(cls, root=None):
@@ -220,6 +445,18 @@ class AssistenteGaraMonitor:
         self.time_table = []
         self.tt_filtrato = []
         self.delay_min = 0
+        # Filtro per Manche del pilota (Suddivisione Batteria MyRCM)
+        self.manche_per_fase = {}  # {fase_key: manche_label}
+        self.nome_pilota = ""
+        # Clock offset per modalita' SIMULAZIONE: differenza fissa tra
+        # "ora simulata" e "ora reale del sistema". 0 = live (default).
+        # Quando l'utente attiva una simulazione "26/04 09:00" mentre
+        # ora reale e' "27/04 14:00", offset diventa -29h. Da li' in
+        # poi self._now() ritorna sempre datetime.now() + offset, e
+        # avanza in tempo reale (passa 1 sec reale -> 1 sec simulato).
+        self.clock_offset = timedelta(0)
+        # Path persistenza (sopravvive al riavvio TrackMind)
+        self._state_path = self._calcola_state_path()
         # Listeners
         self._tick_listeners = []   # f(prossimo, dt_target, now)
         self._alert_listeners = []  # f(stato, prossimo, dt_target)
@@ -228,18 +465,50 @@ class AssistenteGaraMonitor:
         self._tick_id = None
         self._ultimo_alert_stato = None  # 'prep' | 'avvia' | None
 
+    def _calcola_state_path(self):
+        """Path dove salvare lo stato per la persistenza tra riavvi."""
+        # Stesso percorso che usa il resto di TrackMind: dati/
+        try:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            return os.path.join(base, "dati", "assistente_gara_state.json")
+        except Exception:
+            return None
+
+    def _now(self):
+        """Tempo "corrente" del monitor. In live = datetime.now().
+        In simulazione = datetime.now() + clock_offset (offset fisso
+        calcolato all'attivazione)."""
+        return datetime.now() + self.clock_offset
+
+    @property
+    def in_simulazione(self):
+        return abs(self.clock_offset.total_seconds()) > 5
+
     # ── attivazione/disattivazione ────────────────────────────────
-    def attiva(self, evento, categoria, time_table, delay_min=0):
+    def attiva(self, evento, categoria, time_table, delay_min=0,
+               clock_offset=None, manche_per_fase=None,
+               nome_pilota=""):
         self.evento = evento
         self.categoria = categoria
         self.time_table = time_table or []
-        self.tt_filtrato = filtra_per_categoria(
-            self.time_table, (categoria or {}).get("nome", ""))
+        # Filtra prima per categoria, poi per manche del pilota.
+        # `manche_per_fase` (es. {"prove_libere": "Manche 1"})
+        # restringe ulteriormente alle sole batterie del pilota.
+        cat_nome = (categoria or {}).get("nome", "")
+        tt_cat = filtra_per_categoria(self.time_table, cat_nome)
+        self.manche_per_fase = manche_per_fase or {}
+        self.nome_pilota = (nome_pilota or "").strip()
+        self.tt_filtrato = filtra_per_manche_pilota(
+            tt_cat, self.manche_per_fase)
         self.delay_min = delay_min
+        if clock_offset is not None:
+            self.clock_offset = clock_offset
         self._ultimo_alert_stato = None
         if not self._attivo:
             self._attivo = True
             self._tick()
+        # Salva stato per il riavvio
+        self._salva_stato()
 
     def disattiva(self):
         self._attivo = False
@@ -254,6 +523,14 @@ class AssistenteGaraMonitor:
         self.time_table = []
         self.tt_filtrato = []
         self.delay_min = 0
+        self.clock_offset = timedelta(0)
+        # Cancella file di stato cosi' al prossimo avvio l'utente
+        # ricomincia con la scelta evento.
+        try:
+            if self._state_path and os.path.exists(self._state_path):
+                os.remove(self._state_path)
+        except Exception:
+            pass
         # Notifica un ultimo tick "spento" cosi' i listener si nascondono
         for cb in list(self._tick_listeners):
             try:
@@ -265,12 +542,96 @@ class AssistenteGaraMonitor:
     def attivo(self):
         return self._attivo
 
+    # ── persistenza ───────────────────────────────────────────────
+    def _salva_stato(self):
+        """Salva lo stato corrente del monitor su disco, cosi'
+        sopravvive al riavvio TrackMind. Le righe time_table sono
+        serializzate con base_date in formato ISO."""
+        if not self._state_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            tt_serial = []
+            for r in self.time_table:
+                bd = r.get("base_date")
+                tt_serial.append({
+                    "ora": r.get("ora", ""),
+                    "categoria": r.get("categoria", ""),
+                    "manche": r.get("manche", ""),
+                    "gruppo": r.get("gruppo", ""),
+                    "turno": r.get("turno", ""),
+                    "raw": r.get("raw", []),
+                    "base_date": bd.isoformat() if bd else None,
+                })
+            data = {
+                "salvato": datetime.now().isoformat(),
+                "evento": self.evento,
+                "categoria": self.categoria,
+                "time_table": tt_serial,
+                "delay_min": self.delay_min,
+                "clock_offset_sec": self.clock_offset.total_seconds(),
+                "manche_per_fase": self.manche_per_fase or {},
+                "nome_pilota": self.nome_pilota or "",
+            }
+            with open(self._state_path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def carica_stato_persistito(self):
+        """Carica lo stato dal disco e riattiva il monitor se trovato.
+        Ritorna True se ha riattivato qualcosa, False altrimenti.
+        Lo stato persiste finche' l'utente non lo annulla
+        esplicitamente (STOP MONITOR / CAMBIA EVENTO). Niente timeout
+        automatico: una gara puo' durare 3 giorni e l'utente non vuole
+        ripartire dalla scelta evento ogni mattina."""
+        if not self._state_path or not os.path.exists(self._state_path):
+            return False
+        try:
+            import json as _json
+            with open(self._state_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+        except Exception:
+            return False
+        # Ricostruisci time_table con base_date come datetime
+        tt = []
+        for r in data.get("time_table", []):
+            bd_str = r.get("base_date")
+            try:
+                bd = datetime.fromisoformat(bd_str) if bd_str else None
+            except Exception:
+                bd = None
+            tt.append({
+                "ora": r.get("ora", ""),
+                "categoria": r.get("categoria", ""),
+                "manche": r.get("manche", ""),
+                "gruppo": r.get("gruppo", ""),
+                "turno": r.get("turno", ""),
+                "raw": r.get("raw", []),
+                "base_date": bd,
+            })
+        clock_offset_sec = data.get("clock_offset_sec", 0) or 0
+        self.attiva(
+            data.get("evento") or {},
+            data.get("categoria") or {},
+            tt,
+            delay_min=int(data.get("delay_min", 0) or 0),
+            clock_offset=timedelta(seconds=clock_offset_sec),
+            manche_per_fase=data.get("manche_per_fase") or {},
+            nome_pilota=data.get("nome_pilota") or "")
+        return True
+
     # ── ritardo manuale ───────────────────────────────────────────
     def imposta_delay(self, delay_min):
         self.delay_min = int(delay_min)
         # Reset alert: se ho appena spostato gli orari, gli edge si
         # ricomputano alla prossima soglia raggiunta.
         self._ultimo_alert_stato = None
+        self._salva_stato()
 
     def aggiungi_delay(self, delta):
         self.imposta_delay(self.delay_min + int(delta))
@@ -295,16 +656,21 @@ class AssistenteGaraMonitor:
     # ── core ──────────────────────────────────────────────────────
     def trova_prossimo(self, now=None):
         """Ritorna (turno_dict, dt_target) del prossimo turno della
-        categoria selezionata, applicando il delay manuale."""
+        categoria selezionata, applicando il delay manuale e tenendo
+        conto della modalita' simulazione (clock_offset)."""
         if not self._attivo or not self.tt_filtrato:
             return None, None
         if now is None:
-            now = datetime.now()
+            now = self._now()
         prossimo = None
         prossimo_dt = None
         for r in self.tt_filtrato:
             ora = r.get("ora", "")
-            dt = _ora_to_dt(ora)
+            base_date = r.get("base_date")
+            # Usa la data della giornata di gara se disponibile,
+            # altrimenti fallback a "oggi" (utile per test su un
+            # singolo giorno).
+            dt = _ora_to_dt(ora, base_date=base_date)
             if dt is None:
                 continue
             dt = dt + timedelta(minutes=self.delay_min)
@@ -318,7 +684,7 @@ class AssistenteGaraMonitor:
     def _tick(self):
         if not self._attivo:
             return
-        now = datetime.now()
+        now = self._now()
         prossimo, dt_target = self.trova_prossimo(now)
         # Notifica tick listeners (widget header, UI fullscreen, ecc.)
         for cb in list(self._tick_listeners):
@@ -326,18 +692,20 @@ class AssistenteGaraMonitor:
                 cb(prossimo, dt_target, now)
             except Exception:
                 pass
-        # Edge detection alert
+        # Edge detection alert: 3 soglie progressive.
         if dt_target is not None:
             secs = (dt_target - now).total_seconds()
             nuovo_stato = None
             if 0 < secs <= self.SOGLIA_AVVIA_MIN * 60:
                 nuovo_stato = "avvia"
+            elif 0 < secs <= self.SOGLIA_ATTESA_MIN * 60:
+                nuovo_stato = "attesa"
             elif 0 < secs <= self.SOGLIA_PREP_MIN * 60:
                 nuovo_stato = "prep"
-            # Trigger alert solo al CAMBIO di stato, e solo verso uno
-            # stato di livello superiore (non torno indietro a "prep"
-            # se ero gia' in "avvia").
-            ordine = {None: 0, "prep": 1, "avvia": 2}
+            # Trigger alert solo al CAMBIO di stato verso uno
+            # piu' avanzato (non torno indietro). Ordine:
+            # None < prep (-15) < attesa (-3) < avvia (-1).
+            ordine = {None: 0, "prep": 1, "attesa": 2, "avvia": 3}
             if (nuovo_stato is not None and
                 ordine[nuovo_stato] > ordine[self._ultimo_alert_stato]):
                 self._ultimo_alert_stato = nuovo_stato
@@ -372,6 +740,11 @@ def mostra_popup_alert(root, stato, prossimo, dt_target, colori=None):
         sotto = "1 minuto al tuo turno!"
         col_bg = "#330000"
         col_fg = "#ff4444"
+    elif stato == "attesa":
+        titolo = ">>> AVVICINARSI ALLA ZONA ATTESA <<<"
+        sotto = "3 minuti al tuo turno"
+        col_bg = "#331a00"
+        col_fg = "#ff8800"
     else:
         titolo = ">>> PREPARARE LA VETTURA <<<"
         sotto = "15 minuti al tuo turno"
@@ -481,13 +854,20 @@ class AssistenteGara:
     e alert per la categoria scelta."""
 
     # Soglie per gli stati visivi delle imminenti chiamate
-    SOGLIA_PREP_MIN = 15  # arancio: preparare la vettura
-    SOGLIA_AVVIA_MIN = 1  # rosso lampeggiante: avvia motore
+    SOGLIA_PREP_MIN = 15    # giallo: PREPARARE LA VETTURA
+    SOGLIA_ATTESA_MIN = 3   # arancio: AVVICINARSI ALLA ZONA ATTESA
+    SOGLIA_AVVIA_MIN = 1    # rosso lampeggiante: AVVIA MOTORE
     REFRESH_COUNTDOWN_MS = 1000  # tick countdown 1 Hz
 
-    def __init__(self, parent=None, on_close=None):
+    def __init__(self, parent=None, on_close=None,
+                 nome_pilota_default=""):
         self.c = _carica_colori()
         self._on_close = on_close
+        # Nome utente loggato in TrackMind: usato come default per il
+        # filtro "Tuo nome" cosi' chi corre con il proprio nome reale
+        # registrato in MyRCM trova subito le SUE manche, senza dover
+        # scrivere niente.
+        self._nome_pilota_default = (nome_pilota_default or "").strip()
 
         if parent is not None:
             self.root = parent
@@ -509,17 +889,23 @@ class AssistenteGara:
         self._f_count_big = tkfont.Font(family=FONT_MONO, size=36,
                                          weight="bold")
 
-        # Stato locale (in fase di scelta evento/categoria)
+        # Stato locale (in fase di scelta evento/categoria).
+        # Il time table NON e' qui: lo tiene il MONITOR singleton.
         self._eventi = []
         self._categorie = []
-        self._html_evento = ""
         self._tick_listener = None  # callback registrato sul monitor
 
-        # Monitor singleton: se gia' attivo, salta dritto al countdown
-        # cosi' chi rientra in ASSIST. GARA dal menu non ripassa per la
-        # lista eventi/categorie. Lo stato (evento, categoria, time
-        # table, delay) sopravvive tra una sessione UI e l'altra.
+        # Monitor singleton: se gia' attivo, salta dritto al countdown.
+        # Se il monitor non e' attivo IN MEMORIA ma c'e' uno stato
+        # salvato su disco recente (<24h), lo riattiviamo automaticamente:
+        # cosi' al riavvio TrackMind l'addon riprende esattamente dove
+        # era, senza dover ripassare per scelta evento/categoria.
         monitor = AssistenteGaraMonitor.get(self._top)
+        if monitor and not monitor.attivo:
+            try:
+                monitor.carica_stato_persistito()
+            except Exception:
+                pass
         if monitor and monitor.attivo:
             self._schermata_timetable_monitor()
         else:
@@ -529,17 +915,21 @@ class AssistenteGara:
     #  Helper UI
     # =================================================================
     def _pulisci(self):
+        # Deregistra tick listener UI prima di distruggere widget
+        # (il monitor singleton resta vivo con tutto il suo stato).
+        if self._tick_listener is not None:
+            try:
+                m = AssistenteGaraMonitor.get(self._top)
+                if m:
+                    m.remove_tick_listener(self._tick_listener)
+            except Exception:
+                pass
+            self._tick_listener = None
         for w in self.root.winfo_children():
             try:
                 w.destroy()
             except Exception:
                 pass
-        if self._countdown_id is not None:
-            try:
-                self.root.after_cancel(self._countdown_id)
-            except Exception:
-                pass
-            self._countdown_id = None
 
     def _header(self, titolo, back_cmd=None):
         c = self.c
@@ -561,10 +951,16 @@ class AssistenteGara:
             fill="x", padx=10, pady=(6, 4))
         return h
 
-    def _footer_status(self, testo=""):
+    def _footer_status(self, testo="", livello="info"):
         c = self.c
+        col = {
+            "ok": c["stato_ok"],
+            "errore": c["stato_errore"],
+            "avviso": c["stato_avviso"],
+            "info": c["testo_dim"],
+        }.get(livello, c["testo_dim"])
         self._status_lbl = tk.Label(self.root, text=testo,
-                                     bg=c["sfondo"], fg=c["testo_dim"],
+                                     bg=c["sfondo"], fg=col,
                                      font=self._f_small, anchor="w")
         self._status_lbl.pack(fill="x", side="bottom", padx=10, pady=4)
         return self._status_lbl
@@ -601,26 +997,137 @@ class AssistenteGara:
                                  livello="errore")
             return
 
-        # Barra controlli: filtro nazione + bottone aggiorna
-        bar = tk.Frame(self.root, bg=c["sfondo"])
-        bar.pack(fill="x", padx=10, pady=(4, 4))
-        tk.Label(bar, text="Filtro nazione:", bg=c["sfondo"],
-                 fg=c["label"], font=self._f_info).pack(side="left",
-                                                         padx=(0, 6))
-        self._naz_var = tk.StringVar(value="ita")
-        ent = tk.Entry(bar, textvariable=self._naz_var, font=self._f_info,
-                       width=8, bg=c["sfondo_celle"], fg=c["dati"],
-                       insertbackground=c["dati"], relief="solid", bd=1)
-        ent.pack(side="left", padx=(0, 8))
-        ent.bind("<Return>", lambda e: self._carica_eventi())
+        # ── Form input con stile retro coerente (RetroField) ──
+        # Tre campi: filtro nazione, ID/URL evento, simulazione data.
+        # I RetroField hanno lo stesso look del resto di TrackMind:
+        # celle singole verde su nero, cursore lampeggiante, font
+        # monospace WarGames-style. Niente piu' Entry tk grezze.
+        form_frame = tk.Frame(self.root, bg=c["sfondo"])
+        form_frame.pack(fill="x", padx=10, pady=(6, 4))
+
+        # Riga 1: filtro nazione
+        bar = tk.Frame(form_frame, bg=c["sfondo"])
+        bar.pack(fill="x", pady=(0, 2))
+        if _HAS_RETROFIELD:
+            self._sf_naz = RetroField(bar, label="Filtro nazione",
+                                       tipo="S", lunghezza=8,
+                                       on_enter=lambda: self._carica_eventi(),
+                                       label_width=22)
+            self._sf_naz.pack(side="left", padx=(0, 8))
+            try:
+                self._sf_naz.set("ita")
+            except Exception:
+                pass
+        else:
+            self._naz_var = tk.StringVar(value="ita")
+            tk.Label(bar, text="Filtro nazione:", bg=c["sfondo"],
+                     fg=c["label"], font=self._f_info).pack(side="left",
+                                                             padx=(0, 6))
+            ent = tk.Entry(bar, textvariable=self._naz_var,
+                           font=self._f_info, width=8,
+                           bg=c["sfondo_celle"], fg=c["dati"],
+                           insertbackground=c["dati"],
+                           relief="solid", bd=1)
+            ent.pack(side="left", padx=(0, 8))
+            ent.bind("<Return>", lambda e: self._carica_eventi())
         tk.Button(bar, text="AGGIORNA", font=self._f_btn,
                   bg=c["cerca_sfondo"], fg=c["cerca_testo"],
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._carica_eventi).pack(side="left", padx=4)
         tk.Label(bar,
-                 text="(svuota per vedere tutti gli eventi mondiali)",
+                 text="(svuota per tutti gli eventi mondiali)",
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left", padx=(8, 0))
+
+        # Riga 2: apri per ID o URL evento
+        bar2 = tk.Frame(form_frame, bg=c["sfondo"])
+        bar2.pack(fill="x", pady=(2, 2))
+        if _HAS_RETROFIELD:
+            self._sf_evt_id = RetroField(bar2,
+                                          label="Apri ID o URL",
+                                          tipo="S", lunghezza=42,
+                                          on_enter=lambda: self._apri_evento_per_id(),
+                                          label_width=22)
+            self._sf_evt_id.pack(side="left", padx=(0, 8))
+        else:
+            self._evt_id_var = tk.StringVar(value="")
+            tk.Label(bar2, text="Apri evento per ID o URL:",
+                     bg=c["sfondo"], fg=c["label"],
+                     font=self._f_info).pack(side="left", padx=(0, 6))
+            ent_id = tk.Entry(bar2, textvariable=self._evt_id_var,
+                               font=self._f_info, width=42,
+                               bg=c["sfondo_celle"], fg=c["dati"],
+                               insertbackground=c["dati"],
+                               relief="solid", bd=1)
+            ent_id.pack(side="left", padx=(0, 8))
+            ent_id.bind("<Return>",
+                         lambda e: self._apri_evento_per_id())
+        tk.Button(bar2, text="APRI ID", font=self._f_btn,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._apri_evento_per_id).pack(side="left",
+                                                          padx=4)
+
+        # Riga 3: simulazione (test su data passata/futura)
+        bar3 = tk.Frame(form_frame, bg=c["sfondo"])
+        bar3.pack(fill="x", pady=(2, 2))
+        if _HAS_RETROFIELD:
+            self._sf_sim = RetroField(bar3,
+                                       label="Simulazione",
+                                       tipo="S", lunghezza=18,
+                                       label_width=22)
+            self._sf_sim.pack(side="left", padx=(0, 8))
+        else:
+            self._sim_var = tk.StringVar(value="")
+            tk.Label(bar3, text="Simulazione (DD/MM/YYYY HH:MM):",
+                     bg=c["sfondo"], fg=c["label"],
+                     font=self._f_info).pack(side="left", padx=(0, 6))
+            ent_sim = tk.Entry(bar3, textvariable=self._sim_var,
+                                font=self._f_info, width=22,
+                                bg=c["sfondo_celle"], fg=c["dati"],
+                                insertbackground=c["dati"],
+                                relief="solid", bd=1)
+            ent_sim.pack(side="left", padx=(0, 8))
+        tk.Label(bar3,
+                 text="(vuoto=LIVE | HH:MM oggi | DD/MM/YYYY HH:MM)",
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(side="left", padx=(0, 8))
+
+        # Riga 4: tuo nome (per filtro per Manche/Gruppo).
+        # Se compilato, l'addon scarica la "Suddivisione Batteria"
+        # MyRCM e mostra nel time table SOLO i turni della manche
+        # cui sei assegnato (es. Manche 1 invece di Manche 1+2).
+        # Se vuoto, niente filtro: mostra tutti i turni della
+        # categoria (comportamento precedente).
+        bar4 = tk.Frame(form_frame, bg=c["sfondo"])
+        bar4.pack(fill="x", pady=(2, 2))
+        nome_default = (self._nome_pilota_default or "")[:32]
+        if _HAS_RETROFIELD:
+            self._sf_nome = RetroField(bar4,
+                                        label="Tuo nome (filtro)",
+                                        tipo="S", lunghezza=32,
+                                        label_width=22)
+            self._sf_nome.pack(side="left", padx=(0, 8))
+            try:
+                if nome_default:
+                    self._sf_nome.set(nome_default)
+            except Exception:
+                pass
+        else:
+            self._nome_var = tk.StringVar(value=nome_default)
+            tk.Label(bar4, text="Tuo nome (filtro):",
+                     bg=c["sfondo"], fg=c["label"],
+                     font=self._f_info).pack(side="left", padx=(0, 6))
+            ent_nome = tk.Entry(bar4, textvariable=self._nome_var,
+                                 font=self._f_info, width=32,
+                                 bg=c["sfondo_celle"], fg=c["dati"],
+                                 insertbackground=c["dati"],
+                                 relief="solid", bd=1)
+            ent_nome.pack(side="left", padx=(0, 8))
+        tk.Label(bar4,
+                 text="(vuoto = mostra tutte le manche della categoria)",
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(side="left", padx=(0, 8))
 
         # Listbox eventi
         list_frame = tk.Frame(self.root, bg=c["sfondo"])
@@ -656,6 +1163,52 @@ class AssistenteGara:
         # Auto-carica all'avvio
         self.root.after(200, self._carica_eventi)
 
+    def _leggi_naz(self):
+        """Legge il filtro nazione dal RetroField o dalla StringVar
+        di fallback."""
+        try:
+            if hasattr(self, "_sf_naz"):
+                return (self._sf_naz.get() or "").strip()
+            if hasattr(self, "_naz_var"):
+                return (self._naz_var.get() or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _leggi_evt_id(self):
+        """Legge l'ID evento o URL dal RetroField o dalla StringVar."""
+        try:
+            if hasattr(self, "_sf_evt_id"):
+                return (self._sf_evt_id.get() or "").strip()
+            if hasattr(self, "_evt_id_var"):
+                return (self._evt_id_var.get() or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _leggi_sim(self):
+        """Legge il campo simulazione dal RetroField o dalla StringVar."""
+        try:
+            if hasattr(self, "_sf_sim"):
+                return (self._sf_sim.get() or "").strip()
+            if hasattr(self, "_sim_var"):
+                return (self._sim_var.get() or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _leggi_nome(self):
+        """Legge il campo "tuo nome" dal RetroField o dalla StringVar.
+        Usato per filtrare il time table per Manche del pilota."""
+        try:
+            if hasattr(self, "_sf_nome"):
+                return (self._sf_nome.get() or "").strip()
+            if hasattr(self, "_nome_var"):
+                return (self._nome_var.get() or "").strip()
+        except Exception:
+            pass
+        return ""
+
     def _carica_eventi(self):
         """Scarica lista eventi online MyRCM (in thread)."""
         c = self.c
@@ -665,7 +1218,7 @@ class AssistenteGara:
         except Exception:
             return
         self._set_status("Connessione a MyRCM...", "avviso")
-        naz = self._naz_var.get().strip()
+        naz = self._leggi_naz()
 
         def _bg():
             try:
@@ -703,6 +1256,46 @@ class AssistenteGara:
         self._lb_eventi.activate(0)
         self._set_status("Trovati %d eventi. Doppio click per aprire."
                           % len(self._eventi), "ok")
+
+    def _apri_evento_per_id(self):
+        """Apre direttamente un evento dato il suo ID MyRCM (o un URL
+        completo da cui estraggo dId[E]=NNN). Utile quando l'evento
+        non e' in lista 'online' (passato, futuro, oppure scoperto da
+        URL condiviso). Costruisce un dict evento minimale e va
+        dritto alla schermata categorie."""
+        raw = self._leggi_evt_id()
+        if not raw:
+            self._set_status("Inserisci un ID o un URL evento MyRCM",
+                              "avviso")
+            return
+        # Estrai ID: o numero nudo, oppure pattern dId[E]=NNN dall'URL
+        eid = None
+        if raw.isdigit():
+            eid = raw
+        else:
+            m = re.search(r'dId\[E\]=(\d+)', raw)
+            if m:
+                eid = m.group(1)
+            else:
+                m = re.search(r'dId%5BE%5D=(\d+)', raw)
+                if m:
+                    eid = m.group(1)
+        if not eid:
+            self._set_status(
+                "ID non riconosciuto. Inserisci numero (es. 94090) "
+                "o URL contenente dId[E]=NNN", "errore")
+            return
+        # Costruisci dict evento minimale - i campi mancanti verranno
+        # mostrati come "?", non e' un problema.
+        self._evento_sel = {
+            "event_id": eid,
+            "nome": "Evento #%s" % eid,
+            "organizzatore": "?",
+            "nazione": "?",
+            "link": "",
+        }
+        self._set_status("Apertura evento %s..." % eid, "avviso")
+        self._schermata_categorie()
 
     def _scegli_evento(self):
         sel = self._lb_eventi.curselection()
@@ -763,7 +1356,11 @@ class AssistenteGara:
 
         self._footer_status("Carico categorie...", "avviso")
 
-        # Scarico categorie + HTML evento (per time table) in parallelo
+        # Scarico SOLO le categorie. Il time table NON e' nella pagina
+        # principale dell'evento: e' aggregato per giornata via AJAX
+        # (un reportKey per giornata) sotto la pagina report di una
+        # categoria specifica. Quindi lo scarichiamo in un secondo
+        # tempo, dopo che l'utente sceglie la categoria.
         eid = self._evento_sel.get("event_id", "")
 
         def _bg():
@@ -771,32 +1368,23 @@ class AssistenteGara:
                 cats = scarica_categorie(eid) or []
             except Exception:
                 cats = []
-            try:
-                html = scarica_html_evento(eid) or ""
-            except Exception:
-                html = ""
-            self.root.after(0, lambda: self._mostra_categorie(cats, html))
+            self.root.after(0, lambda: self._mostra_categorie(cats))
 
         threading.Thread(target=_bg, daemon=True).start()
 
-    def _mostra_categorie(self, categorie, html_evento):
+    def _mostra_categorie(self, categorie):
         try:
             self._lb_cat.delete(0, "end")
         except Exception:
             return
         self._categorie = categorie or []
-        self._html_evento = html_evento or ""
-        # Pre-parsa anche il time table (lo riusiamo)
-        try:
-            self._time_table = parse_time_table(self._html_evento)
-        except Exception:
-            self._time_table = []
 
         if not self._categorie:
             self._lb_cat.insert("end",
                 "  Nessuna categoria trovata per questo evento.")
-            self._set_status("Categorie non trovate. Verifica che "
-                              "l'evento sia ancora online.", "errore")
+            self._set_status("Categorie non trovate. Verifica l'ID "
+                              "evento e la connessione internet.",
+                             "errore")
             return
         for cat in self._categorie:
             riga = "  %s   (id %s)" % (
@@ -805,17 +1393,50 @@ class AssistenteGara:
         self._lb_cat.selection_set(0)
         self._lb_cat.activate(0)
 
-        n_tt = len(self._time_table)
-        if n_tt:
-            self._set_status(
-                "%d categorie. Time table: %d righe rilevate. "
-                "Doppio click per aprire."
-                % (len(self._categorie), n_tt), "ok")
-        else:
-            self._set_status(
-                "%d categorie. ATTENZIONE: time table non rilevato "
-                "(parser euristico - potrebbe servire taratura)."
-                % len(self._categorie), "avviso")
+        self._set_status(
+            "%d categorie. Doppio click per aprire (scarico time "
+            "table delle giornate dopo la scelta)."
+            % len(self._categorie), "ok")
+
+    def _parsa_simulazione(self):
+        """Legge il campo simulazione e ritorna (clock_offset, data).
+        clock_offset = timedelta(0) se LIVE, altrimenti differenza
+        tra "ora simulata" e "ora reale del sistema".
+        data = la data per cui scaricare il time table.
+        Formati accettati:
+            ""              -> LIVE, oggi reale
+            "HH:MM"         -> oggi reale alle HH:MM (test orario di
+                               un turno tra qualche minuto)
+            "DD/MM/YYYY"    -> quella data alle 09:00
+            "DD/MM/YYYY HH:MM" -> quella data e ora
+        Se non riesce a parsare, ritorna (timedelta(0), oggi)."""
+        s = self._leggi_sim()
+        if not s:
+            return timedelta(0), datetime.now().date()
+        # Solo HH:MM
+        m = re.match(r"^(\d{1,2}):(\d{2})$", s)
+        if m:
+            hh, mm = int(m.group(1)), int(m.group(2))
+            sim_dt = datetime.now().replace(hour=hh, minute=mm,
+                                             second=0, microsecond=0)
+            return sim_dt - datetime.now(), sim_dt.date()
+        # DD/MM/YYYY HH:MM o DD/MM/YYYY
+        m = re.match(
+            r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})"
+            r"(?:\s+(\d{1,2}):(\d{2}))?$", s)
+        if m:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if y < 100:
+                y += 2000
+            hh = int(m.group(4)) if m.group(4) else 9
+            mm = int(m.group(5)) if m.group(5) else 0
+            try:
+                sim_dt = datetime(y, mo, d, hh, mm, 0)
+            except ValueError:
+                return timedelta(0), datetime.now().date()
+            return sim_dt - datetime.now(), sim_dt.date()
+        # Non parsato: live + oggi
+        return timedelta(0), datetime.now().date()
 
     def _scegli_categoria(self):
         sel = self._lb_cat.curselection()
@@ -826,12 +1447,96 @@ class AssistenteGara:
         if idx < 0 or idx >= len(self._categorie):
             return
         cat = self._categorie[idx]
-        # Attiva il monitor singleton: da questo momento il countdown
-        # gira anche se l'utente esce dall'addon e va sui setup.
+        # Scarico in parallelo:
+        # - time table (giornata target)
+        # - partecipanti (popolano automaticamente trasponder.json)
+        # - suddivisione batterie -> manche del pilota loggato
+        eid = (self._evento_sel or {}).get("event_id", "")
+        cid = cat.get("category_id", "")
+        clock_offset, data_target = self._parsa_simulazione()
+        nome_pilota = self._leggi_nome()
+        sim_label = (" [SIM %s]" % data_target.strftime("%d/%m")
+                     if abs(clock_offset.total_seconds()) > 5 else "")
+        self._set_status(
+            "Scarico time table + partecipanti per %s%s..."
+            % (cat.get("nome", "?")[:30], sim_label),
+            "avviso")
+
+        def _bg():
+            # Time table
+            try:
+                tt = scarica_timetable_evento(
+                    eid, cid, data_target=data_target) or []
+            except Exception as e:
+                tt = []
+                err = str(e)[:80]
+                self.root.after(0, lambda: self._set_status(
+                    "Errore time table: " + err, "errore"))
+                return
+            # Partecipanti -> tabella trasponder.json (auto, no UI)
+            n_aggiunti = 0
+            n_aggiornati = 0
+            try:
+                piloti = scarica_partecipanti(eid, cid) or []
+                if piloti:
+                    n_aggiunti, n_aggiornati = (
+                        self._scrivi_trasponder_json(piloti))
+            except Exception:
+                pass
+            # Suddivisione batterie -> manche del pilota per ogni fase
+            manche_per_fase = {}
+            if nome_pilota:
+                try:
+                    manche_per_fase = trova_manche_pilota_per_fase(
+                        eid, cid, nome_pilota) or {}
+                except Exception:
+                    manche_per_fase = {}
+            self.root.after(
+                0, lambda: self._attiva_monitor_con_tt(
+                    cat, tt, clock_offset, n_aggiunti, n_aggiornati,
+                    manche_per_fase, nome_pilota))
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _attiva_monitor_con_tt(self, cat, time_table,
+                                clock_offset=None,
+                                piloti_aggiunti=0,
+                                piloti_aggiornati=0,
+                                manche_per_fase=None,
+                                nome_pilota=""):
+        """Callback dopo download: attiva il monitor singleton e
+        apre la schermata countdown. `manche_per_fase` (se non vuoto)
+        filtra il time table per mostrare solo le batterie del
+        pilota nelle varie fasi (Prove Libere, Prove, Qualif, Finale)."""
+        if not time_table:
+            self._set_status(
+                "Nessun turno trovato per la giornata target. "
+                "Verifica la data (campo Simulazione) o che la "
+                "tabella oraria sia pubblicata su MyRCM.", "errore")
+            return
         monitor = AssistenteGaraMonitor.get(self._top)
         if monitor:
-            monitor.attiva(self._evento_sel, cat, self._time_table,
-                           delay_min=0)
+            monitor.attiva(self._evento_sel, cat, time_table,
+                           delay_min=0,
+                           clock_offset=clock_offset
+                           if clock_offset is not None
+                           else timedelta(0),
+                           manche_per_fase=manche_per_fase or {},
+                           nome_pilota=nome_pilota or "")
+        # Status iniziale: include piloti importati e info filtro
+        msgs = []
+        if piloti_aggiunti or piloti_aggiornati:
+            msgs.append("Trasponder: %d nuovi, %d aggiornati"
+                        % (piloti_aggiunti, piloti_aggiornati))
+        if manche_per_fase and nome_pilota:
+            mfs = ", ".join("%s=%s" % (k.replace("_", " "), v)
+                            for k, v in manche_per_fase.items())
+            msgs.append("Pilota %s | %s" % (nome_pilota, mfs))
+        elif nome_pilota and not manche_per_fase:
+            msgs.append("Pilota %s NON trovato in suddivisione "
+                        "batterie (mostro tutte le manche)"
+                        % nome_pilota)
+        self._import_piloti_msg = " | ".join(msgs) if msgs else None
         self._schermata_timetable_monitor()
 
     # =================================================================
@@ -853,20 +1558,25 @@ class AssistenteGara:
         cat_nome = categoria.get("nome", "?")
 
         # Header con bottoni back + stop monitor
+        # IMPORTANTE: "TORNA AL MENU" fa solo uscire dall'UI ma il
+        # monitor resta attivo (countdown + alert continuano sullo
+        # sfondo). "ANNULLA EVENTO" e' l'UNICA strada per spegnere
+        # il monitor. Richiede doppia pressione per evitare click
+        # accidentali (l'utente deve PROPRIO volerlo).
         h = tk.Frame(self.root, bg=c["sfondo"])
         h.pack(fill="x", padx=10, pady=(8, 0))
-        tk.Button(h, text="< MENU", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["pulsanti_testo"],
-                  relief="ridge", bd=1, cursor="hand2",
+        tk.Button(h, text="TORNA AL MENU", font=self._f_btn,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                  relief="ridge", bd=2, cursor="hand2",
                   command=self._chiudi_lasciando_monitor).pack(side="left")
-        tk.Button(h, text="STOP MONITOR", font=self._f_small,
+        # Reset stato doppia pressione (ad ogni rebuild della UI)
+        self._stop_doppia = 0
+        self._btn_stop = tk.Button(h, text="ANNULLA EVENTO",
+                  font=self._f_small,
                   bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
                   relief="ridge", bd=1, cursor="hand2",
-                  command=self._stop_monitor).pack(side="left", padx=(6, 0))
-        tk.Button(h, text="CAMBIA EVENTO", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["stato_avviso"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._cambia_evento).pack(side="left", padx=(6, 0))
+                  command=self._stop_monitor_con_conferma)
+        self._btn_stop.pack(side="left", padx=(6, 0))
         tk.Label(h, text="  TIME TABLE - " + cat_nome[:30],
                  bg=c["sfondo"], fg=c["dati"],
                  font=self._f_title).pack(side="left", padx=(8, 0))
@@ -877,14 +1587,21 @@ class AssistenteGara:
         tk.Frame(self.root, bg=c["linee"], height=1).pack(
             fill="x", padx=10, pady=(6, 4))
 
-        # Riga info + ritardo
+        # Riga info + ritardo + indicatore SIMULAZIONE
         info_bar = tk.Frame(self.root, bg=c["sfondo"])
         info_bar.pack(fill="x", padx=10, pady=(0, 4))
         tk.Label(info_bar,
-                 text="Evento: %s" % (evento.get("nome", "?")[:50]),
+                 text="Evento: %s" % (evento.get("nome", "?")[:40]),
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left")
-        tk.Label(info_bar, text="   Ritardo applicato:",
+        if monitor.in_simulazione:
+            sim_now = monitor._now()
+            tk.Label(info_bar,
+                     text="   [SIMULAZIONE %s]"
+                          % sim_now.strftime("%d/%m %H:%M"),
+                     bg=c["sfondo"], fg=c["stato_errore"],
+                     font=self._f_small).pack(side="left", padx=(8, 0))
+        tk.Label(info_bar, text="   Ritardo:",
                  bg=c["sfondo"], fg=c["label"],
                  font=self._f_small).pack(side="left", padx=(20, 4))
         self._lbl_delay = tk.Label(
@@ -932,27 +1649,65 @@ class AssistenteGara:
                                     font=self._f_count)
         self._lbl_alert.pack(pady=(0, 8))
 
-        # Lista turni filtrata
+        # Tree turni della giornata: ogni turno e' una riga colorata
+        # in base al suo stato (passato/in corso/prossimo/futuro).
+        # Canvas scrollabile per gestire eventi con molti turni.
         list_frame = tk.Frame(self.root, bg=c["sfondo"])
         list_frame.pack(fill="both", expand=True, padx=10, pady=4)
         sb = tk.Scrollbar(list_frame, bg=c["sfondo"],
                           troughcolor=c["sfondo"],
                           activebackground=c["dati"])
         sb.pack(side="right", fill="y")
-        self._lb_tt = tk.Listbox(list_frame, font=self._f_info,
-                                  bg=c["sfondo_celle"], fg=c["dati"],
-                                  selectbackground=c["dati"],
-                                  selectforeground=c["sfondo"],
-                                  yscrollcommand=sb.set,
-                                  relief="solid", bd=1,
-                                  highlightthickness=0)
-        self._lb_tt.pack(side="left", fill="both", expand=True)
-        sb.config(command=self._lb_tt.yview)
-        self._popola_lista_turni(monitor)
+        self._tt_canvas = tk.Canvas(list_frame, bg=c["sfondo_celle"],
+                                     highlightthickness=0,
+                                     yscrollcommand=sb.set,
+                                     bd=1, relief="solid")
+        self._tt_canvas.pack(side="left", fill="both", expand=True)
+        sb.config(command=self._tt_canvas.yview)
+        self._tt_inner = tk.Frame(self._tt_canvas, bg=c["sfondo_celle"])
+        self._tt_canvas.create_window((0, 0), window=self._tt_inner,
+                                       anchor="nw", tags="inner")
+        def _on_resize(event):
+            try:
+                self._tt_canvas.configure(
+                    scrollregion=self._tt_canvas.bbox("all"))
+                # Adatta larghezza inner alla larghezza canvas
+                self._tt_canvas.itemconfig(
+                    "inner",
+                    width=event.width if event.widget == self._tt_canvas
+                    else self._tt_canvas.winfo_width())
+            except Exception:
+                pass
+        self._tt_canvas.bind("<Configure>", _on_resize)
+        self._tt_inner.bind("<Configure>", _on_resize)
+        # Mouse wheel scroll
+        def _scroll(e):
+            try:
+                self._tt_canvas.yview_scroll(
+                    int(-1 * (e.delta / 120)) if hasattr(e, "delta") and e.delta
+                    else (-1 if getattr(e, "num", 0) == 4 else 1), "units")
+            except Exception:
+                pass
+        self._tt_canvas.bind_all("<MouseWheel>", _scroll)
+        self._tt_canvas.bind_all("<Button-4>", _scroll)
+        self._tt_canvas.bind_all("<Button-5>", _scroll)
 
-        self._footer_status(
-            "Monitor ATTIVO: il countdown gira anche fuori da questa "
-            "schermata. STOP MONITOR per spegnerlo.", "ok")
+        # Popola le righe (sara' ricolorato ad ogni tick)
+        self._tt_rows = []  # [(turno_dict, frame, lbls...)]
+        self._popola_tree_turni(monitor)
+
+        sim_hint = (" | Modalita' SIMULAZIONE attiva"
+                    if monitor.in_simulazione else "")
+        import_msg = getattr(self, "_import_piloti_msg", None)
+        if import_msg:
+            self._footer_status(
+                "%s | Monitor ATTIVO: countdown live anche fuori da qui."
+                % import_msg + sim_hint, "ok")
+            self._import_piloti_msg = None  # consumato
+        else:
+            self._footer_status(
+                "Monitor ATTIVO: countdown live anche fuori da qui. "
+                "STOP MONITOR per spegnerlo." + sim_hint, "ok")
 
         # Registra tick listener sul monitor cosi' la UI si aggiorna
         # automaticamente ad ogni tick (1 Hz). Quando esci, deregistra.
@@ -961,36 +1716,189 @@ class AssistenteGara:
         # Trigger immediato per non aspettare il primo secondo
         self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
 
-    def _popola_lista_turni(self, monitor):
+    def _popola_tree_turni(self, monitor):
+        """Costruisce la lista verticale dei turni della giornata
+        per la categoria selezionata. Una riga per turno, ognuna
+        salvata in self._tt_rows. I colori vengono aggiornati ad
+        ogni tick da _aggiorna_stato_tree_turni()."""
+        c = self.c
         cat_nome = (monitor.categoria or {}).get("nome", "?")
-        try:
-            self._lb_tt.delete(0, "end")
-        except Exception:
-            return
+        # Pulisci righe esistenti
+        for w in list(self._tt_inner.winfo_children()):
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._tt_rows = []
+
         if not monitor.tt_filtrato:
-            self._lb_tt.insert("end",
-                "  Nessun turno rilevato per categoria '%s'." % cat_nome)
-            self._lb_tt.insert("end", "  Possibili cause:")
-            self._lb_tt.insert("end",
-                "  - Time table dell'evento non ancora pubblicato")
-            self._lb_tt.insert("end",
-                "  - Parser non riconosce il layout di questa pagina")
-            self._lb_tt.insert("end",
-                "  - Il nome categoria non matcha esattamente "
-                "quello del time table")
+            tk.Label(self._tt_inner,
+                     text=("  Nessun turno trovato per categoria '%s'.\n"
+                           "  Possibili cause:\n"
+                           "  - tabella oraria non pubblicata su MyRCM\n"
+                           "  - data simulazione non corrisponde a "
+                           "una giornata di gara\n"
+                           "  - parser non riconosce il layout"
+                           % cat_nome),
+                     bg=c["sfondo_celle"], fg=c["stato_avviso"],
+                     font=self._f_info, justify="left",
+                     anchor="w").pack(fill="x", padx=8, pady=8)
             return
+
+        # Header riga
+        hr = tk.Frame(self._tt_inner, bg=c["linee"])
+        hr.pack(fill="x", padx=2, pady=(2, 4))
+        for txt, w in (("Ora", 8), ("Manche", 16), ("Gruppo", 18),
+                        ("Stato", 24)):
+            tk.Label(hr, text=txt, bg=c["linee"], fg=c["dati"],
+                     font=self._f_btn, width=w,
+                     anchor="w").pack(side="left", padx=4)
+
+        # Una riga per turno
         for r in monitor.tt_filtrato:
-            cat_short = (r.get("categoria") or "")[:25]
-            turno = (r.get("turno") or "")[:30]
+            row_frame = tk.Frame(self._tt_inner, bg=c["sfondo_celle"],
+                                  bd=1, relief="flat")
+            row_frame.pack(fill="x", padx=2, pady=1)
             ora_orig = r.get("ora", "?")
-            dt = _ora_to_dt(ora_orig)
+            dt = _ora_to_dt(ora_orig, r.get("base_date"))
             if dt and monitor.delay_min:
                 dt = dt + timedelta(minutes=monitor.delay_min)
-                ora_eff = dt.strftime("%H:%M")
+            ora_eff = (dt.strftime("%H:%M")
+                       if dt is not None else ora_orig)
+            lbl_ora = tk.Label(row_frame, text=ora_eff,
+                                bg=c["sfondo_celle"], fg=c["dati"],
+                                font=self._f_info, width=8,
+                                anchor="w")
+            lbl_ora.pack(side="left", padx=4, pady=2)
+            lbl_man = tk.Label(row_frame,
+                                text=(r.get("manche") or "")[:16],
+                                bg=c["sfondo_celle"],
+                                fg=c["testo_dim"],
+                                font=self._f_info, width=16,
+                                anchor="w")
+            lbl_man.pack(side="left", padx=4, pady=2)
+            lbl_grp = tk.Label(row_frame,
+                                text=(r.get("gruppo") or "")[:18],
+                                bg=c["sfondo_celle"],
+                                fg=c["testo_dim"],
+                                font=self._f_info, width=18,
+                                anchor="w")
+            lbl_grp.pack(side="left", padx=4, pady=2)
+            lbl_stato = tk.Label(row_frame, text="",
+                                  bg=c["sfondo_celle"], fg=c["dati"],
+                                  font=self._f_info, width=24,
+                                  anchor="w")
+            lbl_stato.pack(side="left", padx=4, pady=2)
+            self._tt_rows.append({
+                "turno": r,
+                "dt_target": dt,
+                "frame": row_frame,
+                "lbl_ora": lbl_ora,
+                "lbl_man": lbl_man,
+                "lbl_grp": lbl_grp,
+                "lbl_stato": lbl_stato,
+            })
+        # Forza redraw + scroll region update
+        try:
+            self._tt_inner.update_idletasks()
+            self._tt_canvas.configure(
+                scrollregion=self._tt_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _aggiorna_stato_tree_turni(self, now):
+        """Ad ogni tick, ricolora le righe del tree in base allo
+        stato (passato/in corso/prossimo/futuro)."""
+        c = self.c
+        if not getattr(self, "_tt_rows", None):
+            return
+        # Trova il "prossimo turno" per evidenziarlo
+        prossimo_dt = None
+        for row in self._tt_rows:
+            dt = row.get("dt_target")
+            if dt is None:
+                continue
+            if dt > now and (prossimo_dt is None or dt < prossimo_dt):
+                prossimo_dt = dt
+
+        for row in self._tt_rows:
+            dt = row.get("dt_target")
+            if dt is None:
+                continue
+            # Durata stimata: cella raw[4] formato "MM:SS"
+            durata_min = 10
+            try:
+                raw_dur = (row["turno"].get("raw") or [])
+                if len(raw_dur) >= 5:
+                    dms = raw_dur[4].strip()
+                    if ":" in dms:
+                        d_mm, _ = dms.split(":")
+                        durata_min = max(1, int(d_mm))
+            except Exception:
+                pass
+            fine_turno = dt + timedelta(minutes=durata_min)
+            secs_to_start = (dt - now).total_seconds()
+
+            if now >= fine_turno:
+                # PASSATO
+                bg = c["sfondo"]
+                fg_main = c["testo_dim"]
+                fg_dim = c["testo_dim"]
+                stato_txt = "PASSATO"
+            elif now >= dt:
+                # IN CORSO
+                bg = "#0a3a0a"
+                fg_main = c["stato_ok"]
+                fg_dim = c["stato_ok"]
+                stato_txt = "IN CORSO"
+            elif dt == prossimo_dt:
+                # PROSSIMO turno - 4 stati progressivi
+                if secs_to_start <= 60:
+                    # AVVIA MOTORE (lampeggia)
+                    if int(now.timestamp()) % 2 == 0:
+                        bg = "#ff4444"; fg_main = "#000000"
+                        fg_dim = "#000000"
+                    else:
+                        bg = "#660000"; fg_main = "#ff4444"
+                        fg_dim = "#ff8888"
+                    stato_txt = ">>> AVVIA MOTORE <<<"
+                elif secs_to_start <= 3 * 60:
+                    # AVVICINARSI ALLA ZONA ATTESA (-3 min)
+                    bg = "#663300"; fg_main = "#ff8800"
+                    fg_dim = "#ff8800"
+                    secs = int(secs_to_start)
+                    stato_txt = ("AVVICINARSI ATTESA  -%d:%02d"
+                                  % (secs // 60, secs % 60))
+                elif secs_to_start <= 15 * 60:
+                    bg = "#664400"; fg_main = "#ffaa00"
+                    fg_dim = "#ffaa00"
+                    mins = int(secs_to_start // 60)
+                    stato_txt = "PREP VETTURA  -%dmin" % mins
+                else:
+                    bg = c["sfondo_celle"]; fg_main = c["dati"]
+                    fg_dim = c["dati"]
+                    secs = int(secs_to_start)
+                    ore = secs // 3600
+                    mm = (secs % 3600) // 60
+                    if ore > 0:
+                        cd = "fra %dh%02dm" % (ore, mm)
+                    else:
+                        cd = "fra %dm" % mm
+                    stato_txt = "PROSSIMO  " + cd
             else:
-                ora_eff = ora_orig
-            self._lb_tt.insert("end",
-                "  %s   %-25s  %s" % (ora_eff, cat_short, turno))
+                # FUTURO (non e' il prossimo)
+                bg = c["sfondo_celle"]
+                fg_main = c["testo_dim"]
+                fg_dim = c["testo_dim"]
+                stato_txt = ""
+            try:
+                row["frame"].config(bg=bg)
+                row["lbl_ora"].config(bg=bg, fg=fg_main)
+                row["lbl_man"].config(bg=bg, fg=fg_dim)
+                row["lbl_grp"].config(bg=bg, fg=fg_dim)
+                row["lbl_stato"].config(bg=bg, fg=fg_main, text=stato_txt)
+            except Exception:
+                pass
 
     def _delay_str(self, m):
         if not m:
@@ -1006,13 +1914,13 @@ class AssistenteGara:
             self._lbl_delay.config(text=self._delay_str(monitor.delay_min))
         except Exception:
             pass
-        # Aggiorna lista turni con nuovi orari (effetto del delay)
+        # Aggiorna tree turni con nuovi orari (effetto del delay)
         try:
-            self._popola_lista_turni(monitor)
+            self._popola_tree_turni(monitor)
         except Exception:
             pass
         # Trigger update immediato del countdown
-        self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
+        self._on_tick_ui(*monitor.trova_prossimo() + (monitor._now(),))
 
     def _reset_delay(self):
         monitor = AssistenteGaraMonitor.get(self._top)
@@ -1024,10 +1932,10 @@ class AssistenteGara:
         except Exception:
             pass
         try:
-            self._popola_lista_turni(monitor)
+            self._popola_tree_turni(monitor)
         except Exception:
             pass
-        self._on_tick_ui(*monitor.trova_prossimo() + (datetime.now(),))
+        self._on_tick_ui(*monitor.trova_prossimo() + (monitor._now(),))
 
     def _on_tick_ui(self, prossimo, dt_target, now):
         """Listener registrato sul monitor: aggiorna le label del
@@ -1067,14 +1975,19 @@ class AssistenteGara:
             cd_str = "%d:%02d:%02d" % (ore, mm, ss)
         else:
             cd_str = "%02d:%02d" % (mm, ss)
-        # Stato visivo
+        # Stato visivo (4 livelli)
         if mins <= self.SOGLIA_AVVIA_MIN:
+            # Lampeggia: rosso pieno alternato
             bg = "#660000"
             fg = "#ff4444"
             alert = ">>> AVVIA MOTORE <<<"
             if (now.second % 2) == 0:
                 bg = "#ff4444"
                 fg = "#000000"
+        elif mins <= self.SOGLIA_ATTESA_MIN:
+            bg = "#663300"
+            fg = "#ff8800"
+            alert = ">>> AVVICINARSI ALLA ZONA ATTESA <<<"
         elif mins <= self.SOGLIA_PREP_MIN:
             bg = "#664400"
             fg = "#ffaa00"
@@ -1092,6 +2005,11 @@ class AssistenteGara:
             self._lbl_countdown.config(text=cd_str, bg=bg, fg=fg)
             self._lbl_alert.config(text=alert, bg=bg, fg=fg)
             self._cd_frame.config(bg=bg)
+        except Exception:
+            pass
+        # Aggiorna anche i colori del tree turni
+        try:
+            self._aggiorna_stato_tree_turni(now)
         except Exception:
             pass
 
@@ -1115,10 +2033,49 @@ class AssistenteGara:
         elif not self._embedded:
             self.root.destroy()
 
+    def _stop_monitor_con_conferma(self):
+        """Doppia pressione obbligatoria su ANNULLA EVENTO.
+        Prima pressione: cambia il testo del bottone in "CONFERMA?"
+        rosso brillante e arma per 4 secondi. Seconda pressione
+        (entro 4s): spegne davvero il monitor.
+        Cosi' un click accidentale non distrugge mai lo stato."""
+        if self._stop_doppia == 0:
+            # Prima pressione: arma
+            self._stop_doppia = 1
+            try:
+                self._btn_stop.config(text="CONFERMA ANNULLA?",
+                                       bg=self.c["stato_errore"],
+                                       fg="#000000")
+            except Exception:
+                pass
+            # Reset automatico dopo 4 secondi
+            try:
+                self.root.after(4000, self._stop_monitor_reset)
+            except Exception:
+                pass
+            return
+        # Seconda pressione (entro 4s): spegni davvero
+        self._stop_monitor()
+
+    def _stop_monitor_reset(self):
+        """Resetta lo stato della doppia pressione."""
+        if self._stop_doppia == 0:
+            return
+        self._stop_doppia = 0
+        try:
+            if self._btn_stop and self._btn_stop.winfo_exists():
+                c = self.c
+                self._btn_stop.config(text="ANNULLA EVENTO",
+                                       bg=c["pulsanti_sfondo"],
+                                       fg=c["stato_errore"])
+        except Exception:
+            pass
+
     def _stop_monitor(self):
         """Spegne completamente il monitor: niente piu' countdown,
         niente piu' alert. L'utente vorra' rilanciare l'addon
-        (lista eventi) per riattivarlo."""
+        (lista eventi) per riattivarlo. Cancella anche il file di
+        stato persistito su disco."""
         m = AssistenteGaraMonitor.get(self._top)
         if m:
             m.disattiva()
@@ -1126,6 +2083,156 @@ class AssistenteGara:
             self._tick_listener = None
         # Torna alla schermata iniziale (lista eventi)
         self._schermata_iniziale()
+
+    def _importa_partecipanti(self):
+        """Scarica la lista partecipanti della categoria corrente
+        da MyRCM e aggiunge/aggiorna i record in dati/trasponder.json.
+        Cosi' il LapMonitor BLE riconosce subito i nomi dei piloti
+        gia' iscritti in gara, senza doverli aggiungere a mano."""
+        m = AssistenteGaraMonitor.get(self._top)
+        if not m or not m.attivo:
+            self._set_status("Monitor non attivo", "errore")
+            return
+        eid = (m.evento or {}).get("event_id", "")
+        cid = (m.categoria or {}).get("category_id", "")
+        if not eid or not cid:
+            self._set_status("Evento o categoria mancanti", "errore")
+            return
+        self._set_status("Scarico partecipanti da MyRCM...", "avviso")
+
+        def _bg():
+            try:
+                piloti = scarica_partecipanti(eid, cid) or []
+            except Exception as e:
+                err = str(e)[:80]
+                self.root.after(0, lambda: self._set_status(
+                    "Errore: " + err, "errore"))
+                return
+            try:
+                aggiunti, aggiornati = self._scrivi_trasponder_json(
+                    piloti)
+            except Exception as e:
+                err = str(e)[:80]
+                self.root.after(0, lambda: self._set_status(
+                    "Errore salvataggio: " + err, "errore"))
+                return
+            msg = ("Importati %d piloti: %d nuovi, %d aggiornati"
+                   % (len(piloti), aggiunti, aggiornati))
+            self.root.after(0, lambda: self._set_status(msg, "ok"))
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _scrivi_trasponder_json(self, piloti):
+        """Aggiunge/aggiorna i record in dati/trasponder.json. Match
+        per Numero (transponder pulito senza /N). Ritorna
+        (n_aggiunti, n_aggiornati). Niente cancellazioni."""
+        import json as _json
+        # Path: stesso di assistente_gara_state.json
+        try:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        except Exception:
+            base = "."
+        path = os.path.join(base, "dati", "trasponder.json")
+        # Carica esistenti
+        records = []
+        max_id = 0
+        max_codice = 0
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                records = data.get("records", []) if isinstance(
+                    data, dict) else (data or [])
+                for r in records:
+                    try:
+                        cd = int(r.get("Codice", 0) or 0)
+                        if cd > max_codice:
+                            max_codice = cd
+                    except Exception:
+                        pass
+                    rid = r.get("_id", "") or ""
+                    if rid:
+                        try:
+                            n = int(rid, 16)
+                            if n > max_id:
+                                max_id = n
+                        except Exception:
+                            pass
+        except Exception:
+            records = []
+
+        idx_per_num = {}
+        for r in records:
+            num = str(r.get("Numero", "") or "").strip()
+            if num:
+                idx_per_num[num] = r
+
+        aggiunti = 0
+        aggiornati = 0
+        for p in piloti:
+            num = (p.get("transponder") or "").strip()
+            nome = (p.get("nome") or "").strip()
+            if not num or not nome:
+                continue
+            note_parts = []
+            if p.get("club"):
+                note_parts.append(p["club"])
+            if p.get("modello"):
+                note_parts.append(p["modello"])
+            if p.get("nazione"):
+                note_parts.append(p["nazione"])
+            note = " - ".join(note_parts)[:50]
+
+            esist = idx_per_num.get(num)
+            if esist:
+                # Aggiorna solo se cambiano dati (non distrugge dati
+                # personali aggiunti dall'utente)
+                cambiato = False
+                if (esist.get("Pilota") or "").strip() != nome:
+                    esist["Pilota"] = nome
+                    cambiato = True
+                old_note = (esist.get("Note") or "").strip()
+                if note and not old_note:
+                    esist["Note"] = note
+                    cambiato = True
+                if cambiato:
+                    aggiornati += 1
+            else:
+                max_codice += 1
+                max_id += 1
+                _id_hex = ("%08x" % max_id)
+                rec = {
+                    "_id": _id_hex,
+                    "_utente_id": "",
+                    "Codice": str(max_codice),
+                    "Numero": num,
+                    "Pilota": nome,
+                    "Note": note,
+                    "_timestamp": datetime.now().isoformat(),
+                }
+                records.append(rec)
+                idx_per_num[num] = rec
+                aggiunti += 1
+
+        # Riconfeziona JSON nel formato TrackMind {_meta, records}
+        # Se il file originale era una lista nuda (vecchio formato),
+        # converto a quello con _meta.
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data_out = {
+                "_meta": {
+                    "tabella": "trasponder",
+                    "accesso": "tutti",
+                    "versione": __version__ if "__version__" in globals()
+                                 else "05.05.00",
+                },
+                "records": records,
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(data_out, f, ensure_ascii=False, indent=2)
+        except Exception:
+            raise
+        return aggiunti, aggiornati
 
     def _cambia_evento(self):
         """Spegne il monitor e torna alla lista eventi per scegliere

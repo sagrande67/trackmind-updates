@@ -1621,6 +1621,11 @@ class RetroDBApp:
                     return
             self.sessione = utente
             self._notifica_connessione()  # Notifica anti-copia
+            # Bootstrap Assistente Gara: se c'e' uno stato salvato su
+            # disco da una sessione precedente, riattiva il monitor
+            # subito (cosi' l'utente vede gia' il widget header e
+            # gli alert popup, senza dover riaprire l'addon).
+            self._bootstrap_assistente_gara()
             self._schermata_menu()
         else:
             try:
@@ -1733,15 +1738,13 @@ class RetroDBApp:
         else:
             self._lbl_stampante = None
 
-        # Widget ASSISTENTE GARA (solo se monitor attivo): "Prossimo
-        # turno: <categoria> fra HH:MM:SS". Click apre l'addon
-        # fullscreen. Resta visibile su tutte le schermate finche' il
-        # monitor e' acceso, cosi' l'utente vede sempre quanto manca
-        # alla sua chiamata anche mentre lavora sui setup.
+        # Widget ASSISTENTE GARA: label di stato accanto a Wi-Fi/
+        # Stampante/Batteria. Visibile solo se monitor attivo. Click
+        # sulla label apre l'addon countdown.
         self._lbl_assist_gara = None
         if _HAS_ASSISTENTE:
             try:
-                _mon = AssistenteGaraMonitor.get(self._top)
+                _mon = AssistenteGaraMonitor.get(self.root)
                 if _mon is not None and _mon.attivo:
                     self._lbl_assist_gara = tk.Label(
                         info_line, text="  |  GARA: ...",
@@ -4227,6 +4230,37 @@ class RetroDBApp:
               contesto=contesto)
         self._rimuovi_coperta()
 
+    def _bootstrap_assistente_gara(self):
+        """Inizializza il monitor singleton dell'Assistente Gara al
+        login. Carica lo stato salvato su disco (se presente),
+        registra l'alert listener globale (solo BEEP sonoro, niente
+        popup) e avvia il refresh periodico della label header."""
+        if not _HAS_ASSISTENTE:
+            return
+        try:
+            _mon = AssistenteGaraMonitor.get(self.root)
+        except Exception:
+            return
+        if _mon is None:
+            return
+        if not _mon.attivo:
+            try:
+                _mon.carica_stato_persistito()
+            except Exception:
+                pass
+        if not getattr(self, "_assist_listeners_armati", False):
+            def _on_alert(stato, prossimo, dt_target):
+                try:
+                    self.root.bell()
+                except Exception:
+                    pass
+            try:
+                _mon.add_alert_listener(_on_alert)
+            except Exception:
+                pass
+            self._assist_listeners_armati = True
+            self._aggiorna_widget_assistente()
+
     def _lancia_assistente_gara(self):
         """Lancia l'addon Assistente Gara: monitor evento MyRCM live
         con countdown turni e alert per la categoria selezionata.
@@ -4236,7 +4270,7 @@ class RetroDBApp:
         if not _HAS_ASSISTENTE:
             return
         try:
-            _mon = AssistenteGaraMonitor.get(self._top)
+            _mon = AssistenteGaraMonitor.get(self.root)
         except Exception:
             _mon = None
         if _mon is not None and not getattr(self,
@@ -4244,7 +4278,7 @@ class RetroDBApp:
                                             False):
             def _on_alert(stato, prossimo, dt_target):
                 try:
-                    mostra_popup_alert(self._top, stato,
+                    mostra_popup_alert(self.root, stato,
                                         prossimo, dt_target,
                                         colori=carica_colori())
                 except Exception:
@@ -4258,17 +4292,26 @@ class RetroDBApp:
         self._rimuovi_coperta()
 
     def _aggiorna_widget_assistente(self):
-        """Aggiorna periodicamente la label "Prossimo turno..."
-        nell'header. Gira a 1 Hz finche' il monitor e' attivo."""
+        """Aggiorna periodicamente la label "GARA: ... fra HH:MM:SS"
+        nella riga info del menu (accanto a Wi-Fi/Stampante/Batteria).
+        Gira a 1 Hz finche' il monitor e' attivo."""
         if not _HAS_ASSISTENTE:
             return
         try:
-            _mon = AssistenteGaraMonitor.get(self._top)
+            _mon = AssistenteGaraMonitor.get(self.root)
         except Exception:
             _mon = None
         try:
             lbl = getattr(self, "_lbl_assist_gara", None)
-            if lbl is not None and lbl.winfo_exists():
+            if lbl is not None:
+                try:
+                    if not lbl.winfo_exists():
+                        self._lbl_assist_gara = None
+                        lbl = None
+                except Exception:
+                    self._lbl_assist_gara = None
+                    lbl = None
+            if lbl is not None:
                 if _mon is None or not _mon.attivo:
                     try:
                         lbl.pack_forget()
@@ -4280,8 +4323,7 @@ class RetroDBApp:
                         lbl.config(text="  |  GARA: nessun turno",
                                    fg=carica_colori()["testo_dim"])
                     else:
-                        from datetime import datetime as _dt
-                        secs = int((dt_target - _dt.now())
+                        secs = int((dt_target - _mon._now())
                                     .total_seconds())
                         if secs < 0:
                             secs = 0
@@ -4298,11 +4340,13 @@ class RetroDBApp:
                         c = carica_colori()
                         mins = secs // 60
                         if mins <= 1:
-                            col = c["stato_errore"]
+                            col = c["stato_errore"]   # rosso
+                        elif mins <= 3:
+                            col = "#ff8800"           # arancio (zona attesa)
                         elif mins <= 15:
-                            col = c["stato_avviso"]
+                            col = c["stato_avviso"]   # giallo (prep vettura)
                         else:
-                            col = c["stato_ok"]
+                            col = c["stato_ok"]       # verde
                         lbl.config(
                             text="  |  GARA: %s fra %s" % (cat, cd),
                             fg=col)
