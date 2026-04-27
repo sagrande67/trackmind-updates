@@ -175,6 +175,13 @@ try:
 except ImportError:
     _HAS_PROMPT_EDITOR = False
 
+# Assistente Gara (monitor evento MyRCM live + countdown turni)
+try:
+    from assistente_gara import AssistenteGara
+    _HAS_ASSISTENTE = True
+except ImportError:
+    _HAS_ASSISTENTE = False
+
 MAX_VISIBLE_FIELDS = 15
 
 def _S(val):
@@ -1977,6 +1984,12 @@ class RetroDBApp:
         if _HAS_PROMPT_EDITOR:
             _bb.append(_mkb(btn_grid, "PROMPT", self._apri_prompt_editor,
                             fg=c["cerca_testo"]))
+
+        # Bottone ASSISTENTE GARA (monitor evento MyRCM live)
+        if _HAS_ASSISTENTE:
+            _bb.append(_mkb(btn_grid, "ASSIST.\nGARA",
+                            self._lancia_assistente_gara,
+                            fg=c["stato_avviso"]))
 
         night_label = "GIORNO" if self._is_night_mode() else "NOTTE"
         _bb.append(_mkb(btn_grid, night_label, self._toggle_night_mode))
@@ -4189,6 +4202,16 @@ class RetroDBApp:
         self._pulisci()
         Crono(parent=self._vista, on_close=self._schermata_menu,
               contesto=contesto)
+        self._rimuovi_coperta()
+
+    def _lancia_assistente_gara(self):
+        """Lancia l'addon Assistente Gara: monitor evento MyRCM live
+        con countdown turni e alert per la categoria selezionata."""
+        if not _HAS_ASSISTENTE:
+            return
+        self._pulisci()
+        AssistenteGara(parent=self._vista,
+                       on_close=self._schermata_menu)
         self._rimuovi_coperta()
 
     def _ritorno_da_crono(self):

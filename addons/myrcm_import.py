@@ -172,6 +172,76 @@ def _estrai_parole_chiave(nome_pista):
     return chiave
 
 
+def lista_eventi_online_completa(filtro_nazione=""):
+    """Ritorna TUTTI gli eventi attualmente "online" su MyRCM, senza
+    filtro per pista. Usato dall'addon Assistente Gara per mostrare la
+    lista da cui l'utente sceglie il proprio evento.
+
+    Param `filtro_nazione`: se valorizzato (es. "ITA"), filtra solo gli
+    eventi di quella nazione. Match insensibile case + presenza
+    sottostringa (cosi' "ita" matcha "Italia").
+
+    Ritorna lista di dict:
+        [{event_id, nome, organizzatore, nazione, link}, ...]
+    """
+    url = "%s/main?hId[1]=evt&pLa=it" % MYRCM_BASE
+    html = _http_get(url)
+    if not html:
+        return []
+
+    parser = _EventListParser()
+    parser.feed(html)
+
+    risultati = []
+    naz_filter = (filtro_nazione or "").strip().lower()
+
+    for row in parser.eventi:
+        if len(row) < 7:
+            continue
+        try:
+            organizzatore = (row[1]["text"] if isinstance(row[1], dict)
+                             else str(row[1]))
+            evento_text = (row[2]["text"] if isinstance(row[2], dict)
+                           else str(row[2]))
+            nazione = (row[3]["text"] if isinstance(row[3], dict)
+                       else str(row[3]))
+            rapporti = row[6] if len(row) > 6 else {}
+        except (IndexError, KeyError):
+            continue
+
+        if naz_filter and naz_filter not in nazione.lower():
+            continue
+
+        link = rapporti.get("link", "") if isinstance(rapporti, dict) else ""
+        event_id = None
+        m = re.search(r'dId\[E\]=(\d+)', link)
+        if m:
+            event_id = m.group(1)
+        if not event_id:
+            m = re.search(r'dId%5BE%5D=(\d+)', link)
+            if m:
+                event_id = m.group(1)
+        if not event_id:
+            continue
+
+        risultati.append({
+            "event_id": event_id,
+            "nome": evento_text.strip(),
+            "organizzatore": organizzatore.strip(),
+            "nazione": nazione.strip(),
+            "link": link,
+        })
+
+    return risultati
+
+
+def scarica_html_evento(event_id):
+    """Scarica l'HTML grezzo della pagina evento. Usato dal parser
+    time table dell'Assistente Gara."""
+    url = "%s/main?pLa=it&dId[E]=%s" % (MYRCM_BASE, event_id)
+    return _http_get(url)
+
+
 def cerca_eventi_online(nome_pista):
     """Cerca eventi online su MyRCM che corrispondono a un nome pista.
     Ricerca intelligente: estrae parole chiave dal nome pista
