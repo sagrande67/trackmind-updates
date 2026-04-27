@@ -1739,10 +1739,11 @@ class RetroDBApp:
             self._lbl_stampante = None
 
         # Widget ASSISTENTE GARA: riga DEDICATA sotto info_line.
-        # Su uConsole (480px alto) la riga info_line e' gia' piena
-        # con utente|wifi|stampante: la label GARA non ci sta in
-        # fila. Mettiamola su una riga sua cosi' ha tutta la
-        # larghezza disponibile e si vede sempre.
+        # Su uConsole (480px alto, ~80 char larghezza) la riga
+        # info_line con utente|wifi|stampante e' gia' piena, la
+        # label GARA non ci sta in fila. Mettiamola su una riga sua
+        # cosi' ha tutta la larghezza disponibile e si vede sempre.
+        # Visibile solo se monitor attivo (pack/pack_forget).
         self._lbl_assist_gara = None
         if _HAS_ASSISTENTE:
             try:
@@ -1756,6 +1757,7 @@ class RetroDBApp:
                 self._lbl_assist_gara.bind(
                     "<Button-1>",
                     lambda e: self._lancia_assistente_gara())
+                # Mostra solo se monitor gia' attivo
                 _mon = AssistenteGaraMonitor.get(self.root)
                 if _mon is not None and _mon.attivo:
                     self._lbl_assist_gara.pack(side="left")
@@ -4372,16 +4374,17 @@ class RetroDBApp:
                         c = carica_colori()
                         mins = secs // 60
                         if mins <= 1:
-                            col = c["stato_errore"]
+                            col = c["stato_errore"]   # rosso
                         elif mins <= 3:
-                            col = "#ff8800"
+                            col = "#ff8800"           # arancio (zona attesa)
                         elif mins <= 15:
-                            col = c["stato_avviso"]
+                            col = c["stato_avviso"]   # giallo (prep vettura)
                         else:
-                            col = c["stato_ok"]
+                            col = c["stato_ok"]       # verde
                         lbl.config(
                             text="GARA: %s fra %s" % (cat, cd),
                             fg=col)
+                    # Assicurati che sia visibile (pack idempotente)
                     try:
                         lbl.pack(side="left")
                     except Exception:
