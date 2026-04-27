@@ -1738,22 +1738,27 @@ class RetroDBApp:
         else:
             self._lbl_stampante = None
 
-        # Widget ASSISTENTE GARA: label di stato accanto a Wi-Fi/
-        # Stampante/Batteria. Visibile solo se monitor attivo. Click
-        # sulla label apre l'addon countdown.
+        # Widget ASSISTENTE GARA: riga DEDICATA sotto info_line.
+        # Su uConsole (480px alto) la riga info_line e' gia' piena
+        # con utente|wifi|stampante: la label GARA non ci sta in
+        # fila. Mettiamola su una riga sua cosi' ha tutta la
+        # larghezza disponibile e si vede sempre.
         self._lbl_assist_gara = None
         if _HAS_ASSISTENTE:
             try:
+                self._info_line_gara = tk.Frame(pannello_dx,
+                                                  bg=c["sfondo"])
+                self._info_line_gara.pack(fill="x")
+                self._lbl_assist_gara = tk.Label(
+                    self._info_line_gara, text="GARA: ...",
+                    bg=c["sfondo"], fg=c["stato_avviso"],
+                    font=self._f_small, cursor="hand2")
+                self._lbl_assist_gara.bind(
+                    "<Button-1>",
+                    lambda e: self._lancia_assistente_gara())
                 _mon = AssistenteGaraMonitor.get(self.root)
                 if _mon is not None and _mon.attivo:
-                    self._lbl_assist_gara = tk.Label(
-                        info_line, text="  |  GARA: ...",
-                        bg=c["sfondo"], fg=c["stato_avviso"],
-                        font=self._f_small, cursor="hand2")
                     self._lbl_assist_gara.pack(side="left")
-                    self._lbl_assist_gara.bind(
-                        "<Button-1>",
-                        lambda e: self._lancia_assistente_gara())
             except Exception:
                 self._lbl_assist_gara = None
 
@@ -4347,7 +4352,7 @@ class RetroDBApp:
                 else:
                     prossimo, dt_target = _mon.trova_prossimo()
                     if prossimo is None or dt_target is None:
-                        lbl.config(text="  |  GARA: nessun turno",
+                        lbl.config(text="GARA: nessun turno",
                                    fg=carica_colori()["testo_dim"])
                     else:
                         secs = int((dt_target - _mon._now())
@@ -4367,16 +4372,20 @@ class RetroDBApp:
                         c = carica_colori()
                         mins = secs // 60
                         if mins <= 1:
-                            col = c["stato_errore"]   # rosso
+                            col = c["stato_errore"]
                         elif mins <= 3:
-                            col = "#ff8800"           # arancio (zona attesa)
+                            col = "#ff8800"
                         elif mins <= 15:
-                            col = c["stato_avviso"]   # giallo (prep vettura)
+                            col = c["stato_avviso"]
                         else:
-                            col = c["stato_ok"]       # verde
+                            col = c["stato_ok"]
                         lbl.config(
-                            text="  |  GARA: %s fra %s" % (cat, cd),
+                            text="GARA: %s fra %s" % (cat, cd),
                             fg=col)
+                    try:
+                        lbl.pack(side="left")
+                    except Exception:
+                        pass
         except Exception:
             pass
         # Ripianifica il prossimo tick
