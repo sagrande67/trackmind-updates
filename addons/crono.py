@@ -3010,7 +3010,13 @@ class Crono:
         annulla tutto. La selezione persiste tra schermate (GRAFICO, GHOST,
         ANALISI IA, RIVEDI): per ricominciare basta tornare alla lista e
         ripremere SEL."""
-        MIN_GIRI = 4  # salta solo sessioni brevissime (1-3 giri)
+        # Era 4 prima: scartava sessioni con 1-3 giri (incidenti
+        # immediati / test rapidi). Pero' un cap del genere su una
+        # giornata di gara faceva selezionare ad es. 10 sessioni su
+        # 15 - poco intuitivo. Ora MIN_GIRI=1: includiamo tutto
+        # tranne sessioni vuote (0 giri = file rotto). L'utente puo'
+        # deselezionare singole con SPAZIO se non gli servono.
+        MIN_GIRI = 1
         focused = self._at.focus()
         if not focused:
             sel = self._at.selection()
@@ -3057,9 +3063,10 @@ class Crono:
             self._at.selection_set(to_select)
             self._at.focus(to_select[0])
             self._at.event_generate("<<TreeviewSelect>>")
-            msg = "%d sessioni selezionate per %s" % (len(to_select), s_target.get("pilota", "?"))
+            msg = "%d sessioni selezionate per %s" % (
+                len(to_select), s_target.get("pilota", "?"))
             if skipped:
-                msg += " | %d saltate (1-3 giri)" % skipped
+                msg += " | %d saltate (vuote)" % skipped
             self._tutti_status.config(text=msg, fg=self.c["cerca_testo"])
         else:
             self._tutti_status.config(
