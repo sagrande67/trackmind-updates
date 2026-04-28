@@ -1626,6 +1626,11 @@ class RetroDBApp:
             # subito (cosi' l'utente vede gia' il widget header e
             # gli alert popup, senza dover riaprire l'addon).
             self._bootstrap_assistente_gara()
+            # Bottone [i] CENTRO DI CONTROLLO: overlay sempre visibile
+            # in alto a sinistra del Toplevel. Click apre il popup
+            # con tutte le info di stato (utente, wifi, stampante,
+            # batteria, RAM, CPU, SD, gara). Scorciatoia: Ctrl+I.
+            self._bootstrap_centro_controllo()
             self._schermata_menu()
         else:
             try:
@@ -4239,6 +4244,44 @@ class RetroDBApp:
               contesto=contesto)
         self._rimuovi_coperta()
 
+    def _bootstrap_centro_controllo(self):
+        """Crea il bottone [i] overlay in alto a sinistra del Toplevel
+        + binding scorciatoia Ctrl+I che apre/chiude il popup centro
+        di controllo. Idempotente: chiamarlo piu' volte non duplica."""
+        try:
+            from core.centro_controllo import apri_centro_controllo
+        except Exception:
+            return  # se manca il modulo, niente bottone
+        # Bottone overlay
+        if (not hasattr(self, "_btn_centro_ctrl")
+                or self._btn_centro_ctrl is None):
+            try:
+                c = carica_colori()
+                self._btn_centro_ctrl = tk.Button(
+                    self.root, text="[ i ]",
+                    bg=c["pulsanti_sfondo"], fg=c["dati"],
+                    activebackground=c["dati"],
+                    activeforeground=c["sfondo"],
+                    font=tkfont.Font(family=FONT_MONO, size=_S(9),
+                                      weight="bold"),
+                    relief="ridge", bd=1, cursor="hand2",
+                    padx=4, pady=0,
+                    command=lambda: apri_centro_controllo(self))
+                self._btn_centro_ctrl.place(
+                    relx=0.0, rely=0.0, anchor="nw", x=4, y=4)
+            except Exception:
+                self._btn_centro_ctrl = None
+        # Scorciatoia Ctrl+I (case insensitive)
+        try:
+            self.root.bind(
+                "<Control-i>",
+                lambda e: apri_centro_controllo(self))
+            self.root.bind(
+                "<Control-I>",
+                lambda e: apri_centro_controllo(self))
+        except Exception:
+            pass
+
     def _bootstrap_assistente_gara(self):
         """Inizializza il monitor singleton dell'Assistente Gara al
         login. Carica lo stato salvato su disco, registra l'alert
@@ -4460,6 +4503,19 @@ class RetroDBApp:
                         lbl_ov.lift()
                     except Exception:
                         pass
+        except Exception:
+            pass
+
+        # 3. Bottone [i] CENTRO DI CONTROLLO: lift ogni tick cosi'
+        # resta sopra qualunque addon che potrebbe coprirlo.
+        try:
+            btn = getattr(self, "_btn_centro_ctrl", None)
+            if btn is not None:
+                try:
+                    if btn.winfo_exists():
+                        btn.lift()
+                except Exception:
+                    self._btn_centro_ctrl = None
         except Exception:
             pass
 

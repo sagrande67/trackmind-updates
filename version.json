@@ -1,7 +1,7 @@
 {
   "version": "05.05.60",
   "date": "2026-04-28",
-  "time": "10:40:15",
+  "time": "13:35:14",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -22,12 +22,14 @@
     "web_sync.py": "addons",
     "auth.py": "core",
     "batteria.py": "core",
+    "centro_controllo.py": "core",
     "editor_tabelle.py": "core",
     "focus_guard.py": "core",
     "lapmonitor.py": "core",
     "meteo.py": "core",
     "sd_bar.py": "core",
     "sd_health.py": "core",
+    "sys_info.py": "core",
     "thermal_print.py": "core",
     "tm_field.py": "core",
     "ui_bottoni.py": "core",
