@@ -2251,13 +2251,42 @@ class Crono:
                 fonte_raw = s.get("tipo", s.get("_fonte", "?"))
                 if fonte_raw == "myrcm":
                     tag = "myrcm"
-                    sn = s.get("myrcm_sessione_nome", "").lower()
-                    if "finale" in sn or "finals" in sn:
-                        fase = "Finale"
-                    elif "qualif" in sn:
-                        fase = "Qualif"
-                    elif "prove" in sn:
-                        fase = "Prove"
+                    # Sessioni MyRCM hanno tutte ora=00:00:00 (l'API
+                    # non la espone). Per distinguere le manche di
+                    # uno stesso pilota nella stessa data, estraggo
+                    # un'etichetta "Q1.M4" / "F1.A" / "Pr1.M2" da
+                    # `myrcm_sessione_nome` (es. "Manche 4 - Qualif 1").
+                    import re as _re
+                    sn = s.get("myrcm_sessione_nome", "")
+                    sn_low = sn.lower()
+                    m_man = _re.search(
+                        r"manche\s*(\d+)|group\s*(\d+)|batteria\s*(\d+)",
+                        sn_low)
+                    man_n = ""
+                    if m_man:
+                        man_n = (m_man.group(1) or m_man.group(2)
+                                 or m_man.group(3) or "")
+                    if "finals" in sn_low or "finale" in sn_low:
+                        m_f = _re.search(
+                            r"final[s]?\s*([a-z]|\d+)", sn_low)
+                        f_id = (m_f.group(1).upper()
+                                if m_f else "")
+                        fase = "F%s" % f_id if f_id else "Finale"
+                    elif "qualif" in sn_low:
+                        m_q = _re.search(r"qualif[a-z]*\s*(\d+)",
+                                          sn_low)
+                        q_n = m_q.group(1) if m_q else ""
+                        fase = ("Q%s.M%s" % (q_n, man_n)
+                                if q_n and man_n
+                                else ("Qualif M%s" % man_n
+                                      if man_n else "Qualif"))
+                    elif "prove" in sn_low:
+                        m_p = _re.search(r"prove\s*(\d+)", sn_low)
+                        p_n = m_p.group(1) if m_p else ""
+                        fase = ("Pr%s.M%s" % (p_n, man_n)
+                                if p_n and man_n
+                                else ("Prove M%s" % man_n
+                                      if man_n else "Prove"))
                     else:
                         fase = "Gara"
                 elif fonte_raw == "speedhive":
