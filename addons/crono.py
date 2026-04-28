@@ -1882,13 +1882,77 @@ class Crono:
         Sostituisce i nomi anonimi (es. "Trasp. 1234567" o numero
         nudo "1234567") con il nome reale se il transponder e' nella
         tabella trasponder.json (importata da MyRCM partecipanti)
-        o nel registro piloti.json (alias manuali)."""
+        o nel registro piloti.json (alias manuali).
+
+        Cache in RAM: la prima apertura legge tutti i file (lento
+        su SD uConsole con 400+ file), le successive riusano la
+        cache. Invalidata automaticamente se cambia il numero di
+        file o il piu' recente mtime (= aggiunta/modifica/rimozione
+        di un file scouting da import SpeedHive, MyRCM o LapTimer)."""
         sessioni = []
         paths = []
         if not self.dati_dir or not os.path.isdir(self.dati_dir):
             return sessioni, paths
 
         modo_setup = hasattr(self, '_modo_setup') and self._modo_setup
+
+        # Calcola signature dei file scouting per cache invalidation
+        scouting_dir_check = os.path.join(self.dati_dir, "scouting")
+        signature = None
+        try:
+            n_files = 0
+            max_mtime = 0.0
+            if os.path.isdir(scouting_dir_check):
+                for f in os.listdir(scouting_dir_check):
+                    if f.endswith(".json"):
+                        n_files += 1
+                        try:
+                            m = os.path.getmtime(
+                                os.path.join(scouting_dir_check, f))
+                            if m > max_mtime:
+                                max_mtime = m
+                        except Exception:
+                            pass
+            # In modo_setup includiamo anche dati/lap_*.json
+            n_files_setup = 0
+            max_mtime_setup = 0.0
+            if modo_setup:
+                for f in os.listdir(self.dati_dir):
+                    if f.startswith("lap_") and f.endswith(".json"):
+                        n_files_setup += 1
+                        try:
+                            m = os.path.getmtime(
+                                os.path.join(self.dati_dir, f))
+                            if m > max_mtime_setup:
+                                max_mtime_setup = m
+                        except Exception:
+                            pass
+            # Includiamo anche mtime di trasponder.json e piloti.json
+            # cosi' la cache si invalida se l'utente fa ALIAS o
+            # importa partecipanti (gli alias cambiano).
+            mt_extra = 0.0
+            for nome in ("trasponder.json", "piloti.json"):
+                fp = os.path.join(self.dati_dir, nome)
+                if os.path.exists(fp):
+                    try:
+                        m = os.path.getmtime(fp)
+                        if m > mt_extra:
+                            mt_extra = m
+                    except Exception:
+                        pass
+            signature = (modo_setup, n_files, max_mtime,
+                         n_files_setup, max_mtime_setup, mt_extra)
+        except Exception:
+            signature = None
+
+        # Cache hit?
+        cached = getattr(self, "_tutti_sess_cache", None)
+        if (signature is not None and cached is not None
+                and cached.get("signature") == signature):
+            # Ritorna copia delle liste (i dict sono shared, ma le
+            # liste no, cosi' chi modifica l'ordine non rompe la
+            # cache).
+            return list(cached["sessioni"]), list(cached["paths"])
 
         # Indice unificato {transponder: nome} da piloti.json +
         # trasponder.json. Costruito una sola volta qui per non
@@ -1971,6 +2035,15 @@ class Crono:
         combined.sort(key=lambda x: (_sort_data(x[0].get("data", "")), x[0].get("ora", "")), reverse=True)
         sessioni = [c[0] for c in combined]
         paths = [c[1] for c in combined]
+        # Salva in cache per riusare al prossimo open di TUTTI I TEMPI
+        # senza rileggere 400+ file da SD card. Invalidata
+        # automaticamente al cambio signature (vedi sopra).
+        if signature is not None:
+            self._tutti_sess_cache = {
+                "signature": signature,
+                "sessioni": sessioni,
+                "paths": paths,
+            }
         return sessioni, paths
 
     def _filtra_da_selezione(self):
