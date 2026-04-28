@@ -451,6 +451,82 @@ class AnalizzaTempi:
         top.bind("<S>", lambda e: self._stampa())
         top.bind("<Escape>", lambda e: self._chiudi())
 
+        # Bind scroll/paging che mantengono la barra evidenziatrice
+        # visibile. ttk.Treeview di default sposta SOLO la vista con
+        # MouseWheel/Button-4/5: il focus resta sulla riga vecchia,
+        # e la barra di selezione "scompare" perche' fuori vista.
+        # Sintomo segnalato dall'utente con file di 178 giri: dopo
+        # qualche pagina di scroll la barra spariva. Soluzione:
+        # dopo lo scroll sposto focus+selection sulla prima riga
+        # visibile della nuova vista, cosi' i comandi E/P/V agiscono
+        # sempre sulla riga evidenziata.
+        def _seleziona_prima_riga_visibile():
+            try:
+                children = self._tree.get_children()
+                if not children:
+                    return
+                yv = self._tree.yview()  # (top, bottom) come frazioni
+                idx = int(yv[0] * len(children) + 0.5)
+                idx = max(0, min(idx, len(children) - 1))
+                child = children[idx]
+                self._tree.focus(child)
+                self._tree.selection_set(child)
+            except Exception:
+                pass
+
+        def _on_wheel(event):
+            # Direzione: Windows/Mac usano event.delta, Linux usa
+            # Button-4 (su) / Button-5 (giu')
+            try:
+                if hasattr(event, 'delta') and event.delta:
+                    delta = -1 if event.delta > 0 else 1
+                elif getattr(event, 'num', 0) == 4:
+                    delta = -1
+                elif getattr(event, 'num', 0) == 5:
+                    delta = 1
+                else:
+                    return
+                # Scroll di 3 unita' (default ~3 righe per tick)
+                self._tree.yview_scroll(delta * 3, "units")
+                self._tree.after_idle(_seleziona_prima_riga_visibile)
+            except Exception:
+                pass
+            return "break"
+
+        def _on_page(event, direction):
+            try:
+                self._tree.yview_scroll(direction, "pages")
+                self._tree.after_idle(_seleziona_prima_riga_visibile)
+            except Exception:
+                pass
+            return "break"
+
+        def _on_home_end(event, posizione):
+            try:
+                children = self._tree.get_children()
+                if not children:
+                    return "break"
+                child = (children[0] if posizione == "home"
+                          else children[-1])
+                self._tree.focus(child)
+                self._tree.selection_set(child)
+                self._tree.see(child)
+            except Exception:
+                pass
+            return "break"
+
+        self._tree.bind("<MouseWheel>", _on_wheel)
+        self._tree.bind("<Button-4>", _on_wheel)   # Linux scroll up
+        self._tree.bind("<Button-5>", _on_wheel)   # Linux scroll down
+        self._tree.bind("<Prior>",
+                         lambda e: _on_page(e, -1))  # PageUp
+        self._tree.bind("<Next>",
+                         lambda e: _on_page(e, 1))   # PageDown
+        self._tree.bind("<Home>",
+                         lambda e: _on_home_end(e, "home"))
+        self._tree.bind("<End>",
+                         lambda e: _on_home_end(e, "end"))
+
         # Popola e calcola
         self._popola()
         self._ricalcola()
