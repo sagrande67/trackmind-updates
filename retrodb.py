@@ -4245,33 +4245,14 @@ class RetroDBApp:
         self._rimuovi_coperta()
 
     def _bootstrap_centro_controllo(self):
-        """Crea il bottone [i] overlay in alto a sinistra del Toplevel
-        + binding scorciatoia Ctrl+I che apre/chiude il popup centro
-        di controllo. Idempotente: chiamarlo piu' volte non duplica."""
+        """Registra la scorciatoia Ctrl+I globale che apre/chiude il
+        popup centro di controllo. Niente bottone overlay: l'utente
+        puo' evocarlo solo da tastiera (centro di controllo ha
+        priorita' bassa, non deve disturbare il layout)."""
         try:
             from core.centro_controllo import apri_centro_controllo
         except Exception:
-            return  # se manca il modulo, niente bottone
-        # Bottone overlay
-        if (not hasattr(self, "_btn_centro_ctrl")
-                or self._btn_centro_ctrl is None):
-            try:
-                c = carica_colori()
-                self._btn_centro_ctrl = tk.Button(
-                    self.root, text="[ i ]",
-                    bg=c["pulsanti_sfondo"], fg=c["dati"],
-                    activebackground=c["dati"],
-                    activeforeground=c["sfondo"],
-                    font=tkfont.Font(family=FONT_MONO, size=_S(9),
-                                      weight="bold"),
-                    relief="ridge", bd=1, cursor="hand2",
-                    padx=4, pady=0,
-                    command=lambda: apri_centro_controllo(self))
-                self._btn_centro_ctrl.place(
-                    relx=0.0, rely=0.0, anchor="nw", x=4, y=4)
-            except Exception:
-                self._btn_centro_ctrl = None
-        # Scorciatoia Ctrl+I (case insensitive)
+            return  # se manca il modulo, niente shortcut
         try:
             self.root.bind(
                 "<Control-i>",
@@ -4503,19 +4484,6 @@ class RetroDBApp:
                         lbl_ov.lift()
                     except Exception:
                         pass
-        except Exception:
-            pass
-
-        # 3. Bottone [i] CENTRO DI CONTROLLO: lift ogni tick cosi'
-        # resta sopra qualunque addon che potrebbe coprirlo.
-        try:
-            btn = getattr(self, "_btn_centro_ctrl", None)
-            if btn is not None:
-                try:
-                    if btn.winfo_exists():
-                        btn.lift()
-                except Exception:
-                    self._btn_centro_ctrl = None
         except Exception:
             pass
 
