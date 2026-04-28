@@ -2191,11 +2191,27 @@ class Crono:
         self._at.configure(yscrollcommand=vsb.set)
         self._at.pack(side="left", fill="both", expand=True)
 
-        # Tag colori per fonte
-        self._at.tag_configure("setup", foreground=c["dati"])
-        self._at.tag_configure("scouting", foreground=c["stato_avviso"])
-        self._at.tag_configure("speedhive", foreground=c["cerca_testo"])
-        self._at.tag_configure("myrcm", foreground="#ff6600")  # Arancio gara
+        # Tag colori per fonte. Colori scelti per essere visivamente
+        # ben distinti anche su display piccolo uConsole (480p):
+        #   - setup     verde neon  (dati di test del setup)
+        #   - laptimer  giallo      (cronometraggio manuale o lapmonitor)
+        #   - speedhive CIANO + sfondo verde scuro tenue
+        #               (prove libere live importate)
+        #   - myrcm     ROSSO  + sfondo rosso scuro tenue
+        #               (gare ufficiali importate da MyRCM)
+        # Il background tenue su SpeedHive/MyRCM "marca" la riga
+        # come dato esterno a colpo d'occhio, distinguendola dai
+        # cronometraggi locali.
+        self._at.tag_configure("setup",
+                                 foreground=c["dati"])
+        self._at.tag_configure("scouting",
+                                 foreground=c["stato_avviso"])
+        self._at.tag_configure("speedhive",
+                                 foreground="#00ddff",
+                                 background="#0a1a1a")
+        self._at.tag_configure("myrcm",
+                                 foreground="#ff5533",
+                                 background="#1a0a0a")
         # Tag per record corrente (evidenziato) vs altri record (piu' scuro)
         self._at.tag_configure("rec_corrente", foreground=c["dati"])
         self._at.tag_configure("rec_altro", foreground=c["testo_dim"])
