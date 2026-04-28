@@ -1074,15 +1074,25 @@ class AssistenteGara:
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left", padx=(0, 8))
 
-        # Riga 3: simulazione (test su data passata/futura)
+        # Riga 3: simulazione (test su data passata/futura).
+        # Due RetroField separati con tipi nativi TrackMind: tipo "D"
+        # per la data (DD/MM/YYYY con / fissi) e tipo "O" per l'ora
+        # (HH:MM con : fisso). Cosi' input piu' veloce e niente
+        # parsing libero. Entrambi facoltativi: vuoti = LIVE; solo
+        # data = quel giorno alle 09:00; solo ora = oggi a quell'ora.
         bar3 = tk.Frame(form_frame, bg=c["sfondo"])
         bar3.pack(fill="x", pady=(2, 2))
         if _HAS_RETROFIELD:
-            self._sf_sim = RetroField(bar3,
-                                       label="Simulazione",
-                                       tipo="S", lunghezza=18,
-                                       label_width=22)
-            self._sf_sim.pack(side="left", padx=(0, 8))
+            self._sf_sim_data = RetroField(bar3,
+                                            label="Sim. data",
+                                            tipo="D",
+                                            label_width=22)
+            self._sf_sim_data.pack(side="left", padx=(0, 8))
+            self._sf_sim_ora = RetroField(bar3,
+                                           label="Sim. ora",
+                                           tipo="O",
+                                           label_width=10)
+            self._sf_sim_ora.pack(side="left", padx=(0, 8))
         else:
             self._sim_var = tk.StringVar(value="")
             tk.Label(bar3, text="Simulazione (DD/MM/YYYY HH:MM):",
@@ -1095,7 +1105,7 @@ class AssistenteGara:
                                 relief="solid", bd=1)
             ent_sim.pack(side="left", padx=(0, 8))
         tk.Label(bar3,
-                 text="(vuoto=LIVE | HH:MM oggi | DD/MM/YYYY HH:MM)",
+                 text="(vuoti = LIVE)",
                  bg=c["sfondo"], fg=c["testo_dim"],
                  font=self._f_small).pack(side="left", padx=(0, 8))
 
@@ -1201,8 +1211,37 @@ class AssistenteGara:
         return ""
 
     def _leggi_sim(self):
-        """Legge il campo simulazione dal RetroField o dalla StringVar."""
+        """Legge i campi simulazione (data + ora) e ritorna la
+        stringa nel formato che `_parsa_simulazione` si aspetta:
+            "DD/MM/YYYY HH:MM" se entrambi compilati
+            "DD/MM/YYYY"       se solo data
+            "HH:MM"            se solo ora
+            ""                  se entrambi vuoti
+        Compatibile sia col vecchio campo libero (`_sf_sim`/_sim_var)
+        sia coi nuovi RetroField D+O (`_sf_sim_data`/`_sf_sim_ora`)."""
         try:
+            # Nuovi campi D+O
+            data_raw = ""
+            ora_raw = ""
+            if hasattr(self, "_sf_sim_data"):
+                data_raw = (self._sf_sim_data.get() or "").strip()
+            if hasattr(self, "_sf_sim_ora"):
+                ora_raw = (self._sf_sim_ora.get() or "").strip()
+            # I RetroField D/O ritornano la stringa coi separatori
+            # gia' inseriti, ma restituiscono la stringa "vuota" come
+            # un formato tipo "  /  /    " o "  :  ": pulisco.
+            def _vuoto_o_separatori(s):
+                # Rimuovi spazi, /, : e numeri 0; se resta vuoto e'
+                # "non compilato"
+                pulito = re.sub(r"[\s/:]", "", s)
+                return not pulito
+            if data_raw and _vuoto_o_separatori(data_raw):
+                data_raw = ""
+            if ora_raw and _vuoto_o_separatori(ora_raw):
+                ora_raw = ""
+            if data_raw or ora_raw:
+                return ("%s %s" % (data_raw, ora_raw)).strip()
+            # Fallback al vecchio campo unico
             if hasattr(self, "_sf_sim"):
                 return (self._sf_sim.get() or "").strip()
             if hasattr(self, "_sim_var"):
