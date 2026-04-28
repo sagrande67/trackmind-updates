@@ -2191,27 +2191,20 @@ class Crono:
         self._at.configure(yscrollcommand=vsb.set)
         self._at.pack(side="left", fill="both", expand=True)
 
-        # Tag colori per fonte. Colori scelti per essere visivamente
-        # ben distinti anche su display piccolo uConsole (480p):
-        #   - setup     verde neon  (dati di test del setup)
-        #   - laptimer  giallo      (cronometraggio manuale o lapmonitor)
-        #   - speedhive CIANO + sfondo verde scuro tenue
-        #               (prove libere live importate)
-        #   - myrcm     ROSSO  + sfondo rosso scuro tenue
-        #               (gare ufficiali importate da MyRCM)
-        # Il background tenue su SpeedHive/MyRCM "marca" la riga
-        # come dato esterno a colpo d'occhio, distinguendola dai
-        # cronometraggi locali.
-        self._at.tag_configure("setup",
-                                 foreground=c["dati"])
-        self._at.tag_configure("scouting",
-                                 foreground=c["stato_avviso"])
-        self._at.tag_configure("speedhive",
-                                 foreground="#00ddff",
-                                 background="#0a1a1a")
-        self._at.tag_configure("myrcm",
-                                 foreground="#ff5533",
-                                 background="#1a0a0a")
+        # Tag colori per fonte. SOLO foreground - usare anche
+        # background interferiva con la barra di selezione/focus
+        # (tag_focused veniva sovrastato dal background del tag
+        # fonte, la barra evidenziatrice spariva).
+        # Colori molto distinti tra loro per riconoscere a colpo
+        # d'occhio la fonte di ciascuna riga:
+        #   setup     verde neon    #39ff14 (dati di test del setup)
+        #   scouting  arancio       #ffaa00 (LapTimer / LapMonitor)
+        #   speedhive ciano elettr. #00e0ff (prove live SpeedHive)
+        #   myrcm     rosso brill.  #ff4040 (gare MyRCM importate)
+        self._at.tag_configure("setup", foreground="#39ff14")
+        self._at.tag_configure("scouting", foreground="#ffaa00")
+        self._at.tag_configure("speedhive", foreground="#00e0ff")
+        self._at.tag_configure("myrcm", foreground="#ff4040")
         # Tag per record corrente (evidenziato) vs altri record (piu' scuro)
         self._at.tag_configure("rec_corrente", foreground=c["dati"])
         self._at.tag_configure("rec_altro", foreground=c["testo_dim"])
