@@ -1738,11 +1738,33 @@ class RetroDBApp:
         else:
             self._lbl_stampante = None
 
-        # NB: il widget ASSISTENTE GARA non e' creato qui ma come
-        # OVERLAY figlia del Toplevel in _bootstrap_assistente_gara,
-        # cosi' resta visibile in QUALUNQUE schermata (CRONO, setup,
-        # ecc.) e non solo nel menu. Vedi _aggiorna_widget_assistente
-        # per il place/lift periodico.
+        # Widget ASSISTENTE GARA: label nel menu (figlia di
+        # info_line_gara, su riga propria sotto info_line). Cosi'
+        # non copre la barra batteria nel header (era questo il bug
+        # dell'overlay puro). Quando l'utente entra in un addon
+        # (CRONO/setup) la label nel menu viene distrutta col menu,
+        # e l'overlay figlia del Toplevel (creato in _bootstrap)
+        # prende il suo posto. _aggiorna_widget_assistente gestisce
+        # entrambi: aggiorna la label nel menu se viva, altrimenti
+        # mostra l'overlay sopra qualunque schermata.
+        self._lbl_assist_gara_menu = None
+        if _HAS_ASSISTENTE:
+            try:
+                self._info_line_gara = tk.Frame(pannello_dx,
+                                                  bg=c["sfondo"])
+                self._info_line_gara.pack(fill="x")
+                self._lbl_assist_gara_menu = tk.Label(
+                    self._info_line_gara, text="",
+                    bg=c["sfondo"], fg=c["stato_avviso"],
+                    font=self._f_small, cursor="hand2")
+                self._lbl_assist_gara_menu.bind(
+                    "<Button-1>",
+                    lambda e: self._lancia_assistente_gara())
+                _mon = AssistenteGaraMonitor.get(self.root)
+                if _mon is not None and _mon.attivo:
+                    self._lbl_assist_gara_menu.pack(side="left")
+            except Exception:
+                self._lbl_assist_gara_menu = None
 
         # Indicatore Batteria: barra LED sulla stessa riga del titolo,
         # a destra di "TRACKMIND vX". Solo se disponibile (uConsole).
@@ -4321,82 +4343,126 @@ class RetroDBApp:
         self._rimuovi_coperta()
 
     def _aggiorna_widget_assistente(self):
-        """Aggiorna periodicamente l'OVERLAY "GARA: ... fra HH:MM:SS"
-        in alto a destra del Toplevel. lift() ogni tick per stare
-        sopra qualunque schermata (menu, CRONO, setup, addon vari).
-        Sotto la soglia 15 min lo sfondo della label vira a
-        giallo/arancio/rosso per attirare l'attenzione anche con la
-        coda dell'occhio."""
+        """Aggiorna periodicamente DUE label "GARA: ...":
+        1. nel menu retrodb (`_lbl_assist_gara_menu`, riga sotto
+           info_line) - visibile solo quando il menu e' attivo;
+        2. overlay sul Toplevel (`_lbl_assist_gara`) - visibile
+           SOLO quando la label nel menu non c'e' (cioe' quando
+           l'utente e' in CRONO/setup/altro addon).
+        Cosi' nel menu non copre la batteria, e fuori dal menu
+        e' sempre visibile sopra a qualunque schermata."""
         if not _HAS_ASSISTENTE:
             return
         try:
             _mon = AssistenteGaraMonitor.get(self.root)
         except Exception:
             _mon = None
+        c = carica_colori()
+        # Calcola testo e colore una sola volta
+        testo = ""
+        col_fg = c["testo_dim"]
+        col_bg = c["sfondo"]   # menu
+        col_bg_overlay = c["pulsanti_sfondo"]
+        attivo = _mon is not None and _mon.attivo
+        if attivo:
+            prossimo, dt_target = _mon.trova_prossimo()
+            if prossimo is None or dt_target is None:
+                testo = "GARA: nessun turno"
+                col_fg = c["testo_dim"]
+            else:
+                secs = int((dt_target - _mon._now()).total_seconds())
+                if secs < 0:
+                    secs = 0
+                ore = secs // 3600
+                mm = (secs % 3600) // 60
+                ss = secs % 60
+                if ore > 0:
+                    cd = "%d:%02d:%02d" % (ore, mm, ss)
+                else:
+                    cd = "%02d:%02d" % (mm, ss)
+                cat = (prossimo.get("categoria", "") or
+                       (_mon.categoria or {}).get("nome", "?"))
+                cat = cat[:18]
+                # Soglie: confronto su SECONDI esatti.
+                if secs <= 60:
+                    col_fg = c["stato_errore"]
+                    col_bg_overlay = "#ff4444"
+                elif secs <= 180:
+                    col_fg = "#ff8800"
+                    col_bg_overlay = "#ff8800"
+                elif secs <= 900:
+                    col_fg = c["stato_avviso"]
+                    col_bg_overlay = "#ffaa00"
+                else:
+                    col_fg = c["stato_ok"]
+                    col_bg_overlay = c["pulsanti_sfondo"]
+                testo = "  |  GARA: %s fra %s" % (cat, cd)
+
+        # 1. Label nel MENU: aggiorna se viva
         try:
-            lbl = getattr(self, "_lbl_assist_gara", None)
-            if lbl is not None:
+            lbl_menu = getattr(self, "_lbl_assist_gara_menu", None)
+            if lbl_menu is not None:
                 try:
-                    if not lbl.winfo_exists():
-                        self._lbl_assist_gara = None
-                        lbl = None
+                    if not lbl_menu.winfo_exists():
+                        self._lbl_assist_gara_menu = None
+                        lbl_menu = None
                 except Exception:
-                    self._lbl_assist_gara = None
-                    lbl = None
-            if lbl is not None:
-                if _mon is None or not _mon.attivo:
+                    self._lbl_assist_gara_menu = None
+                    lbl_menu = None
+            menu_visibile = False
+            if lbl_menu is not None:
+                if not attivo:
                     try:
-                        lbl.place_forget()
+                        lbl_menu.pack_forget()
                     except Exception:
                         pass
                 else:
-                    prossimo, dt_target = _mon.trova_prossimo()
-                    c = carica_colori()
-                    if prossimo is None or dt_target is None:
-                        lbl.config(text="GARA: nessun turno",
-                                   bg=c["pulsanti_sfondo"],
-                                   fg=c["testo_dim"])
-                    else:
-                        secs = int((dt_target - _mon._now())
-                                    .total_seconds())
-                        if secs < 0:
-                            secs = 0
-                        ore = secs // 3600
-                        mm = (secs % 3600) // 60
-                        ss = secs % 60
-                        if ore > 0:
-                            cd = "%d:%02d:%02d" % (ore, mm, ss)
-                        else:
-                            cd = "%02d:%02d" % (mm, ss)
-                        cat = (prossimo.get("categoria", "") or
-                               (_mon.categoria or {}).get("nome", "?"))
-                        cat = cat[:14]
-                        # Sfondo + testo cambiano in base alla
-                        # soglia. Confronto su SECONDI esatti.
-                        if secs <= 60:
-                            bg = "#ff4444"; fg = "#000000"
-                        elif secs <= 180:
-                            bg = "#ff8800"; fg = "#000000"
-                        elif secs <= 900:
-                            bg = "#ffaa00"; fg = "#000000"
-                        else:
-                            bg = c["pulsanti_sfondo"]
-                            fg = c["stato_ok"]
-                        lbl.config(
-                            text="GARA %s -%s" % (cat, cd),
-                            bg=bg, fg=fg)
-                    # Mostra l'overlay e fallo stare sopra a tutto.
-                    # place + lift idempotenti: ogni tick ribadisco
-                    # la posizione e lo z-order, anche se nel
-                    # frattempo qualche addon ha creato widget sopra.
                     try:
-                        lbl.place(relx=1.0, rely=0.0,
-                                   anchor="ne", x=-6, y=4)
-                        lbl.lift()
+                        lbl_menu.config(text=testo, fg=col_fg, bg=col_bg)
+                        lbl_menu.pack(side="left")
+                        menu_visibile = True
+                    except Exception:
+                        pass
+        except Exception:
+            menu_visibile = False
+
+        # 2. Overlay sul Toplevel: visibile SOLO se la label menu
+        # non e' visibile (= utente fuori dal menu, in un addon).
+        try:
+            lbl_ov = getattr(self, "_lbl_assist_gara", None)
+            if lbl_ov is not None:
+                try:
+                    if not lbl_ov.winfo_exists():
+                        self._lbl_assist_gara = None
+                        lbl_ov = None
+                except Exception:
+                    self._lbl_assist_gara = None
+                    lbl_ov = None
+            if lbl_ov is not None:
+                if not attivo or menu_visibile:
+                    try:
+                        lbl_ov.place_forget()
+                    except Exception:
+                        pass
+                else:
+                    # Adatta il testo per overlay (no prefisso "  |  ")
+                    testo_ov = testo.lstrip(" |").strip() or "GARA"
+                    fg_ov = ("#000000"
+                             if col_bg_overlay in ("#ff4444",
+                                                    "#ff8800",
+                                                    "#ffaa00")
+                             else col_fg)
+                    try:
+                        lbl_ov.config(text=testo_ov,
+                                       bg=col_bg_overlay, fg=fg_ov)
+                        lbl_ov.place(relx=1.0, rely=0.0,
+                                      anchor="ne", x=-6, y=4)
+                        lbl_ov.lift()
                     except Exception:
                         pass
         except Exception:
             pass
+
         # Ripianifica il prossimo tick
         try:
             self.root.after(1000, self._aggiorna_widget_assistente)
