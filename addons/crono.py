@@ -2304,11 +2304,28 @@ class Crono:
                 elif fonte_raw in ("Scouting", "laptimer") or "scout" in str(s.get("setup", "")).lower():
                     tag = "scouting"
                     fase = "Libere"
+                elif fonte_raw == "lapmonitor":
+                    tag = "scouting"
+                    fase = "LapMon"
                 else:
                     tag = "setup"
                     fase = "Setup"
+                # Prefisso fonte nella colonna fase: cosi' anche su
+                # display dove il colore del tag non rende bene
+                # (terminali, dark/light theme), la fonte e'
+                # comunque chiara dal testo:
+                #   [SH] SpeedHive | [MR] MyRCM | [LT] LapTimer/scout
+                #   [LM] LapMonitor | [ST] Setup
+                _prefix = {
+                    "speedhive": "[SH] ",
+                    "myrcm": "[MR] ",
+                    "scouting": "[LT] ",
+                    "setup": "[ST] ",
+                }.get(tag, "")
+                fase_label = _prefix + fase
                 self._at.insert("", "end", iid=str(i),
-                    values=(data, ora, pilota, pista, fase, n_giri, best, media),
+                    values=(data, ora, pilota, pista, fase_label,
+                            n_giri, best, media),
                     tags=(tag,))
 
         # ── Cache righe per filtro CERCA ──
