@@ -2255,28 +2255,41 @@ class Crono:
             background=c["pulsanti_sfondo"], foreground=c["dati"])
 
         self._prev_focused = None
-        def _aggiorna_selezione(event=None):
-            sel = set(self._at.selection())
-            focused = self._at.focus()
-            # Ripristina tag della riga precedente
-            if self._prev_focused and self._prev_focused != focused:
-                old = self._prev_focused
-                try:
-                    old_tags = [t for t in self._at.item(old, "tags") if t not in ("focused", "checked")]
-                    if old in sel:
-                        old_tags.append("checked")
-                    self._at.item(old, tags=tuple(old_tags))
-                except Exception:
-                    pass
-            # Aggiorna tag di tutte le righe selezionate/deselezionate
-            for child in self._at.get_children():
-                cur_tags = [t for t in self._at.item(child, "tags") if t not in ("focused", "checked")]
+        self._prev_sel = set()
+        def _set_riga_tags(child, focused, sel):
+            """Applica i tag focused/checked a UNA singola riga."""
+            try:
+                cur_tags = [t for t in self._at.item(child, "tags")
+                            if t not in ("focused", "checked")]
                 if child == focused:
                     cur_tags.append("focused")
                 elif child in sel:
                     cur_tags.append("checked")
                 self._at.item(child, tags=tuple(cur_tags))
+            except Exception:
+                pass
+
+        def _aggiorna_selezione(event=None):
+            sel = set(self._at.selection())
+            focused = self._at.focus()
+            # Aggiorna SOLO le righe cambiate (delta), non tutte le
+            # 400+ righe del treeview. Cosi' Up/Down e' istantaneo
+            # invece di causare il freeze 200-400ms tipico del loop
+            # `for child in get_children()` su grossi dataset.
+            cambiate = set()
+            # Riga focus precedente: va ridisegnata (perde "focused")
+            if self._prev_focused and self._prev_focused != focused:
+                cambiate.add(self._prev_focused)
+            # Riga focus attuale: va ridisegnata (acquista "focused")
+            if focused:
+                cambiate.add(focused)
+            # Righe selezionate/deselezionate dall'ultimo update
+            # (XOR tra vecchia selezione e nuova)
+            cambiate.update(self._prev_sel ^ sel)
+            for child in cambiate:
+                _set_riga_tags(child, focused, sel)
             self._prev_focused = focused
+            self._prev_sel = sel
             # Aggiorna conteggio selezione
             n_sel = len(sel)
             if n_sel > 1:
