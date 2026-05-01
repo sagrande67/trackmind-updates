@@ -1,0 +1,23 @@
+# Tabella Trasponder - Mappatura numero trasponder -> pilota
+# Usata dal modulo CRONOMETRAGGIO LIVE (LapMonitor via Bluetooth LE):
+# quando il ricevitore rileva il passaggio di un trasponder, TrackMind
+# cerca qui il nome del pilota da mostrare nella colonna live.
+# Se il numero non e' presente, la colonna viene etichettata come
+# "Trasp. NN" e il pilota puo' essere aggiunto a fine sessione.
+# Tabella condivisa: tutti i piloti vedono lo stesso elenco
+# (utile per cronometraggi multi-pilota in pista comune).
+!accesso;tutti
+!condiviso;vero
+!descrizione;Mappatura numero trasponder -> pilota per il cronometraggio LIVE (ricevitore LapMonitor via BLE)
+!nuovo;vero
+!salva;vero
+!cancella;vero
+!cerca;vero
+!naviga;vero
+!elenca;vero
+
+Codice;4;N;K
+!sezione;Trasponder
+Numero;12;S
+Pilota;40;S
+Note;50;S

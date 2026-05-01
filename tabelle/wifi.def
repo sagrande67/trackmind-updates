@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────
+# ELENCO WI-FI CONOSCIUTE - Auto-riconnessione
+# Tabella nascosta: NON compare nel menu principale (!nascosto;vero).
+# Viene popolata automaticamente da TrackMind: ogni volta che il
+# sistema si connette a una nuova rete Wi-Fi non presente in elenco,
+# l'utente viene interrogato se salvarla con la relativa password.
+# Le reti qui memorizzate vengono tentate automaticamente dal thread
+# di auto-riconnessione quando la connessione cade: se una qualsiasi
+# di esse e' a portata, TrackMind si ricollega da solo.
+#
+# ATTENZIONE: le password sono memorizzate in chiaro nel JSON.
+# Non distribuire la cartella dati/ a terzi senza prima svuotarla.
+# ─────────────────────────────────────────────────────────────────
+!accesso;admin
+!condiviso;vero
+!nascosto;vero
+!nuovo;vero
+!salva;vero
+!cancella;vero
+!cerca;vero
+!naviga;vero
+!elenca;vero
+
+Codice;4;N;K
+!sezione;RETE
+SSID;40;S
+Password;40;S
+Note;50;S

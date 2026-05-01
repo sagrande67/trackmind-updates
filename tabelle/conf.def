@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────
+# CONFIGURAZIONE SISTEMA - Tabella monorecord (accesso da login)
+# Non compare nel menu (!nascosto;vero), accessibile con CoNfI
+# ─────────────────────────────────────────────────────────────────
+!accesso;admin
+!condiviso;vero
+!nascosto;vero
+!salva;vero
+!naviga;vero
+
+# ─── Percorsi ───────────────────────────────────────────────────
+percorso_installazione;50;S
+percorso_tabelle;50;S
+percorso_dati;50;S
+percorso_backup;50;S
+percorso_core;50;S
+percorso_addons;50;S
+github_repo_dir;100;S
+
+# ─── Parametri ──────────────────────────────────────────────────
+!sezione;PARAMETRI
+nome_database;30;S
+larghezza_max;5;N
+altezza_max;5;N
+scala;4;S
+fullscreen;1;F
+cella_dimensione;3;N
+cella_spaziatura;2;N
+font_campi;3;N
+font_label;3;N
+stampante_bt;25;S
+multiutente;3;N
+data_installazione;8;D
+data_fine_licenza;8;D
+
+# ─── Notifiche Sviluppatore ────────────────────────────────────
+!sezione;NOTIFICHE SVILUPPATORE
+email_sviluppatore;55;S
+smtp_server;25;S
+smtp_port;4;N
+smtp_user;55;S
+smtp_password;20;S
+
+# ─── Intelligenza Artificiale ──────────────────────────────────
+!sezione;INTELLIGENZA ARTIFICIALE
+anthropic_api_key;120;S
+crediti_ia;5;N
+
+# ─── Disco / micro-SD ──────────────────────────────────────────
+# Usati dalle barre LED nell'header del menu principale.
+# sd_tbw_gb: TBW dichiarato dal produttore della micro-SD in GB.
+# E' il riferimento per la stima di usura quando non e' disponibile
+# il dato reale via mmc extcsd. Default 30000 GB (= 30 TB, tipico
+# di una buona micro-SD gaming). Soglie: giallo 75%, rosso 90%.
+# sd_vu_max_mbs: fondo scala del VU meter I/O in MB/s. Sopra questo
+# valore i LED restano tutti accesi. Default 20 MB/s (adatto a
+# micro-SD UHS-I classe A1/A2). Alzalo se usi una SD piu' veloce.
+!sezione;DISCO / MICRO-SD
+sd_tbw_gb;6;N
+sd_vu_max_mbs;4;N
+
+# ─── Wi-Fi Auto-Riconnessione ──────────────────────────────────
+# Quando un Wi-Fi (tipicamente l'hotspot del telefono) cade e poi
+# torna, Windows spesso non si ricollega da solo. Abilitando qui il
+# flag, TrackMind scansiona ogni wifi_auto_intervallo secondi le reti
+# a portata: se ne trova una presente nell'elenco Wi-Fi conosciute
+# (tabella wifi, dati/wifi.json - popolata automaticamente mano a mano
+# che ti connetti a reti nuove) si ricollega da solo usando la
+# password memorizzata. Nessun SSID personale e' salvato qui: ogni
+# installazione costruisce il proprio elenco a partire da zero.
+!sezione;WI-FI AUTO-RICONNESSIONE
+wifi_auto_attivo;1;F
+wifi_auto_intervallo;3;N
