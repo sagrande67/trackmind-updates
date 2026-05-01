@@ -433,6 +433,10 @@ class Crono:
     def _pulisci(self):
         # Ferma polling autocomplete prima di distruggere widget
         self._scouting_attivo = False
+        # Ferma il timer di refresh automatico TUTTI I TEMPI (se
+        # attivo): evita che un after() pendente si esegua dopo che
+        # la schermata e' gia' stata distrutta.
+        self._at_refresh_attivo = False
         for w in self.root.winfo_children():
             w.destroy()
         for k in ("<Return>", "<Escape>", "<Up>", "<Down>",
@@ -1572,6 +1576,11 @@ class Crono:
             "pilota": pilota, "pista": pista_nome,
             "transponder": transponder, "serbatoio": serbatoio_str,
         }
+        # Memorizza pista+data dell'ultima ricerca completa cosi' il
+        # bottone REFRESH in TUTTI I TEMPI puo' rilanciarla senza
+        # uscire/ricompilare il form.
+        self._ultima_ricerca_data = data_str
+        self._ultima_ricerca_pista_match = dict(self._matched_pista or {})
 
         # Schermata di attesa con animazione
         self._pulisci()
@@ -1956,6 +1965,248 @@ class Crono:
     # =================================================================
     #  7. TUTTI I TEMPI (tutte le sessioni, tutti i piloti)
     # =================================================================
+    def _refresh_silenzioso_tutti_tempi(self):
+        """Refresh background: rilancia il download SpeedHive+MyRCM
+        per la pista+data memorizzate (`_ultima_ricerca_*`) senza
+        cambiare schermata. Aggiorna la lista nel Treeview solo se
+        ci sono nuovi file scouting, mantenendo selezione/focus
+        utente intatti.
+
+        Auto-rischedulato ogni 30s mentre la schermata e' viva."""
+        # Guard: schermata ancora aperta?
+        if not getattr(self, "_at_refresh_attivo", False):
+            return
+        try:
+            if not self._at.winfo_exists():
+                self._at_refresh_attivo = False
+                return
+        except (tk.TclError, AttributeError):
+            self._at_refresh_attivo = False
+            return
+        data_str = getattr(self, "_ultima_ricerca_data", None)
+        pista_match = getattr(self, "_ultima_ricerca_pista_match",
+                               None)
+        if not data_str or not pista_match:
+            return
+        speedhive_id = pista_match.get("speedhive_id", "")
+        pista_nome = pista_match.get("nome", "")
+        scouting_dir = (os.path.join(self.dati_dir, "scouting")
+                         if self.dati_dir else "scouting")
+        try:
+            os.makedirs(scouting_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        # Conta i file scouting prima del refresh per capire se ce
+        # ne sono di nuovi alla fine
+        try:
+            n_prima = sum(1 for f in os.listdir(scouting_dir)
+                          if f.endswith(".json"))
+        except Exception:
+            n_prima = 0
+
+        def _bg():
+            # SpeedHive
+            if _HAS_SPEEDHIVE and speedhive_id:
+                try:
+                    from speedhive_import import (
+                        cerca_tutte_attivita_per_data,
+                        scarica_sessioni as sh_scarica)
+                    from concurrent.futures import (
+                        ThreadPoolExecutor, as_completed)
+                    alias_per_chip = self._build_alias_per_trasponder()
+                    attivita = cerca_tutte_attivita_per_data(
+                        speedhive_id, data_str)
+                    indice_locale = {}
+                    for f in os.listdir(scouting_dir):
+                        if not f.endswith(".json"):
+                            continue
+                        try:
+                            with open(
+                                os.path.join(scouting_dir, f),
+                                "r", encoding="utf-8") as fp:
+                                d = json.load(fp)
+                            if d.get("data") != data_str:
+                                continue
+                            ch = str(
+                                d.get("transponder", "")).strip()
+                            sid_l = d.get("speedhive_session")
+                            if ch and sid_l:
+                                indice_locale.setdefault(
+                                    ch, set()).add(sid_l)
+                        except Exception:
+                            pass
+
+                    def _proc(att):
+                        local_saved = []
+                        try:
+                            aid = att["activity_id"]
+                            chip = att["chipCode"]
+                            chip_str = str(chip).strip()
+                            label = (alias_per_chip.get(chip_str)
+                                     or att.get("chipLabel",
+                                                "Pilota_%s" % chip[-4:]))
+                            sid_locali = indice_locale.get(
+                                chip_str, set())
+                            dati = sh_scarica(aid)
+                            if not dati or "sessions" not in dati:
+                                return local_saved
+                            for sess in dati.get("sessions", []):
+                                sid = sess.get("id", 0)
+                                if sid and sid in sid_locali:
+                                    continue
+                                laps = sess.get("laps", [])
+                                if not laps:
+                                    continue
+                                tempi = []
+                                giri_list = []
+                                for lap in laps:
+                                    try:
+                                        dur = float(
+                                            lap.get("duration", 0))
+                                    except (ValueError, TypeError):
+                                        dur = 0
+                                    if dur > 0:
+                                        tempi.append(dur)
+                                        giri_list.append({
+                                            "giro": len(giri_list)
+                                                    + 1,
+                                            "tempo": round(dur, 3),
+                                            "stato": "valido",
+                                        })
+                                if not giri_list:
+                                    continue
+                                dt_start = sess.get(
+                                    "dateTimeStart", "")
+                                try:
+                                    from datetime import datetime as dt_cls
+                                    dt_obj = dt_cls.fromisoformat(
+                                        dt_start)
+                                    ora = dt_obj.strftime("%H:%M:%S")
+                                except Exception:
+                                    ora = (dt_start[:8]
+                                           if len(dt_start) >= 8
+                                           else "?")
+                                sessione = {
+                                    "pilota": label,
+                                    "setup": "SpeedHive - %s"
+                                              % pista_nome,
+                                    "data": data_str, "ora": ora,
+                                    "tipo": "speedhive",
+                                    "transponder": chip,
+                                    "serbatoio_cc": 0,
+                                    "sessione_carburante": False,
+                                    "speedhive_session": sid,
+                                    "speedhive_activity": aid,
+                                    "num_giri": len(giri_list),
+                                    "giri": giri_list,
+                                    "miglior_tempo": round(
+                                        min(tempi), 3),
+                                    "media": round(
+                                        sum(tempi) / len(tempi), 3),
+                                    "tempo_totale": round(
+                                        sum(tempi), 3),
+                                }
+                                local_saved.append(
+                                    (chip, sid, sessione))
+                        except Exception:
+                            pass
+                        return local_saved
+
+                    nuove = []
+                    if attivita:
+                        with ThreadPoolExecutor(max_workers=8) as exe:
+                            futs = [exe.submit(_proc, a)
+                                    for a in attivita]
+                            for fut in as_completed(futs):
+                                try:
+                                    nuove.extend(fut.result())
+                                except Exception:
+                                    pass
+                    _data_compact = "".join(
+                        ch for ch in str(data_str) if ch.isdigit())
+                    for chip, sid, sessione in nuove:
+                        path = os.path.join(
+                            scouting_dir,
+                            "lap_speedhive_%s_%s_s%d.json"
+                            % (_data_compact, str(chip)[-6:], sid))
+                        try:
+                            with open(path, "w",
+                                      encoding="utf-8") as f:
+                                json.dump(sessione, f,
+                                          ensure_ascii=False,
+                                          indent=2)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print("[crono refresh] SpeedHive errore:", e)
+            # MyRCM
+            if _HAS_MYRCM:
+                try:
+                    import_evento_completo(
+                        pista_nome, data_str, scouting_dir)
+                except Exception as e:
+                    print("[crono refresh] MyRCM errore:", e)
+
+            # Conta file dopo + ricarica UI in main thread
+            try:
+                n_dopo = sum(1 for f in os.listdir(scouting_dir)
+                             if f.endswith(".json"))
+            except Exception:
+                n_dopo = n_prima
+            self.root.after(0, lambda d=(n_dopo - n_prima):
+                            self._refresh_silenzioso_finalizza(d))
+
+        threading.Thread(target=_bg, daemon=True,
+                         name="crono-refresh").start()
+
+    def _refresh_silenzioso_finalizza(self, n_nuovi):
+        """Chiamato in main thread dopo download background.
+        Se ci sono nuovi file ricarica la lista mantenendo selezione.
+        Poi rischedula il prossimo refresh tra 30s."""
+        if not getattr(self, "_at_refresh_attivo", False):
+            return
+        try:
+            if not self._at.winfo_exists():
+                self._at_refresh_attivo = False
+                return
+        except (tk.TclError, AttributeError):
+            self._at_refresh_attivo = False
+            return
+        if n_nuovi > 0:
+            try:
+                # Salva selezione + focus correnti
+                sel_save = list(self._at.selection())
+                foc_save = self._at.focus()
+                # Invalida cache per forzare rilettura disco
+                try:
+                    self._tutti_sess_cache = None
+                except Exception:
+                    pass
+                # Ricarica e ricostruisce
+                self._saved_selection = sel_save
+                self._saved_focus = foc_save
+                # Notifica utente in barra status (effimero)
+                try:
+                    self._tutti_status.config(
+                        text="Auto-refresh: +%d nuovi tempi"
+                             % n_nuovi,
+                        fg=self.c["stato_ok"])
+                except Exception:
+                    pass
+                # Ricostruisci la schermata: e' un piano economico
+                # (reuse della stessa logica di apertura)
+                self._schermata_tutti_tempi()
+                return
+            except Exception as e:
+                print("[crono refresh] errore reload:", e)
+        # Rischedula tra 30s
+        try:
+            self.root.after(30000,
+                            self._refresh_silenzioso_tutti_tempi)
+        except Exception:
+            pass
+
     def _pulisci_myrcm_corrotti(self):
         """Elimina file MyRCM legacy salvati col bug pre-v05.05.71
         che metteva il numero di gara ('# 11') al posto del nome
@@ -2908,6 +3159,21 @@ class Crono:
             _aggiorna_selezione()
         # Focus sulla barra CERCA all'avvio
         self._at_search_entry.focus_set()
+
+        # ── Refresh automatico ogni 30s ──
+        # Se siamo arrivati da NUOVA LETTURA con una ricerca completa
+        # (data + pista memorizzate), schedula un download silenzioso
+        # in background ogni 30 secondi che ricarica la lista coi
+        # nuovi tempi senza far perdere selezione + focus all'utente.
+        # Cosi' durante una sessione live i tempi appaiono in archivio
+        # man mano senza dover uscire e rifare RICERCA.
+        if (not modo_s
+                and getattr(self, '_ultima_ricerca_data', None)
+                and getattr(self, '_ultima_ricerca_pista_match', None)):
+            self._at_refresh_attivo = True
+            self.root.after(30000, self._refresh_silenzioso_tutti_tempi)
+        else:
+            self._at_refresh_attivo = False
 
         # Ordine canonico tab: i 5 pulsanti FONTE (ALL, SH, MR, LT, ST)
         # nello stesso ordine di fonte_btn_def. Costruiamo la lista qui
