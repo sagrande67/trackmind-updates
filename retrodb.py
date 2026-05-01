@@ -4481,8 +4481,16 @@ class RetroDBApp:
                     try:
                         lbl_ov.config(text=testo_ov,
                                        bg=col_bg_overlay, fg=fg_ov)
-                        lbl_ov.place(relx=1.0, rely=0.0,
-                                      anchor="ne", x=-6, y=4)
+                        # Posizionato CENTRO IN ALTO del Toplevel:
+                        # cosi' non si sovrappone con barra batteria
+                        # + contatore sessioni che stanno sempre
+                        # all'estrema destra dell'header schermata
+                        # corrente (vedi TUTTI I TEMPI con "2591
+                        # sessioni" + barra BAT). Zona libera =
+                        # centro alto (lo spazio sopra al titolo
+                        # della schermata addon).
+                        lbl_ov.place(relx=0.5, rely=0.0,
+                                      anchor="n", x=0, y=2)
                         lbl_ov.lift()
                     except Exception:
                         pass
