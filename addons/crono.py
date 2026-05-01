@@ -2085,6 +2085,19 @@ class Crono:
         if not data_str or not pista_match:
             return
 
+        # Debounce: se l'utente ha interagito recentemente (tasto,
+        # click, movimento mouse) negli ultimi 5s, posticipa il
+        # refresh di altri 5s. Cosi' mentre seleziona/lavora la
+        # lista non si ricostruisce sotto le mani.
+        last_act = getattr(self, "_at_last_activity", 0)
+        if last_act > 0 and (time.time() - last_act) < 5.0:
+            try:
+                self._at_refresh_after_id = self.root.after(
+                    5000, self._refresh_silenzioso_tutti_tempi)
+            except Exception:
+                pass
+            return
+
         # Rischedula SUBITO il prossimo tick prima di ogni altra cosa
         try:
             self._at_refresh_after_id = self.root.after(
@@ -3149,6 +3162,24 @@ class Crono:
             if not da_finalize:
                 self._at_refresh_after_id = self.root.after(
                     30000, self._refresh_silenzioso_tutti_tempi)
+            # Tracciamento attivita' utente per il debounce: bind
+            # globali registrati UNA volta sola (idempotente via
+            # flag _activity_tracker_armato). Ogni tasto/click/
+            # movimento mouse aggiorna _at_last_activity. Il refresh,
+            # quando schedulato, controlla questa variabile: se
+            # l'utente ha interagito negli ultimi 5s posticipa.
+            self._at_last_activity = 0  # reset all'apertura
+            if not getattr(self, "_activity_tracker_armato", False):
+                def _track_activity(e=None):
+                    self._at_last_activity = time.time()
+                for ev in ("<Key>", "<Motion>", "<Button>",
+                           "<MouseWheel>"):
+                    try:
+                        self._top.bind(ev, _track_activity,
+                                        add="+")
+                    except Exception:
+                        pass
+                self._activity_tracker_armato = True
         else:
             self._at_refresh_attivo = False
 
