@@ -1238,8 +1238,12 @@ class Crono:
                 os.makedirs(scouting_dir, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-                # Indice locale {chipCode: set(session_ids)} per skip
-                # delle sessioni gia' scaricate (vedi _ricerca_completa).
+                # Indice locale {chip: {sid: num_giri}}: cosi' una
+                # sessione gia' presente viene riscaricata/sovrascritta
+                # SOLO se cresce di giri (sessione live in corso).
+                # Bug pre-fix: skip secco per (chip, sid) bloccava gli
+                # aggiornamenti delle sessioni cresciute (es. da 2 a 5
+                # giri).
                 indice_locale = {}
                 try:
                     for f in os.listdir(scouting_dir):
@@ -1253,9 +1257,10 @@ class Crono:
                                 continue
                             ch = str(d.get("transponder", "")).strip()
                             sid_l = d.get("speedhive_session")
+                            ng_l = int(d.get("num_giri", 0) or 0)
                             if ch and sid_l:
                                 indice_locale.setdefault(
-                                    ch, set()).add(sid_l)
+                                    ch, {})[sid_l] = ng_l
                         except Exception:
                             pass
                 except Exception:
@@ -1271,13 +1276,32 @@ class Crono:
                         label = (alias_per_chip.get(chip_str)
                                  or att.get("chipLabel",
                                             "Pilota_%s" % chip[-4:]))
-                        sid_locali = indice_locale.get(chip_str, set())
+                        sid_locali = indice_locale.get(chip_str, {})
                         dati = sh_scarica(aid)
                         if not dati or "sessions" not in dati:
                             return local_saved, local_skipped
                         for sess in dati.get("sessions", []):
                             sid = sess.get("id", 0)
-                            if sid and sid in sid_locali:
+                            laps_remoti = sess.get("laps", []) or []
+                            # SpeedHive ritorna duration come STRINGA
+                            # (es. '23.551'). Convertiamo a float in
+                            # safe-mode con try/except. Senza la
+                            # conversione esplicita il confronto
+                            # 'str' > 0 solleva TypeError che il
+                            # try/except del worker cattura silently
+                            # facendo fallire l'intera attivita.
+                            n_remote = 0
+                            for _l in laps_remoti:
+                                try:
+                                    if float(_l.get("duration", 0) or 0) > 0:
+                                        n_remote += 1
+                                except (ValueError, TypeError):
+                                    pass
+                            # Skip solo se gia' presente con num_giri
+                            # locale >= remoto (niente da aggiornare).
+                            if (sid and sid in sid_locali
+                                    and sid_locali[sid] >= n_remote
+                                    and n_remote > 0):
                                 local_skipped += 1
                                 continue
                             laps = sess.get("laps", [])
@@ -1553,8 +1577,13 @@ class Crono:
             # Nessuna data + Transponder -> LIVE polling
             self._avvia_speedhive_live()
 
-    def _ricerca_completa(self, data_str):
-        """Cerca tempi su TUTTE le fonti (SpeedHive + MyRCM) e apre Tutti i Tempi."""
+    def _ricerca_completa(self, data_str, silenzioso=False):
+        """Cerca tempi su TUTTE le fonti (SpeedHive + MyRCM) e apre Tutti i Tempi.
+
+        Param `silenzioso`: se True (chiamato dal refresh automatico
+        in TUTTI I TEMPI), salta la schermata di animazione "RICERCA
+        TEMPI" e fa il download in background mantenendo la
+        schermata corrente; al termine ricarica solo TUTTI I TEMPI."""
         c = self.c
         pista_nome = self._matched_pista.get("nome", "")
         speedhive_id = self._matched_pista.get("speedhive_id", "")
@@ -1577,48 +1606,79 @@ class Crono:
             "transponder": transponder, "serbatoio": serbatoio_str,
         }
         # Memorizza pista+data dell'ultima ricerca completa cosi' il
-        # bottone REFRESH in TUTTI I TEMPI puo' rilanciarla senza
+        # refresh automatico in TUTTI I TEMPI puo' rilanciarla senza
         # uscire/ricompilare il form.
         self._ultima_ricerca_data = data_str
         self._ultima_ricerca_pista_match = dict(self._matched_pista or {})
 
-        # Schermata di attesa con animazione
-        self._pulisci()
-        tk.Label(self.root, text="RICERCA TEMPI", bg=c["sfondo"],
-                 fg=c["cerca_testo"], font=self._f_title).pack(pady=(20, 10))
-        status = tk.Label(self.root,
-                 text="Ricerca in corso per %s..." % pista_nome,
-                 bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_info)
-        status.pack(pady=10)
-        # Barra animata puntini
-        anim_label = tk.Label(self.root, text="", bg=c["sfondo"],
-                              fg=c["cerca_testo"], font=(FONT_MONO, 12, "bold"))
-        anim_label.pack(pady=(4, 0))
-        self._ricerca_attiva = True
+        # Modo manuale (utente preme RICERCA): pulisce eventuali
+        # filtri pending lasciati dal refresh silenzioso. Cosi'
+        # una nuova RICERCA parte sempre con vista pulita (niente
+        # filtro CERCA/FONTE residuo che nasconderebbe i tempi
+        # appena scaricati). Anche in silenzioso=True i pending
+        # vengono settati fresh dal chiamante (refresh).
+        if not silenzioso:
+            for _attr in ("_at_cerca_pending", "_at_fonte_pending"):
+                if hasattr(self, _attr):
+                    try:
+                        delattr(self, _attr)
+                    except Exception:
+                        pass
 
-        def _anima_ricerca(tick=0):
-            if not self._ricerca_attiva:
-                return
-            try:
-                if not anim_label.winfo_exists():
-                    return
-            except Exception:
-                return
-            dots = "\u2588" * ((tick % 8) + 1)  # blocchi che crescono
-            anim_label.config(text=dots)
-            self.root.after(350, lambda: _anima_ricerca(tick + 1))
-
-        _anima_ricerca()
-        self.root.update_idletasks()
-
-        # Check connessione internet prima di partire
-        if not _check_internet():
+        if silenzioso:
+            # Modalita' silenziosa per refresh automatico:
+            # niente animazione, niente _pulisci. Resta in TUTTI
+            # I TEMPI durante il download. status/anim_label =
+            # widget dummy (non packati) per riusare il flow di
+            # _fetch_tutto qui sotto senza modifiche.
+            status = tk.Label(self.root, text="")  # not packed
+            anim_label = tk.Label(self.root, text="")  # not packed
             self._ricerca_attiva = False
-            anim_label.config(text="")
-            status.config(text="NESSUNA CONNESSIONE INTERNET!", fg=c["stato_errore"])
-            self.root.after(3000, lambda: self._schermata_scouting(
-                prefill=getattr(self, '_scouting_prefill', None)))
-            return
+            scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
+            os.makedirs(scouting_dir, exist_ok=True)
+        else:
+            # Schermata di attesa con animazione (modo manuale =
+            # bottone RICERCA premuto dall'utente)
+            self._pulisci()
+            tk.Label(self.root, text="RICERCA TEMPI", bg=c["sfondo"],
+                     fg=c["cerca_testo"], font=self._f_title).pack(pady=(20, 10))
+            status = tk.Label(self.root,
+                     text="Ricerca in corso per %s..." % pista_nome,
+                     bg=c["sfondo"], fg=c["stato_avviso"], font=self._f_info)
+            status.pack(pady=10)
+            # Barra animata puntini
+            anim_label = tk.Label(self.root, text="", bg=c["sfondo"],
+                                  fg=c["cerca_testo"], font=(FONT_MONO, 12, "bold"))
+            anim_label.pack(pady=(4, 0))
+            self._ricerca_attiva = True
+
+            def _anima_ricerca(tick=0):
+                if not self._ricerca_attiva:
+                    return
+                try:
+                    if not anim_label.winfo_exists():
+                        return
+                except Exception:
+                    return
+                dots = "\u2588" * ((tick % 8) + 1)  # blocchi che crescono
+                anim_label.config(text=dots)
+                self.root.after(350, lambda: _anima_ricerca(tick + 1))
+
+            _anima_ricerca()
+            self.root.update_idletasks()
+
+            # Check connessione internet prima di partire
+            if not _check_internet():
+                self._ricerca_attiva = False
+                anim_label.config(text="")
+                status.config(text="NESSUNA CONNESSIONE INTERNET!", fg=c["stato_errore"])
+                self.root.after(3000, lambda: self._schermata_scouting(
+                    prefill=getattr(self, '_scouting_prefill', None)))
+                return
+
+        scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
+        os.makedirs(scouting_dir, exist_ok=True)
+        self._refresh_silenzioso_flag = silenzioso
 
         scouting_dir = os.path.join(self.dati_dir, "scouting") if self.dati_dir else "scouting"
         os.makedirs(scouting_dir, exist_ok=True)
@@ -1654,6 +1714,12 @@ class Crono:
                     # piloti, senza questo skip ogni "ricerca" ri-processava
                     # tutto da capo (10+ minuti). Con la cache, il refresh
                     # successivo elabora SOLO le sessioni nuove.
+                    # Indice locale {chip: {sid: num_giri}} cosi'
+                    # possiamo skippare le sessioni gia' aggiornate
+                    # MA scaricare quelle che hanno guadagnato giri
+                    # (sessione live in corso). Bug pre-fix: skip
+                    # secco per (chip, sid) bloccava aggiornamenti
+                    # di sessioni cresciute (es. da 2 a 5 giri).
                     indice_locale = {}
                     try:
                         for f in os.listdir(scouting_dir):
@@ -1667,9 +1733,10 @@ class Crono:
                                     continue
                                 ch = str(d.get("transponder", "")).strip()
                                 sid_l = d.get("speedhive_session")
+                                ng_l = int(d.get("num_giri", 0) or 0)
                                 if ch and sid_l:
                                     indice_locale.setdefault(
-                                        ch, set()).add(sid_l)
+                                        ch, {})[sid_l] = ng_l
                             except Exception:
                                 pass
                     except Exception:
@@ -1681,9 +1748,8 @@ class Crono:
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         # Worker che elabora UNA attivita': fa la chiamata
                         # HTTP a sh_scarica(aid) e ritorna la lista di
-                        # sessioni nuove da salvare. Le sessioni gia'
-                        # presenti (sid in indice_locale) vengono
-                        # scartate senza scrittura su disco.
+                        # sessioni nuove o aggiornate (piu' giri della
+                        # versione locale).
                         def _processa_attivita(att):
                             local_skipped = 0
                             local_saved = []  # (chip, sid, sessione_dict)
@@ -1694,18 +1760,22 @@ class Crono:
                                 label = (alias_per_chip.get(chip_str)
                                          or att.get("chipLabel",
                                                     "Pilota_%s" % chip[-4:]))
-                                sid_locali = indice_locale.get(chip_str, set())
+                                sid_locali = indice_locale.get(chip_str, {})
                                 dati = sh_scarica(aid)
                                 if not dati or "sessions" not in dati:
                                     return local_saved, local_skipped
                                 for sess in dati.get("sessions", []):
                                     sid = sess.get("id", 0)
-                                    # SKIP: sessione gia' scaricata in
-                                    # passato. Niente HTTP risparmio qui
-                                    # (la lista sessioni e' arrivata col
-                                    # singolo GET di sh_scarica), ma
-                                    # niente IO/parsing/scrittura.
-                                    if sid and sid in sid_locali:
+                                    laps_remoti = sess.get("laps", []) or []
+                                    n_remote = sum(
+                                        1 for lap in laps_remoti
+                                        if (lap.get("duration") and str(lap.get("duration")).replace(".","",1).isdigit() and float(lap.get("duration")) > 0))
+                                    # SKIP solo se gia' presente con
+                                    # numero di giri >= remoto (=
+                                    # nessuna nuova info da scaricare).
+                                    if (sid and sid in sid_locali
+                                            and sid_locali[sid] >= n_remote
+                                            and n_remote > 0):
                                         local_skipped += 1
                                         continue
                                     laps = sess.get("laps", [])
@@ -1849,6 +1919,23 @@ class Crono:
 
             def _mostra_risultato():
                 self._ricerca_attiva = False
+                # Modalita' silenziosa (refresh automatico): niente
+                # update widget, ricarica diretta TUTTI I TEMPI.
+                if getattr(self, "_refresh_silenzioso_flag", False):
+                    self._refresh_silenzioso_flag = False
+                    if tot > 0 or n_scouting > 0:
+                        # Rebuild lista TUTTI I TEMPI mantenendo
+                        # filtri/selezione (gia' settati in pending
+                        # da _refresh_silenzioso_tutti_tempi)
+                        try:
+                            self._tutti_sess_cache = None
+                        except Exception:
+                            pass
+                        try:
+                            self._schermata_tutti_tempi()
+                        except Exception:
+                            pass
+                    return
                 try:
                     if not status.winfo_exists():
                         return
@@ -1966,13 +2053,22 @@ class Crono:
     #  7. TUTTI I TEMPI (tutte le sessioni, tutti i piloti)
     # =================================================================
     def _refresh_silenzioso_tutti_tempi(self):
-        """Refresh background: rilancia il download SpeedHive+MyRCM
-        per la pista+data memorizzate (`_ultima_ricerca_*`) senza
-        cambiare schermata. Aggiorna la lista nel Treeview solo se
-        ci sono nuovi file scouting, mantenendo selezione/focus
-        utente intatti.
+        """Refresh automatico TUTTI I TEMPI: ogni 30s ri-lancia
+        ESATTAMENTE la stessa logica del bottone RICERCA, cosi' se
+        funziona quella funziona anche questo (zero duplicazione).
 
-        Auto-rischedulato ogni 30s mentre la schermata e' viva."""
+        Riusa _ricerca_completa(data_str) che fa il flow standard:
+          1) breve animazione "RICERCA TEMPI"
+          2) download SpeedHive+MyRCM in thread bg
+          3) apre _schermata_tutti_tempi con la lista aggiornata
+
+        Prima di chiamare salviamo CERCA / FONTE / selezione / focus
+        in pending; _schermata_tutti_tempi li ripristina dopo il
+        rebuild (logica gia' presente).
+
+        Il prossimo tick viene schedulato SUBITO all'inizio prima del
+        ricerca_completa: cosi' anche se l'utente preme ESC durante
+        l'animazione il timer continua al prossimo intervallo."""
         # Guard: schermata ancora aperta?
         if not getattr(self, "_at_refresh_attivo", False):
             return
@@ -1988,222 +2084,59 @@ class Crono:
                                None)
         if not data_str or not pista_match:
             return
-        speedhive_id = pista_match.get("speedhive_id", "")
-        pista_nome = pista_match.get("nome", "")
-        scouting_dir = (os.path.join(self.dati_dir, "scouting")
-                         if self.dati_dir else "scouting")
+
+        # Rischedula SUBITO il prossimo tick prima di ogni altra cosa
         try:
-            os.makedirs(scouting_dir, exist_ok=True)
+            self._at_refresh_after_id = self.root.after(
+                30000, self._refresh_silenzioso_tutti_tempi)
         except Exception:
             pass
 
-        # Conta i file scouting prima del refresh per capire se ce
-        # ne sono di nuovi alla fine
+        # Salva filtri CERCA + FONTE + selezione + focus in pending:
+        # _schermata_tutti_tempi (chiamata da _ricerca_completa al
+        # termine del download) li ripristinera' nei widget nuovi.
         try:
-            n_prima = sum(1 for f in os.listdir(scouting_dir)
-                          if f.endswith(".json"))
+            self._at_cerca_pending = self._at_cerca_var.get()
         except Exception:
-            n_prima = 0
-
-        def _bg():
-            # SpeedHive
-            if _HAS_SPEEDHIVE and speedhive_id:
-                try:
-                    from speedhive_import import (
-                        cerca_tutte_attivita_per_data,
-                        scarica_sessioni as sh_scarica)
-                    from concurrent.futures import (
-                        ThreadPoolExecutor, as_completed)
-                    alias_per_chip = self._build_alias_per_trasponder()
-                    attivita = cerca_tutte_attivita_per_data(
-                        speedhive_id, data_str)
-                    indice_locale = {}
-                    for f in os.listdir(scouting_dir):
-                        if not f.endswith(".json"):
-                            continue
-                        try:
-                            with open(
-                                os.path.join(scouting_dir, f),
-                                "r", encoding="utf-8") as fp:
-                                d = json.load(fp)
-                            if d.get("data") != data_str:
-                                continue
-                            ch = str(
-                                d.get("transponder", "")).strip()
-                            sid_l = d.get("speedhive_session")
-                            if ch and sid_l:
-                                indice_locale.setdefault(
-                                    ch, set()).add(sid_l)
-                        except Exception:
-                            pass
-
-                    def _proc(att):
-                        local_saved = []
-                        try:
-                            aid = att["activity_id"]
-                            chip = att["chipCode"]
-                            chip_str = str(chip).strip()
-                            label = (alias_per_chip.get(chip_str)
-                                     or att.get("chipLabel",
-                                                "Pilota_%s" % chip[-4:]))
-                            sid_locali = indice_locale.get(
-                                chip_str, set())
-                            dati = sh_scarica(aid)
-                            if not dati or "sessions" not in dati:
-                                return local_saved
-                            for sess in dati.get("sessions", []):
-                                sid = sess.get("id", 0)
-                                if sid and sid in sid_locali:
-                                    continue
-                                laps = sess.get("laps", [])
-                                if not laps:
-                                    continue
-                                tempi = []
-                                giri_list = []
-                                for lap in laps:
-                                    try:
-                                        dur = float(
-                                            lap.get("duration", 0))
-                                    except (ValueError, TypeError):
-                                        dur = 0
-                                    if dur > 0:
-                                        tempi.append(dur)
-                                        giri_list.append({
-                                            "giro": len(giri_list)
-                                                    + 1,
-                                            "tempo": round(dur, 3),
-                                            "stato": "valido",
-                                        })
-                                if not giri_list:
-                                    continue
-                                dt_start = sess.get(
-                                    "dateTimeStart", "")
-                                try:
-                                    from datetime import datetime as dt_cls
-                                    dt_obj = dt_cls.fromisoformat(
-                                        dt_start)
-                                    ora = dt_obj.strftime("%H:%M:%S")
-                                except Exception:
-                                    ora = (dt_start[:8]
-                                           if len(dt_start) >= 8
-                                           else "?")
-                                sessione = {
-                                    "pilota": label,
-                                    "setup": "SpeedHive - %s"
-                                              % pista_nome,
-                                    "data": data_str, "ora": ora,
-                                    "tipo": "speedhive",
-                                    "transponder": chip,
-                                    "serbatoio_cc": 0,
-                                    "sessione_carburante": False,
-                                    "speedhive_session": sid,
-                                    "speedhive_activity": aid,
-                                    "num_giri": len(giri_list),
-                                    "giri": giri_list,
-                                    "miglior_tempo": round(
-                                        min(tempi), 3),
-                                    "media": round(
-                                        sum(tempi) / len(tempi), 3),
-                                    "tempo_totale": round(
-                                        sum(tempi), 3),
-                                }
-                                local_saved.append(
-                                    (chip, sid, sessione))
-                        except Exception:
-                            pass
-                        return local_saved
-
-                    nuove = []
-                    if attivita:
-                        with ThreadPoolExecutor(max_workers=8) as exe:
-                            futs = [exe.submit(_proc, a)
-                                    for a in attivita]
-                            for fut in as_completed(futs):
-                                try:
-                                    nuove.extend(fut.result())
-                                except Exception:
-                                    pass
-                    _data_compact = "".join(
-                        ch for ch in str(data_str) if ch.isdigit())
-                    for chip, sid, sessione in nuove:
-                        path = os.path.join(
-                            scouting_dir,
-                            "lap_speedhive_%s_%s_s%d.json"
-                            % (_data_compact, str(chip)[-6:], sid))
-                        try:
-                            with open(path, "w",
-                                      encoding="utf-8") as f:
-                                json.dump(sessione, f,
-                                          ensure_ascii=False,
-                                          indent=2)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print("[crono refresh] SpeedHive errore:", e)
-            # MyRCM
-            if _HAS_MYRCM:
-                try:
-                    import_evento_completo(
-                        pista_nome, data_str, scouting_dir)
-                except Exception as e:
-                    print("[crono refresh] MyRCM errore:", e)
-
-            # Conta file dopo + ricarica UI in main thread
-            try:
-                n_dopo = sum(1 for f in os.listdir(scouting_dir)
-                             if f.endswith(".json"))
-            except Exception:
-                n_dopo = n_prima
-            self.root.after(0, lambda d=(n_dopo - n_prima):
-                            self._refresh_silenzioso_finalizza(d))
-
-        threading.Thread(target=_bg, daemon=True,
-                         name="crono-refresh").start()
-
-    def _refresh_silenzioso_finalizza(self, n_nuovi):
-        """Chiamato in main thread dopo download background.
-        Se ci sono nuovi file ricarica la lista mantenendo selezione.
-        Poi rischedula il prossimo refresh tra 30s."""
-        if not getattr(self, "_at_refresh_attivo", False):
-            return
+            self._at_cerca_pending = ""
         try:
-            if not self._at.winfo_exists():
-                self._at_refresh_attivo = False
-                return
-        except (tk.TclError, AttributeError):
-            self._at_refresh_attivo = False
-            return
-        if n_nuovi > 0:
-            try:
-                # Salva selezione + focus correnti
-                sel_save = list(self._at.selection())
-                foc_save = self._at.focus()
-                # Invalida cache per forzare rilettura disco
-                try:
-                    self._tutti_sess_cache = None
-                except Exception:
-                    pass
-                # Ricarica e ricostruisce
-                self._saved_selection = sel_save
-                self._saved_focus = foc_save
-                # Notifica utente in barra status (effimero)
-                try:
-                    self._tutti_status.config(
-                        text="Auto-refresh: +%d nuovi tempi"
-                             % n_nuovi,
-                        fg=self.c["stato_ok"])
-                except Exception:
-                    pass
-                # Ricostruisci la schermata: e' un piano economico
-                # (reuse della stessa logica di apertura)
-                self._schermata_tutti_tempi()
-                return
-            except Exception as e:
-                print("[crono refresh] errore reload:", e)
-        # Rischedula tra 30s
+            self._at_fonte_pending = self._at_fonte_var.get()
+        except Exception:
+            self._at_fonte_pending = "ALL"
         try:
-            self.root.after(30000,
-                            self._refresh_silenzioso_tutti_tempi)
+            self._saved_selection = list(self._at.selection())
+            self._saved_focus = self._at.focus()
+        except Exception:
+            pass
+
+        # Re-imposta `_matched_pista` cosi' _ricerca_completa lo trova
+        # (e' la stessa cosa che fa l'utente compilando il form
+        # NUOVA LETTURA: poi RICERCA usa _matched_pista).
+        try:
+            self._matched_pista = dict(pista_match)
+        except Exception:
+            pass
+        # Re-imposta anche _scouting_prefill (non strettamente
+        # necessario ma per coerenza con il flow normale)
+        if not getattr(self, "_scouting_prefill", None):
+            self._scouting_prefill = {
+                "pilota": "?",
+                "pista": pista_match.get("nome", ""),
+                "transponder": "",
+                "serbatoio": "",
+            }
+
+        # Setta flag cosi' _schermata_tutti_tempi (chiamata al
+        # termine di _ricerca_completa) NON rischedula un altro
+        # timer (gia' schedulato all'inizio di questa funzione).
+        self._at_refresh_da_finalize = True
+
+        # Lancia RICERCA in modalita' SILENZIOSA: niente animazione
+        # "RICERCA TEMPI", niente cambio schermata. Resta in TUTTI
+        # I TEMPI durante il download. Al termine la lista viene
+        # rebuilded mantenendo filtri/selezione/focus (via pending).
+        try:
+            self._ricerca_completa(data_str, silenzioso=True)
         except Exception:
             pass
 
@@ -2952,6 +2885,41 @@ class Crono:
         self._at_search_entry.bind("<Return>", lambda e: self._at.focus_set())
         self._at_search_entry.bind("<Down>", lambda e: self._at.focus_set())
 
+        # Ripristino filtri CERCA + FONTE dopo auto-refresh:
+        # _refresh_silenzioso_finalizza salva _at_cerca_pending e
+        # _at_fonte_pending prima del rebuild di questa schermata,
+        # qui li riapplichiamo cosi' l'utente non perde la sua
+        # ricerca/filtro quando arrivano nuovi tempi in background.
+        cerca_save = getattr(self, "_at_cerca_pending", None)
+        fonte_save = getattr(self, "_at_fonte_pending", None)
+        if fonte_save and fonte_save != "ALL":
+            try:
+                self._at_fonte_var.set(fonte_save)
+                _aggiorna_fonte_btns()
+            except Exception:
+                pass
+        if cerca_save:
+            try:
+                # Settando il var scatta automaticamente il trace
+                # _at_filtra che applica il filtro sulle righe.
+                self._at_cerca_var.set(cerca_save)
+            except Exception:
+                pass
+        elif fonte_save and fonte_save != "ALL":
+            # CERCA vuoto ma FONTE attivo: chiama _at_filtra una
+            # volta per applicare il filtro fonte
+            try:
+                _at_filtra()
+            except Exception:
+                pass
+        # Pulisci i pending dopo l'uso (one-shot)
+        for _attr in ("_at_cerca_pending", "_at_fonte_pending"):
+            try:
+                if hasattr(self, _attr):
+                    delattr(self, _attr)
+            except Exception:
+                pass
+
         # Tag per riga con focus: inversione colori (sfondo verde chiaro, testo nero)
         self._at.tag_configure("focused",
             background=c["cursore"], foreground=c["testo_cursore"])
@@ -3167,11 +3135,20 @@ class Crono:
         # nuovi tempi senza far perdere selezione + focus all'utente.
         # Cosi' durante una sessione live i tempi appaiono in archivio
         # man mano senza dover uscire e rifare RICERCA.
+        # Flag _at_refresh_da_finalize evita doppio scheduling: quando
+        # _refresh_silenzioso_finalizza chiama _schermata_tutti_tempi
+        # per rebuild dopo nuovi tempi, il timer e' gia' schedulato
+        # all'inizio di _refresh_silenzioso_tutti_tempi e qui non
+        # serve schedulare di nuovo.
+        da_finalize = getattr(self, "_at_refresh_da_finalize", False)
+        self._at_refresh_da_finalize = False  # reset one-shot
         if (not modo_s
                 and getattr(self, '_ultima_ricerca_data', None)
                 and getattr(self, '_ultima_ricerca_pista_match', None)):
             self._at_refresh_attivo = True
-            self.root.after(30000, self._refresh_silenzioso_tutti_tempi)
+            if not da_finalize:
+                self._at_refresh_after_id = self.root.after(
+                    30000, self._refresh_silenzioso_tutti_tempi)
         else:
             self._at_refresh_attivo = False
 
@@ -4832,6 +4809,19 @@ class Crono:
 
         self._tutti_sessioni = []
         self._tutti_paths = []
+        # Invalida cache + filtri pending (sennò un refresh
+        # successivo o una nuova RICERCA mostrerebbe vista filtrata
+        # con dati gia' cancellati)
+        try:
+            self._tutti_sess_cache = None
+        except Exception:
+            pass
+        for _attr in ("_at_cerca_pending", "_at_fonte_pending"):
+            if hasattr(self, _attr):
+                try:
+                    delattr(self, _attr)
+                except Exception:
+                    pass
 
         # Torna alla schermata precedente
         if hasattr(self, '_tempi_on_close') and self._tempi_on_close == self._schermata_tempi:

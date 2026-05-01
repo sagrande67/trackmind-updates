@@ -145,19 +145,34 @@ def _bootstrap_cache_da_scouting(scouting_dir):
 
 
 def registra_evento_in_cache(scouting_dir, pista, data, event_id,
-                              nome_evento=""):
+                              nome_evento="", fonte="import"):
     """Da chiamare quando si apre con successo un evento MyRCM
     (Assistente Gara o RICERCA), per memorizzare (pista, data) ->
-    event_id. Idempotente: aggiorna l'entry esistente."""
+    event_id. Idempotente: aggiorna l'entry esistente.
+
+    `fonte`:
+      - "import"  : utente l'ha aperto in Assistente Gara (TRUSTED)
+      - "scouting": derivato da file scouting esistenti (TRUSTED)
+      - "online"  : ricavato da cerca_eventi_online (TRANSIENT,
+                    ignorato in lookup successivi perche' l'evento
+                    LIVE puo' cambiare nome durante la giornata)"""
     if not (scouting_dir and pista and data and event_id):
         return
     cache = _carica_cache_eventi(scouting_dir)
     key = "%s|%s" % (_norm_pista(pista), data)
+    # NON sovrascrivere un'entry trusted ("import"/"scouting") con
+    # una "online": se ho gia' un'entry confermata da Assistente
+    # Gara per (pista, data), non vogliamo che il lookup online la
+    # peggiori.
+    existing = cache.get(key)
+    if (existing and fonte == "online"
+            and existing.get("fonte") in ("import", "scouting")):
+        return
     cache[key] = {
         "event_id": str(event_id),
         "nome_pista": pista,
         "nome_evento": nome_evento or "",
-        "fonte": "import",
+        "fonte": fonte,
     }
     _salva_cache_eventi(scouting_dir, cache)
 
@@ -176,6 +191,14 @@ def lookup_evento_da_cache(scouting_dir, pista, data):
          registrata da Assistente Gara.
     """
     cache = _bootstrap_cache_da_scouting(scouting_dir)
+    if not cache:
+        return None, None
+    # Filtro: ignora entry "online" (transient, possibile match
+    # sbagliato dalla cerca_eventi_online che cambia nome durante
+    # la giornata). Solo "import" (Assistente Gara) e "scouting"
+    # (derivate da file scouting) sono affidabili.
+    cache = {k: v for k, v in cache.items()
+             if v.get("fonte") in (None, "import", "scouting")}
     if not cache:
         return None, None
     # 1) Match esatto
@@ -692,9 +715,17 @@ def cerca_eventi_online(nome_pista):
         except (IndexError, KeyError):
             continue
 
-        # Match: ALMENO UNA parola chiave presente nel testo evento
-        evento_low = evento_text.lower()
-        if any(p in evento_low for p in parole_chiave):
+        # Match: TUTTE le parole chiave devono essere presenti come
+        # PAROLE INTERE nel testo evento (non substring). Cosi'
+        # "Mycandy Arena" non matcha falsamente "Cockpit Kartarena"
+        # (dove "arena" e' parte di "kartarena", non parola intera).
+        # Il match per substring causava falsi positivi su parole
+        # generiche tipo "arena", "cup", "race".
+        evento_parole = set(_estrai_parole_chiave(evento_text))
+        if not all(p in evento_parole for p in parole_chiave):
+            continue
+        # Da qui in poi: match valido
+        if True:
             # Estrai event ID dal link rapporti
             link = rapporti.get("link", "") if isinstance(rapporti, dict) else ""
             event_id = None
@@ -753,13 +784,18 @@ def cerca_evento_per_data(nome_pista, data_str, scouting_dir=None):
         ev = eventi[0]
         print("[MyRCM] Evento trovato online: %s (ID: %s)" % (
             ev["nome"], ev["event_id"]))
-        # Registra in cache cosi' la prossima volta non serve
-        # interrogare di nuovo l'elenco live.
+        # Registra in cache come "online" (transient) cosi' al
+        # prossimo lookup non viene riusata: gli eventi LIVE
+        # possono cambiare nome durante la giornata e una vecchia
+        # entry sbagliata bloccherebbe il refresh CRONO. Solo le
+        # entry "import" (Assistente Gara) e "scouting" sono
+        # trustate dal lookup.
         if scouting_dir:
             try:
                 registra_evento_in_cache(scouting_dir, nome_pista,
                                           data_str, ev["event_id"],
-                                          ev["nome"])
+                                          ev["nome"],
+                                          fonte="online")
             except Exception:
                 pass
         return ev["event_id"], ev["nome"]
