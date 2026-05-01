@@ -1,7 +1,7 @@
 {
-  "version": "05.05.75",
-  "date": "2026-04-30",
-  "time": "11:16:57",
+  "version": "05.05.78",
+  "date": "2026-05-01",
+  "time": "14:05:57",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -16,6 +16,7 @@
     "laptimer.py": "addons",
     "laptimer_REAL.py": "addons",
     "myrcm_import.py": "addons",
+    "myrcm_recorder.py": "addons",
     "prompt_editor.py": "addons",
     "speedhive_import.py": "addons",
     "splash.py": "addons",
@@ -27,6 +28,7 @@
     "focus_guard.py": "core",
     "lapmonitor.py": "core",
     "meteo.py": "core",
+    "myrcm_ws.py": "core",
     "sd_bar.py": "core",
     "sd_health.py": "core",
     "sys_info.py": "core",

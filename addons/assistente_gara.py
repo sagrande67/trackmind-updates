@@ -537,6 +537,13 @@ class AssistenteGaraMonitor:
             self._tick()
         # Salva stato per il riavvio
         self._salva_stato()
+        # Avvia recorder MyRCM live (silenzioso, salva file scouting
+        # ad ogni cambio sessione). Niente UI in v05.05.76 - in
+        # v05.05.77 si aggiunge la transizione automatica alla
+        # schermata griglia colonne quando inizia la manche del
+        # pilota. Best-effort: se il modulo manca l'addon continua
+        # senza recording.
+        self._avvia_recorder_myrcm()
 
     def disattiva(self):
         self._attivo = False
@@ -551,6 +558,214 @@ class AssistenteGaraMonitor:
         self.time_table = []
         self.tt_filtrato = []
         self.delay_min = 0
+        # Ferma il recorder MyRCM
+        self._ferma_recorder_myrcm()
+
+    # ── Recorder MyRCM live (auto-import in background) ──
+    def _avvia_recorder_myrcm(self):
+        """Avvia (o riavvia) il MyRcmLiveRecorder per l'evento+
+        categoria correnti. Idempotente. Si abbona anche come
+        listener degli EVENT per gestire la transizione automatica
+        alla UI live quando inizia la manche del pilota."""
+        try:
+            from myrcm_recorder import MyRcmLiveRecorder
+        except Exception as e:
+            print("[ag] recorder MyRCM non disponibile:", e)
+            return
+        # Stop precedente se cambia evento
+        self._ferma_recorder_myrcm()
+        eid = (self.evento or {}).get("event_id", "")
+        if not eid:
+            return
+        try:
+            base = os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))
+            scouting_dir = os.path.join(base, "dati", "scouting")
+            cat_nome = (self.categoria or {}).get("nome", "")
+            self._recorder = MyRcmLiveRecorder(
+                event_id=eid,
+                scouting_dir=scouting_dir,
+                category_filter_nome=cat_nome,
+                on_sessione_salvata=lambda g, n: print(
+                    "[ag] sessione salvata: %s (%d file)" % (g[:60], n)),
+                on_status=lambda m: print("[ag] %s" % m),
+                tk_root=self.root,
+            )
+            # Listener per auto-trigger UI live quando inizia la
+            # manche del pilota
+            self._recorder.add_event_listener(
+                self._auto_apri_ui_live)
+            self._recorder.start()
+            self._ui_live = None
+            self._ui_live_attiva_per_group = None
+        except Exception as e:
+            print("[ag] errore avvio recorder MyRCM:", e)
+            self._recorder = None
+
+    def _auto_apri_ui_live(self, meta, data):
+        """Chiamato a ogni EVENT WebSocket. Quando rileva che la
+        sessione corrente sul WS e' una delle manche del pilota
+        (filtrata) e RACESTATE diventa rsStarted/rsRunning, apre
+        automaticamente la UI live griglia colonne. Quando termina
+        (rsFinished), la chiude.
+
+        Idempotente: non riapre se gia' aperta per la stessa manche.
+        Una sola UI live alla volta per processo."""
+        try:
+            state = (meta or {}).get("RACESTATE", "")
+            group = (meta or {}).get("GROUP", "") or ""
+            if not group:
+                return
+            # Apertura: stato RUNNING + non gia' aperta per questo group
+            running = state in ("rsStarted", "rsRunning")
+            if running and not self._ui_live_attiva_per_group == group:
+                # Verifica che il group corrente corrisponda a una
+                # manche del pilota (se non c'e' filtro, va sempre
+                # bene)
+                if self._group_e_del_pilota(group):
+                    self._apri_ui_live_pilota(group)
+            # Chiusura automatica a fine sessione
+            elif (state in ("rsFinished", "rsClosed")
+                  and self._ui_live is not None
+                  and self._ui_live_attiva_per_group == group):
+                self._chiudi_ui_live()
+        except Exception as e:
+            print("[ag] errore auto_apri_ui:", e)
+
+    def _group_e_del_pilota(self, group):
+        """True se il GROUP MyRCM corrente corrisponde a una manche
+        del pilota loggato. Se non c'e' filtro manche per fase
+        (manche_per_fase vuoto), accetta tutte le manche della
+        categoria scelta come 'del pilota'."""
+        if not self.manche_per_fase:
+            return True  # nessun filtro: tutte le manche sono "ok"
+        gl = group.lower()
+        # Estrai n manche dal group (es. 'Manche 4' o 'Group 4')
+        import re as _re
+        m = _re.search(r'(?:manche|group|batteria)\s*(\d+)', gl)
+        manche_corr = m.group(1) if m else None
+        if not manche_corr:
+            return False
+        # Cerca tra le manche del pilota
+        for fase, label in self.manche_per_fase.items():
+            mm = _re.search(r'(\d+)', str(label))
+            if mm and mm.group(1) == manche_corr:
+                return True
+        return False
+
+    def _apri_ui_live_pilota(self, group):
+        """Apre il LapTimer in modalita' MyRCM live. Riusa la
+        schermata griglia colonne gia' fatta per LapMonitor BLE,
+        alimentata dai dati WebSocket MyRCM tramite il recorder
+        gia' attivo. Niente UI custom: LapTimer e' lo stesso
+        addon di sempre."""
+        if self._ui_live is not None:
+            self._chiudi_ui_live()
+        try:
+            from laptimer import LapTimer
+        except Exception as e:
+            print("[ag] LapTimer non disponibile:", e)
+            return
+        # Path dati per salvataggi (LapTimer usa dati_dir per piloti)
+        try:
+            base = os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))
+            dati_dir = os.path.join(base, "dati")
+        except Exception:
+            dati_dir = ""
+        cat_nome = (self.categoria or {}).get("nome", "")
+        # Usa il vista_frame di Assistente Gara come parent (NON il
+        # toplevel: cosi' LapTimer fa _pulisci solo dentro il vista
+        # senza distruggere TrackMind sotto).
+        parent_frame = (getattr(self, "_vista_frame", None)
+                         or self.root)
+        try:
+            lt = LapTimer(
+                setup="MyRCM Live - %s" % cat_nome[:30],
+                pilota=self.nome_pilota or "Live",
+                pista=(self.evento or {}).get("nome", ""),
+                dati_dir=dati_dir,
+                parent=parent_frame,
+                on_close=self._on_ui_live_chiusa)
+            # Attiva modalita' MyRCM dopo che la UI e' stata creata
+            self.root.after(50, lambda: lt.attiva_myrcm_live(
+                self._recorder))
+            self._ui_live = lt
+            self._ui_live_attiva_per_group = group
+            print("[ag] LapTimer MyRCM aperto per %s" % group[:60])
+        except Exception as e:
+            print("[ag] errore apertura LapTimer MyRCM:", e)
+            self._ui_live = None
+
+    def _chiudi_ui_live(self):
+        ui = self._ui_live
+        if ui is not None:
+            try:
+                if hasattr(ui, "disattiva_myrcm_live"):
+                    ui.disattiva_myrcm_live()
+            except Exception:
+                pass
+            try:
+                # LapTimer chiude via ESC / on_close (auto)
+                if hasattr(ui, "_on_close") and ui._on_close:
+                    pass  # gia' gestito
+            except Exception:
+                pass
+        self._ui_live = None
+        self._ui_live_attiva_per_group = None
+
+    def _on_ui_live_chiusa(self):
+        """Callback quando il LapTimer si chiude (ESC). Resetta lo
+        stato cosi' al prossimo cambio di sessione lo riapriamo +
+        ridisegna la schermata countdown dell'Assistente Gara
+        (altrimenti restano widget distrutti = schermo nero)."""
+        ui = self._ui_live
+        if ui is not None:
+            try:
+                if hasattr(ui, "disattiva_myrcm_live"):
+                    ui.disattiva_myrcm_live()
+            except Exception:
+                pass
+        self._ui_live = None
+        self._ui_live_attiva_per_group = None
+        # Ridisegna la schermata Assistente Gara (registrato in
+        # _schermata_timetable_monitor)
+        cb = getattr(self, "_on_chiudi_lap_callback", None)
+        if cb is not None:
+            try:
+                # Schedula via after per dare tempo al LapTimer di
+                # finire la sua _pulisci interna
+                self.root.after(50, cb)
+            except Exception as e:
+                print("[ag] errore ridisegno post-LapTimer:", e)
+
+    def _ferma_recorder_myrcm(self):
+        # Chiudi prima la UI live se aperta
+        ui = getattr(self, "_ui_live", None)
+        if ui is not None:
+            try:
+                ui.chiudi()
+            except Exception:
+                pass
+        self._ui_live = None
+        self._ui_live_attiva_per_group = None
+        rec = getattr(self, "_recorder", None)
+        if rec is not None:
+            try:
+                rec.stop()
+            except Exception:
+                pass
+        self._recorder = None
+
+    def stato_recorder(self):
+        """Snapshot stato recorder per UI (None se non attivo)."""
+        rec = getattr(self, "_recorder", None)
+        if rec is None:
+            return None
+        try:
+            return rec.stato()
+        except Exception:
+            return None
         self.clock_offset = timedelta(0)
         # Cancella file di stato cosi' al prossimo avvio l'utente
         # ricomincia con la scelta evento.
@@ -1887,6 +2102,17 @@ class AssistenteGara:
         if monitor is None or not monitor.attivo:
             self._schermata_iniziale()
             return
+        # Registra callback per ridisegnare questa schermata quando
+        # il LapTimer MyRCM si chiude (altrimenti restano widget
+        # distrutti = schermo nero) + il vista_frame dove il
+        # LapTimer deve essere embedded (NON il toplevel, altrimenti
+        # distrugge anche il resto di TrackMind).
+        try:
+            monitor._on_chiudi_lap_callback = (
+                self._schermata_timetable_monitor)
+            monitor._vista_frame = self.root
+        except Exception:
+            pass
         evento = monitor.evento or {}
         categoria = monitor.categoria or {}
         cat_nome = categoria.get("nome", "?")
@@ -1921,6 +2147,15 @@ class AssistenteGara:
                   bg=c["pulsanti_sfondo"], fg=c["cerca_testo"],
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._apri_editor_checklist).pack(
+            side="left", padx=(6, 0))
+        # Bottone VEDI LIVE: apre la UI griglia colonne MyRCM live
+        # a richiesta. Utile quando la sessione e' ancora in
+        # rsPrepared (in attesa del via) oppure per ri-aprirla dopo
+        # averla chiusa con ESC.
+        tk.Button(h, text="VEDI LIVE", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._apri_ui_live_manuale).pack(
             side="left", padx=(6, 0))
         tk.Label(h, text="  TIME TABLE - " + cat_nome[:30],
                  bg=c["sfondo"], fg=c["dati"],
@@ -2451,6 +2686,36 @@ Edita questa lista col bottone CHECKLIST nell'header.
             return txt if txt.strip() else self._CHECKLIST_DEFAULT
         except Exception:
             return self._CHECKLIST_DEFAULT
+
+    def _apri_ui_live_manuale(self):
+        """Bottone VEDI LIVE: apre il LapTimer in modalita' MyRCM
+        live a richiesta. Funziona in qualunque stato (anche
+        rsPrepared = in attesa del via). Riusa il recorder gia'
+        attivo del monitor + il LapTimer come UI."""
+        monitor = AssistenteGaraMonitor.get(self.root)
+        if monitor is None:
+            self._set_status("Monitor non attivo", "errore")
+            return
+        rec = getattr(monitor, "_recorder", None)
+        if rec is None:
+            self._set_status(
+                "Recorder MyRCM non attivo. "
+                "Torna al menu e ri-seleziona evento+categoria.",
+                "errore")
+            return
+        # Se gia' aperto un LapTimer MyRCM, niente da fare
+        if monitor._ui_live is not None:
+            self._set_status("LapTimer MyRCM gia' aperto", "ok")
+            return
+        # Delega al monitor che usa LapTimer (vedi
+        # AssistenteGaraMonitor._apri_ui_live_pilota)
+        try:
+            group = (rec.metadata_live().get("GROUP", "") or "manuale")
+            monitor._apri_ui_live_pilota(group)
+            self._set_status("LapTimer MyRCM aperto", "ok")
+        except Exception as e:
+            self._set_status("Errore apertura LapTimer: %s" % e,
+                              "errore")
 
     def _apri_editor_checklist(self):
         """Apre il PromptEditor (notepad retro) sul file

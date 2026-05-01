@@ -1144,6 +1144,143 @@ class LapTimer:
         # fitti in rapida successione.
         self._live_aggiorna_prev_passo_debounced()
 
+    # =================================================================
+    #  Modalita' MyRCM Live
+    # =================================================================
+    # Riusa la stessa schermata _schermata_crono_live (griglia colonne
+    # multi-pilota gia' fatta per LapMonitor BLE) ma alimentata dai
+    # dati che arrivano via WebSocket MyRCM. Niente nuova UI: solo un
+    # adapter EVENT MyRCM -> chiamate _live_on_lap.
+    #
+    # Diff incrementale: il messaggio MyRCM contiene LAPS (totale
+    # giri completati) + LAPTIME (ultimo tempo). Tracciamo per pilota
+    # `_myrcm_prev_laps[pilot_num]` e a ogni EVENT, se LAPS > prev,
+    # generiamo (LAPS - prev) chiamate _live_on_lap. Per i giri "in
+    # mezzo" persi (caso raro: connessione laggata) usiamo come tempo
+    # il LAPTIME corrente come placeholder, cosi' la lista resta
+    # contigua e classifica/best/passo restano coerenti.
+    def attiva_myrcm_live(self, recorder):
+        """Attiva la modalita' MyRCM. `recorder` = MyRcmLiveRecorder
+        gia' connesso. Si abbona ai suoi event_listeners e converte
+        EVENT MyRCM in chiamate _live_on_lap per riusare 100% della
+        pipeline LapMonitor (colonne, classifica live, passo gara,
+        previsione arrivo, ecc.).
+
+        A differenza di LapMonitor BLE (dove le colonne nascono al
+        primo passaggio del trasponder), in MyRCM abbiamo gia' la
+        lista completa dei piloti dal primo EVENT WebSocket: quindi
+        creiamo SUBITO le colonne anche se la sessione e' in
+        rsPrepared (in attesa del via). Cosi' l'utente vede tutti
+        i partenti gia' incolonnati, in attesa che parta la gara
+        e si popolino i tempi."""
+        self._myrcm_recorder = recorder
+        self._myrcm_prev_laps = {}  # pilot_num -> n_giri_visti
+        # Forza modalita' LIVE riusando la setup gia' esistente
+        self._live_attiva_modo()
+        # Pre-popola mapping piloti + crea colonne dai dati gia'
+        # ricevuti dal recorder (lista partenti completa)
+        try:
+            for p in (recorder.piloti_live() or []):
+                self._myrcm_garantisci_colonna(p)
+        except Exception as e:
+            print("[laptimer] errore creazione colonne myrcm:", e)
+        # Abbonati al recorder
+        try:
+            recorder.add_event_listener(self._myrcm_on_event)
+        except Exception as e:
+            print("[laptimer] errore abbonamento myrcm:", e)
+        # Banner LIVE
+        try:
+            if self._live_banner is not None:
+                self._live_banner.config(
+                    text="MyRCM LIVE: in ascolto (%d piloti)"
+                         % len(self._live_pilots),
+                    fg=self.colori.get("stato_ok", "#39ff14"))
+        except Exception:
+            pass
+
+    def _myrcm_garantisci_colonna(self, p):
+        """Garantisce che esista una colonna per il pilota MyRCM `p`
+        (dict EVENT). Se manca la crea con stato vuoto. Idempotente."""
+        pn = self._myrcm_pilot_num(p)
+        if pn is None:
+            return
+        nome = (p.get("PILOT", "") or "").strip()
+        if nome:
+            self._live_mapping[pn] = nome
+        if pn not in self._live_pilots:
+            self._live_pilots[pn] = {
+                "laps": [], "best": None, "total": 0.0,
+            }
+            try:
+                self._live_crea_colonna(pn)
+            except Exception as e:
+                print("[laptimer] errore _live_crea_colonna:", e)
+
+    def disattiva_myrcm_live(self):
+        rec = getattr(self, "_myrcm_recorder", None)
+        if rec is not None:
+            try:
+                rec.remove_event_listener(self._myrcm_on_event)
+            except Exception:
+                pass
+        self._myrcm_recorder = None
+
+    @staticmethod
+    def _myrcm_pilot_num(p):
+        """Converti il PILOTNUMBER MyRCM (stringa o intero) a int.
+        Ritorna None se non parsabile. Usato come chiave di
+        `_live_pilots` (l'API LapMonitor usa pilot_num int)."""
+        try:
+            v = p.get("PILOTNUMBER", "") if isinstance(p, dict) else ""
+            return int(str(v).strip())
+        except (ValueError, TypeError):
+            return None
+
+    def _myrcm_on_event(self, metadata, data):
+        """Callback chiamato a ogni EVENT MyRCM. Diffa LAPS per
+        pilota e genera chiamate _live_on_lap per i nuovi giri."""
+        try:
+            if not hasattr(self, "_live_grid_frame"):
+                return
+            if not self._live_grid_frame.winfo_exists():
+                return
+        except (tk.TclError, Exception):
+            return
+        for p in (data or []):
+            pn = self._myrcm_pilot_num(p)
+            if pn is None:
+                continue
+            # Garantisci colonna anche per piloti nuovi che appaiono
+            # solo a sessione gia' iniziata (raro ma succede).
+            self._myrcm_garantisci_colonna(p)
+            try:
+                laps_now = int(p.get("LAPS", 0) or 0)
+            except (ValueError, TypeError):
+                continue
+            laps_prev = self._myrcm_prev_laps.get(pn, 0)
+            if laps_now <= laps_prev:
+                continue
+            # Tempo del giro appena completato (ultimo lap)
+            try:
+                lt = float(p.get("LAPTIME", 0) or 0)
+            except (ValueError, TypeError):
+                lt = 0.0
+            if lt <= 0:
+                # Niente tempo utile: aspetta prossimo update
+                continue
+            # Genera chiamate _live_on_lap per ogni giro nuovo. Se
+            # ne mancano piu' di uno, replichiamo il LAPTIME (caso
+            # raro di update perso).
+            n_nuovi = laps_now - laps_prev
+            for _ in range(n_nuovi):
+                try:
+                    self._live_on_lap(pn, 0, lt, None, "myrcm")
+                except Exception as e:
+                    print("[laptimer] errore _live_on_lap myrcm:", e)
+                    break
+            self._myrcm_prev_laps[pn] = laps_now
+
     # Larghezza fissa colonna pilota in px (abbastanza per 10 char
     # monospace a 12pt circa). Cosi' con 1 pilota la colonna resta
     # piccola a sinistra senza stretchare a tutto schermo.
@@ -1504,6 +1641,12 @@ class LapTimer:
     #  LOGICA TIMER
     # -----------------------------------------------------------------
     def _on_spazio(self, event=None):
+        # In modalita' MyRCM SPAZIO e' completamente disabilitato:
+        # il cronometro e' guidato dal server MyRCM (RACESTATE), non
+        # dall'utente. Premere SPAZIO non deve avviare ne' segnare
+        # giri.
+        if getattr(self, "_myrcm_recorder", None) is not None:
+            return "break"
         if self.stato == self.ATTESA:
             self._avvia()
         elif self.stato == self.RUNNING:

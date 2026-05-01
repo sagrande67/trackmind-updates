@@ -1130,23 +1130,37 @@ class Crono:
                     # compilato pista+data.
                     self._btn_speedhive_live.pack(
                         side="left", padx=4, before=self._btn_crono_man)
-                    # Disabilita takefocus su CRONOMETRO cosi' TAB
-                    # dall'ultimo campo del form salta CRONOMETRO e va
-                    # direttamente a RICERCA (tk_focusNext() rispetta
-                    # takefocus=0 e salta il widget). CRONOMETRO resta
-                    # cliccabile col mouse.
+                    # Catena TAB esplicita: ultimo campo form -> RICERCA
+                    # -> CRONOMETRO -> primo campo. Cosi' entrambi i
+                    # bottoni sono raggiungibili da tastiera (prima
+                    # disabilitavamo takefocus su CRONOMETRO per andare
+                    # dritti a RICERCA, ma cosi' CRONOMETRO non era piu'
+                    # raggiungibile col TAB).
                     try:
-                        self._btn_crono_man.config(takefocus=0)
+                        self._btn_crono_man.config(takefocus=1)
+                        self._btn_speedhive_live.config(takefocus=1)
+                        # TAB da RICERCA -> CRONOMETRO
+                        self._btn_speedhive_live.bind(
+                            "<Tab>",
+                            lambda e: (self._btn_crono_man.focus_set(),
+                                        "break")[-1])
+                        # Shift-Tab da CRONOMETRO -> RICERCA
+                        self._btn_crono_man.bind(
+                            "<Shift-Tab>",
+                            lambda e: (self._btn_speedhive_live.focus_set(),
+                                        "break")[-1])
+                        self._btn_crono_man.bind(
+                            "<ISO_Left_Tab>",
+                            lambda e: (self._btn_speedhive_live.focus_set(),
+                                        "break")[-1])
                     except Exception:
                         pass
                     self._speedhive_live_visible = True
                 elif not should_show and self._speedhive_live_visible:
                     self._btn_speedhive_live.pack_forget()
-                    # Ripristina takefocus su CRONOMETRO: adesso il
-                    # TAB dai campi deve tornare a lui come default
-                    # (RICERCA non e' piu' disponibile).
                     try:
-                        self._btn_crono_man.config(takefocus=1)
+                        self._btn_crono_man.unbind("<Shift-Tab>")
+                        self._btn_crono_man.unbind("<ISO_Left_Tab>")
                     except Exception:
                         pass
                     self._speedhive_live_visible = False
