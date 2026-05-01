@@ -2025,9 +2025,11 @@ class RetroDBApp:
             _bb.append(_mkb(btn_grid, "PROMPT", self._apri_prompt_editor,
                             fg=c["cerca_testo"]))
 
-        # Bottone ASSISTENTE GARA (monitor evento MyRCM live)
+        # Bottone ASSISTENTE GARA (monitor evento MyRCM live).
+        # Etichetta accorciata a "ASSIST." (7 char) per non andare
+        # a capo come gli altri bottoni del menu.
         if _HAS_ASSISTENTE:
-            _bb.append(_mkb(btn_grid, "ASSIST.\nGARA",
+            _bb.append(_mkb(btn_grid, "ASSIST.",
                             self._lancia_assistente_gara,
                             fg=c["stato_avviso"]))
 
