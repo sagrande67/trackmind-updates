@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Sfondo nero retro terminale, angoli leggermente arrotondati -->
+  <rect x="0" y="0" width="256" height="256" rx="36" ry="36" fill="#0a0a0a"/>
+
+  <!-- Cornice verde scuro interna stile WarGames -->
+  <rect x="14" y="14" width="228" height="228" rx="26" ry="26"
+        fill="none" stroke="#1a3a1a" stroke-width="3"/>
+
+  <!-- Anello racing verde neon esterno -->
+  <circle cx="128" cy="128" r="96" fill="none"
+          stroke="#39ff14" stroke-width="5" opacity="0.85"/>
+
+  <!-- Anello interno tratteggiato -->
+  <circle cx="128" cy="128" r="84" fill="none"
+          stroke="#39ff14" stroke-width="2"
+          stroke-dasharray="4 6" opacity="0.6"/>
+
+  <!-- Lettere TM grandi al centro -->
+  <text x="128" y="158"
+        font-family="Consolas, 'Courier New', monospace"
+        font-size="110" font-weight="900"
+        text-anchor="middle"
+        fill="#39ff14"
+        style="letter-spacing:-6px">TM</text>
+
+  <!-- Tick di pista (4 marker ai 4 quarti del cerchio) -->
+  <line x1="128" y1="22" x2="128" y2="38" stroke="#39ff14" stroke-width="4"/>
+  <line x1="128" y1="218" x2="128" y2="234" stroke="#39ff14" stroke-width="4"/>
+  <line x1="22" y1="128" x2="38" y2="128" stroke="#39ff14" stroke-width="4"/>
+  <line x1="218" y1="128" x2="234" y2="128" stroke="#39ff14" stroke-width="4"/>
+</svg>

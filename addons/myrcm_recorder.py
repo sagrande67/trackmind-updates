@@ -40,8 +40,9 @@ except Exception:
 
 
 # Secondi da aspettare dopo "rsFinished" prima di tentare il download
-# del report HTML (MyRCM impiega tipicamente 30-60s a pubblicarlo).
-_DELAY_DOWNLOAD = 60
+# del report HTML. MyRCM tipicamente pubblica il report entro 5-15s
+# dalla bandiera a scacchi.
+_DELAY_DOWNLOAD = 15
 
 
 class MyRcmLiveRecorder(object):
@@ -231,23 +232,18 @@ class MyRcmLiveRecorder(object):
         """Esegue il download del report. Salva file in scouting_dir."""
         with self._dl_lock:
             if not _HAS_MYRCM:
+                print("[recorder] MyRCM module non disponibile")
                 return
             ev_nome = snapshot.get("event_nome", "")
             group = snapshot.get("group", "")
             try:
-                self._notify_status(
-                    "Scarico report MyRCM per: %s..." % group[:60])
-                # data_str = oggi (le sessioni live sono di oggi)
                 from datetime import datetime as _dt
                 data_str = _dt.now().strftime("%d/%m/%Y")
-                # Filtro categoria: se categoria specificata, passa
-                # come pilota_filtro=None ma confidiamo che il nostro
-                # group identifichi la sezione (gestione interna a
-                # import_evento_completo)
-                # NB: import_evento_completo scarica TUTTE le
-                # categorie dell'evento, ma deduplica per
-                # (pilota+evento+session). Quindi se chiamato piu'
-                # volte non duplica file.
+                print("[recorder] DOWNLOAD START: ev=%r data=%s "
+                      "group=%r" % (ev_nome[:50], data_str,
+                                     group[:60]))
+                self._notify_status(
+                    "Scarico report MyRCM per: %s..." % group[:60])
                 saved, ev_nome_ret = import_evento_completo(
                     nome_pista=ev_nome or "MyRCM",
                     data_str=data_str,
@@ -256,6 +252,8 @@ class MyRcmLiveRecorder(object):
                     setup_snapshot=None)
                 n = len(saved or [])
                 self._sessioni_salvate.append((group, time.time(), n))
+                print("[recorder] DOWNLOAD END: %d file salvati per "
+                      "group=%r" % (n, group[:60]))
                 self._notify_status(
                     "Salvati %d file scouting per %s" % (n, group[:60]))
                 if self._cb_saved is not None:

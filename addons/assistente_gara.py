@@ -610,11 +610,27 @@ class AssistenteGaraMonitor:
         (rsFinished), la chiude.
 
         Idempotente: non riapre se gia' aperta per la stessa manche.
-        Una sola UI live alla volta per processo."""
+        Una sola UI live alla volta per processo. RISPETTA la
+        chiusura manuale: se l'utente ha premuto ESC sul LapTimer
+        per uscire, NON riapre per lo stesso GROUP fino a quando il
+        GROUP non cambia (= passa a una manche diversa)."""
         try:
             state = (meta or {}).get("RACESTATE", "")
             group = (meta or {}).get("GROUP", "") or ""
             if not group:
+                return
+            # Track del group corrente per rilevare cambi: se cambia,
+            # svuota la blacklist "chiusi manualmente" cosi' alla
+            # prossima manche pilota apriamo di nuovo automaticamente.
+            ultimo_group = getattr(self, "_ui_live_ultimo_group", None)
+            if ultimo_group is not None and ultimo_group != group:
+                self._ui_live_chiusi_manualmente = set()
+            self._ui_live_ultimo_group = group
+            # Skip se l'utente ha chiuso manualmente la UI per
+            # questo group (non vogliamo riaprirla loop infinito)
+            chiusi = getattr(self, "_ui_live_chiusi_manualmente",
+                             set())
+            if group in chiusi:
                 return
             # Apertura: stato RUNNING + non gia' aperta per questo group
             running = state in ("rsStarted", "rsRunning")
@@ -674,18 +690,31 @@ class AssistenteGaraMonitor:
         except Exception:
             dati_dir = ""
         cat_nome = (self.categoria or {}).get("nome", "")
-        # Usa il vista_frame di Assistente Gara come parent (NON il
-        # toplevel: cosi' LapTimer fa _pulisci solo dentro il vista
-        # senza distruggere TrackMind sotto).
-        parent_frame = (getattr(self, "_vista_frame", None)
-                         or self.root)
+        # Crea un Frame OVERLAY come parent del LapTimer: copre la
+        # schermata corrente (countdown AssistenteGara o menu) ma
+        # senza distruggerla. Al close del LapTimer distruggo solo
+        # l'overlay e la schermata sotto torna visibile da sola
+        # (niente schermo nero).
+        parent_real = (getattr(self, "_vista_frame", None)
+                        or self.root)
+        try:
+            import tkinter as _tk
+            self._ui_live_overlay = _tk.Frame(parent_real,
+                                               bg="#0a0a0a")
+            self._ui_live_overlay.place(relx=0, rely=0,
+                                         relwidth=1, relheight=1)
+            self._ui_live_overlay.lift()
+        except Exception as e:
+            print("[ag] errore creazione overlay LapTimer:", e)
+            self._ui_live_overlay = None
+            return
         try:
             lt = LapTimer(
                 setup="MyRCM Live - %s" % cat_nome[:30],
                 pilota=self.nome_pilota or "Live",
                 pista=(self.evento or {}).get("nome", ""),
                 dati_dir=dati_dir,
-                parent=parent_frame,
+                parent=self._ui_live_overlay,
                 on_close=self._on_ui_live_chiusa)
             # Attiva modalita' MyRCM dopo che la UI e' stata creata
             self.root.after(50, lambda: lt.attiva_myrcm_live(
@@ -698,6 +727,10 @@ class AssistenteGaraMonitor:
             self._ui_live = None
 
     def _chiudi_ui_live(self):
+        """Chiusura automatica del LapTimer MyRCM al termine
+        sessione (rsFinished). Chiama _chiudi() del LapTimer che a
+        sua volta invoca _on_close (= _on_ui_live_chiusa) che
+        ridisegna la schermata Assistente Gara."""
         ui = self._ui_live
         if ui is not None:
             try:
@@ -705,20 +738,24 @@ class AssistenteGaraMonitor:
                     ui.disattiva_myrcm_live()
             except Exception:
                 pass
+            # Chiama _chiudi() del LapTimer per chiusura effettiva +
+            # ridisegno schermata Assistente Gara via on_close.
             try:
-                # LapTimer chiude via ESC / on_close (auto)
-                if hasattr(ui, "_on_close") and ui._on_close:
-                    pass  # gia' gestito
-            except Exception:
-                pass
+                if hasattr(ui, "_chiudi"):
+                    ui._chiudi()
+            except Exception as e:
+                print("[ag] errore chiusura auto LapTimer:", e)
         self._ui_live = None
         self._ui_live_attiva_per_group = None
 
     def _on_ui_live_chiusa(self):
-        """Callback quando il LapTimer si chiude (ESC). Resetta lo
-        stato cosi' al prossimo cambio di sessione lo riapriamo +
-        ridisegna la schermata countdown dell'Assistente Gara
-        (altrimenti restano widget distrutti = schermo nero)."""
+        """Callback quando il LapTimer si chiude (ESC o auto a fine
+        sessione). Distrugge solo l'overlay che conteneva il
+        LapTimer: la schermata sotto (countdown Assistente Gara o
+        menu retrodb) torna visibile da sola.
+        Aggiunge il group corrente alla blacklist "chiusi
+        manualmente" per evitare che _auto_apri_ui_live lo
+        riapra subito al prossimo EVENT (loop infinito)."""
         ui = self._ui_live
         if ui is not None:
             try:
@@ -726,18 +763,32 @@ class AssistenteGaraMonitor:
                     ui.disattiva_myrcm_live()
             except Exception:
                 pass
+        # Memorizza che l'utente ha chiuso questo group (no auto-
+        # riapertura finche' GROUP non cambia)
+        try:
+            grp_chiuso = self._ui_live_attiva_per_group
+            if grp_chiuso:
+                if not hasattr(self, "_ui_live_chiusi_manualmente"):
+                    self._ui_live_chiusi_manualmente = set()
+                self._ui_live_chiusi_manualmente.add(grp_chiuso)
+        except Exception:
+            pass
         self._ui_live = None
         self._ui_live_attiva_per_group = None
-        # Ridisegna la schermata Assistente Gara (registrato in
-        # _schermata_timetable_monitor)
-        cb = getattr(self, "_on_chiudi_lap_callback", None)
-        if cb is not None:
+        # Distruggi l'overlay che conteneva il LapTimer.
+        # La schermata sotto (countdown / menu) era nascosta dietro
+        # ma non distrutta: torna visibile da sola.
+        ov = getattr(self, "_ui_live_overlay", None)
+        if ov is not None:
             try:
-                # Schedula via after per dare tempo al LapTimer di
-                # finire la sua _pulisci interna
-                self.root.after(50, cb)
-            except Exception as e:
-                print("[ag] errore ridisegno post-LapTimer:", e)
+                ov.place_forget()
+            except Exception:
+                pass
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+        self._ui_live_overlay = None
 
     def _ferma_recorder_myrcm(self):
         # Chiudi prima la UI live se aperta

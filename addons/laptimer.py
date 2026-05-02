@@ -319,11 +319,115 @@ class LapTimer:
         _proteggi_finestra(self.root)
 
     def _chiudi(self):
+        # Modalita' MyRCM: salva i tempi accumulati dal WebSocket
+        # PRIMA di chiudere. Usa lo stesso salvataggio di
+        # LapMonitor BLE ma con tipo='myrcm' cosi' compaiono in
+        # TUTTI I TEMPI col tag rosso MR.
+        if getattr(self, "_myrcm_recorder", None) is not None:
+            try:
+                self._myrcm_salva_tempi_live()
+            except Exception as e:
+                print("[laptimer] errore salvataggio MyRCM live:", e)
         if self._on_close:
             self._pulisci()
             self._on_close()
         else:
             self.root.destroy()
+
+    def _myrcm_salva_tempi_live(self):
+        """Salva i tempi accumulati nel LapTimer in modalita' MyRCM
+        come file scouting `lap_myrcm_live_*.json`. Stessa logica di
+        _live_stop_e_salva ma con tipo='myrcm' e dati estratti dal
+        recorder MyRCM. Idempotente: se non ci sono tempi non fa
+        nulla. Flag _myrcm_salvati evita doppio salvataggio quando
+        chiamato da _on_stop seguito da _chiudi."""
+        if getattr(self, "_myrcm_salvati", False):
+            return
+        if not self._live_pilots:
+            print("[laptimer MyRCM] nessun tempo da salvare")
+            self._myrcm_salvati = True
+            return
+        scouting_dir = ""
+        if self.dati_dir:
+            parent = os.path.dirname(self.dati_dir.rstrip("/\\"))
+            scouting_dir = os.path.join(parent, "scouting")
+            try:
+                os.makedirs(scouting_dir, exist_ok=True)
+            except Exception:
+                scouting_dir = ""
+        if not scouting_dir:
+            return
+        # Recupera metadata MyRCM (evento, gruppo, sessione) dal
+        # recorder per arricchire i file
+        recorder = self._myrcm_recorder
+        meta = {}
+        try:
+            meta = recorder.metadata_live() or {}
+        except Exception:
+            pass
+        ev_nome = meta.get("NAME", "MyRCM Live")
+        group = meta.get("GROUP", "")
+        section = meta.get("SECTIONNAME", "")
+
+        now = datetime.now()
+        data_str = now.strftime("%d/%m/%Y")
+        ora_str = now.strftime("%H:%M:%S")
+        ts_file = now.strftime("%Y%m%d_%H%M%S")
+
+        salvati = 0
+        for pnum, d in self._live_pilots.items():
+            validi = [l for l in d["laps"]
+                      if l.get("stato") == "valido"
+                      and l.get("tempo", 0) > 0]
+            if not validi:
+                continue
+            tempi = [l["tempo"] for l in validi]
+            nome_raw = self._live_mapping.get(pnum)
+            nome_out = nome_raw if nome_raw else "Pilota %d" % pnum
+
+            giri_out = []
+            cumul = 0.0
+            for i, l in enumerate(validi, start=1):
+                cumul += l["tempo"]
+                giri_out.append({
+                    "giro": i, "tempo": l["tempo"],
+                    "cumulativo": round(cumul, 3),
+                    "stato": "valido",
+                })
+
+            sess = {
+                "tipo": "myrcm",
+                "versione": __version__,
+                "setup": "MyRCM Live - %s" % (ev_nome[:50]),
+                "pista": ev_nome,
+                "pilota": nome_out,
+                "transponder": str(pnum),
+                "data": data_str,
+                "ora": ora_str,
+                "serbatoio_cc": 0,
+                "tempo_totale": round(sum(tempi), 3),
+                "num_giri": len(validi),
+                "miglior_tempo": round(min(tempi), 3),
+                "media": round(sum(tempi) / len(tempi), 3),
+                "sessione_carburante": False,
+                "giri": giri_out,
+                "myrcm_event": "live",
+                "myrcm_session": pnum,
+                "myrcm_sessione_nome": group,
+                "myrcm_section": section,
+            }
+            fname = "lap_myrcm_live_%s_%d.json" % (ts_file, pnum)
+            try:
+                with open(os.path.join(scouting_dir, fname),
+                          "w", encoding="utf-8") as f:
+                    json.dump(sess, f, ensure_ascii=False, indent=2)
+                salvati += 1
+            except Exception as e:
+                print("[laptimer MyRCM] errore salvataggio %s: %s"
+                      % (fname, e))
+        print("[laptimer MyRCM] salvati %d file scouting in %s"
+              % (salvati, scouting_dir))
+        self._myrcm_salvati = True
 
     def _init_fonts(self):
         self._f_timer  = tkfont.Font(family=FONT_MONO, size=72, weight="bold")
@@ -1237,9 +1341,75 @@ class LapTimer:
         except (ValueError, TypeError):
             return None
 
+    def _myrcm_aggiorna_cronometro(self, metadata):
+        """Sincronizza display tempo col server MyRCM (solo
+        modalita' MyRCM live). In modalita' LIVE i widget mono-pilota
+        (_lbl_totale, _lbl_passo) sono stati distrutti da
+        _live_attiva_modo, quindi aggiorniamo:
+          - _lbl_timer (timer piccolo in alto, sopravvive in LIVE)
+            con CURRENTTIME -> tempo trascorso reale
+          - _live_banner (label header BLE-style, sopravvive in LIVE)
+            con "STATO | Restante: X" -> info gara
+        Fallback su _lbl_totale/_lbl_passo se ancora vivi (caso non
+        LIVE, ma in MyRCM siamo sempre LIVE)."""
+        c = self.colori
+        cur = (metadata.get("CURRENTTIME") or "0:00:00")
+        rem = (metadata.get("REMAININGTIME") or "0:00:00")
+        state = (metadata.get("RACESTATE") or "")
+        state_label = {
+            "rsPrepared": "PREPARATA",
+            "rsStarted": "IN CORSO",
+            "rsRunning": "IN CORSO",
+            "rsFinished": "FINITA",
+            "rsClosed": "CHIUSA",
+            "rsPaused": "PAUSA",
+        }.get(state, state or "--")
+        col_tempo = c.get("stato_ok", "#39ff14")
+        if state in ("rsPrepared", "rsPaused"):
+            col_tempo = c.get("stato_avviso", "#ffaa00")
+        elif state in ("rsFinished", "rsClosed"):
+            col_tempo = c.get("testo_dim", "#3aff3a")
+
+        # Aggiorna _lbl_timer (sopravvive in LIVE) col TEMPO
+        # RESTANTE (REMAININGTIME) come sul sito MyRCM. I piloti
+        # vogliono vedere quanto manca alla bandiera a scacchi,
+        # non quanto tempo e' passato.
+        try:
+            lbl_tmr = getattr(self, "_lbl_timer", None)
+            if lbl_tmr is not None and lbl_tmr.winfo_exists():
+                lbl_tmr.config(text=str(rem), fg=col_tempo)
+        except (tk.TclError, Exception):
+            pass
+
+        # Aggiorna _live_banner: stato + trascorso (info
+        # complementare al countdown principale).
+        try:
+            lbl_b = getattr(self, "_live_banner", None)
+            if lbl_b is not None and lbl_b.winfo_exists():
+                lbl_b.config(
+                    text="MyRCM: %s  |  Trascorso: %s"
+                         % (state_label, cur),
+                    fg=col_tempo)
+        except (tk.TclError, Exception):
+            pass
+
+        # Fallback _lbl_totale (caso non-LIVE, raro per MyRCM)
+        try:
+            lbl_t = getattr(self, "_lbl_totale", None)
+            if lbl_t is not None and lbl_t.winfo_exists():
+                lbl_t.config(text=str(rem), fg=col_tempo)
+        except (tk.TclError, Exception):
+            pass
+
     def _myrcm_on_event(self, metadata, data):
         """Callback chiamato a ogni EVENT MyRCM. Diffa LAPS per
-        pilota e genera chiamate _live_on_lap per i nuovi giri."""
+        pilota e genera chiamate _live_on_lap per i nuovi giri.
+        Aggiorna anche il cronometro centrale con il tempo
+        sincronizzato dal server MyRCM (CURRENTTIME/REMAININGTIME)
+        cosi' l'utente vede il vero stato gara, non un cronometro
+        scollegato. Il fix vale SOLO per modalita' MyRCM (controllo
+        _myrcm_recorder presente): MANUALE e LapMonitor BLE
+        continuano a usare il loro timer interno."""
         try:
             if not hasattr(self, "_live_grid_frame"):
                 return
@@ -1247,6 +1417,13 @@ class LapTimer:
                 return
         except (tk.TclError, Exception):
             return
+
+        # Sincronizza cronometro centrale col tempo gara MyRCM (solo
+        # in modalita' MyRCM). Mostra CURRENTTIME (tempo trascorso)
+        # nella label _lbl_totale + colore in base allo stato gara.
+        if getattr(self, "_myrcm_recorder", None) is not None:
+            self._myrcm_aggiorna_cronometro(metadata or {})
+
         for p in (data or []):
             pn = self._myrcm_pilot_num(p)
             if pn is None:
@@ -1666,11 +1843,24 @@ class LapTimer:
         self.t_start = time.perf_counter()
         self.t_ultimo_giro = self.t_start
         c = self.colori
-        self._lbl_status.config(text="SPAZIO = Giro  |  S = Stampa  |  ESC = Stop e Salva", fg=c["stato_ok"])
+        try:
+            self._lbl_status.config(text="SPAZIO = Giro  |  S = Stampa  |  ESC = Stop e Salva", fg=c["stato_ok"])
+        except Exception:
+            pass
+        # In modalita' MyRCM il display _lbl_timer e' pilotato dal
+        # tempo del server (REMAININGTIME), NON dal timer interno
+        # perf_counter. Skip _aggiorna_timer per non sovrascrivere
+        # il countdown MyRCM con un cronometro crescente.
+        if getattr(self, "_myrcm_recorder", None) is not None:
+            return
         self._aggiorna_timer()
 
     def _aggiorna_timer(self):
         if self.stato != self.RUNNING:
+            return
+        # In modalita' MyRCM il timer interno NON deve girare:
+        # _lbl_timer e' pilotato dal REMAININGTIME del server.
+        if getattr(self, "_myrcm_recorder", None) is not None:
             return
         try:
             elapsed = time.perf_counter() - self.t_ultimo_giro
@@ -2114,6 +2304,16 @@ class LapTimer:
     #  STOP E RISULTATI
     # -----------------------------------------------------------------
     def _on_stop(self, event=None):
+        # In modalita' MyRCM ESC = salva tempi accumulati e chiudi
+        # subito (niente analisi intermedia: i tempi arrivano dal
+        # server, non dall'utente, niente da revisionare).
+        if getattr(self, "_myrcm_recorder", None) is not None:
+            try:
+                self._myrcm_salva_tempi_live()
+            except Exception as e:
+                print("[laptimer] errore salva MyRCM:", e)
+            self._chiudi()
+            return
         # In modalita' LIVE ESC fa due step come in manuale:
         # - primo ESC (da RUNNING): ferma BLE, entra in analisi LIVE,
         #   mostra bottoni in fondo (SALVA / ESCI SENZA SALVARE)

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=TrackMind
+GenericName=RC Racing Management
+Comment=Gestione setup, cronometraggi e analisi IA per auto RC
+Exec=/bin/bash "/home/__USER__/Documenti/Trackmind5.4/avvia.sh"
+Path=/home/__USER__/Documenti/Trackmind5.4
+Icon=/home/__USER__/Documenti/Trackmind5.4/loghi/icona_app.svg
+Terminal=false
+Categories=Utility;
+Keywords=RC;racing;setup;cronometraggio;laptimer;speedhive;myrcm;
+StartupNotify=true
