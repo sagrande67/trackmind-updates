@@ -342,20 +342,46 @@ class LapTimer:
         nulla. Flag _myrcm_salvati evita doppio salvataggio quando
         chiamato da _on_stop seguito da _chiudi."""
         if getattr(self, "_myrcm_salvati", False):
+            print("[laptimer MyRCM] gia' salvato (skip)")
             return
+        n_pil = len(self._live_pilots) if self._live_pilots else 0
+        n_pil_con_giri = sum(1 for d in (self._live_pilots or {}).values()
+                              if d.get("laps"))
+        print("[laptimer MyRCM] salva: %d piloti totali, "
+              "%d con giri, dati_dir=%r"
+              % (n_pil, n_pil_con_giri, self.dati_dir))
         if not self._live_pilots:
-            print("[laptimer MyRCM] nessun tempo da salvare")
+            print("[laptimer MyRCM] nessun tempo da salvare "
+                  "(_live_pilots vuoto)")
             self._myrcm_salvati = True
             return
         scouting_dir = ""
         if self.dati_dir:
-            parent = os.path.dirname(self.dati_dir.rstrip("/\\"))
-            scouting_dir = os.path.join(parent, "scouting")
+            # Determina la cartella scouting:
+            # - Se dati_dir e' "dati/" -> dati/scouting
+            # - Se dati_dir e' "dati/id_XXXX/" (modo setup) -> usa
+            #   il parent + /scouting
+            base = self.dati_dir.rstrip("/\\")
+            cand_diretto = os.path.join(base, "scouting")
+            cand_parent = os.path.join(
+                os.path.dirname(base), "scouting")
+            if os.path.basename(base).lower() == "dati":
+                # dati_dir = .../dati -> scouting = .../dati/scouting
+                scouting_dir = cand_diretto
+            elif os.path.isdir(cand_diretto):
+                scouting_dir = cand_diretto
+            elif os.path.isdir(cand_parent):
+                scouting_dir = cand_parent
+            else:
+                # Fallback: dati_dir/scouting
+                scouting_dir = cand_diretto
             try:
                 os.makedirs(scouting_dir, exist_ok=True)
             except Exception:
                 scouting_dir = ""
         if not scouting_dir:
+            print("[laptimer MyRCM] scouting_dir non determinabile, "
+                  "no salvataggio")
             return
         # Recupera metadata MyRCM (evento, gruppo, sessione) dal
         # recorder per arricchire i file
@@ -1066,7 +1092,10 @@ class LapTimer:
                 fg=c["stato_ok"])
 
     # Orizzonti temporali (in minuti) per il pannello "PREVISIONE ARRIVO"
-    _LIVE_HORIZONS = [5, 20, 30, 45]
+    # Orizzonti previsione giri (minuti). Il primo (7) corrisponde
+    # alla durata tipica di prove libere/qualifiche RC; gli altri
+    # alle finali (20/30/45 min).
+    _LIVE_HORIZONS = [7, 20, 30, 45]
 
     def _live_crea_pannelli_laterali(self, top_area):
         """Crea i due pannelli laterali in LIVE:
@@ -1137,19 +1166,87 @@ class LapTimer:
             nome_vis = _live_nome_display(
                 self._live_mapping.get(pid), pid, max_len=6)
             pilot_info.append((pid, nome_vis, media, tempi, sum(tempi)))
-        # Sort per media (piu' veloce prima)
-        pilot_info.sort(key=lambda x: x[2])
+        # Sort: chi fara' PIU' GIRI alla fine della sessione di
+        # riferimento (primo orizzonte, di solito 7m) sta in alto.
+        # A parita' di giri, chi ha cumulato meno tempo (= piu'
+        # veloce di poco) sta sopra. Cosi' il leader virtuale e' in
+        # cima, l'ultimo in fondo.
+        # Tempo trascorso da MyRCM per stima realistica
+        _ct_sec_for_sort = 0
+        rec = getattr(self, "_myrcm_recorder", None)
+        if rec is not None:
+            try:
+                meta = rec.metadata_live() or {}
+                ct = (meta.get("CURRENTTIME") or "0:00:00").strip()
+                parts = ct.split(":")
+                if len(parts) == 3:
+                    _ct_sec_for_sort = (int(parts[0]) * 3600
+                                          + int(parts[1]) * 60
+                                          + int(parts[2]))
+                elif len(parts) == 2:
+                    _ct_sec_for_sort = (int(parts[0]) * 60
+                                          + int(parts[1]))
+            except Exception:
+                pass
+
+        def _key_classifica(p):
+            _pid, _nome, _media, _tempi, _tot = p
+            n_fatti = len(_tempi)
+            if self._LIVE_HORIZONS and _media > 0:
+                mm = self._LIVE_HORIZONS[0]
+                resto = max(0, mm * 60 - _ct_sec_for_sort)
+                giri_rest = int(resto / _media)
+            else:
+                giri_rest = 0
+            giri_tot = n_fatti + giri_rest
+            return (-giri_tot, _tot)
+
+        pilot_info.sort(key=_key_classifica)
+
+        # Tempo trascorso CORRENTE (dal server MyRCM) per la
+        # previsione realistica "giri totali alla fine della
+        # sessione di X minuti, basata su giri gia' fatti + tempo
+        # rimanente / media corrente".
+        currenttime_sec = 0
+        rec = getattr(self, "_myrcm_recorder", None)
+        if rec is not None:
+            try:
+                meta = rec.metadata_live() or {}
+                ct = (meta.get("CURRENTTIME") or "0:00:00").strip()
+                parts = ct.split(":")
+                if len(parts) == 3:
+                    currenttime_sec = (int(parts[0]) * 3600
+                                        + int(parts[1]) * 60
+                                        + int(parts[2]))
+                elif len(parts) == 2:
+                    currenttime_sec = (int(parts[0]) * 60
+                                        + int(parts[1]))
+            except Exception:
+                pass
 
         prev_lines = []
+        # Header dinamico dagli orizzonti correnti
+        cols = ["%dm" % h for h in self._LIVE_HORIZONS]
         header = " %-6s %5s %5s %5s %5s" % (
-            "Pil.", "5m", "20m", "30m", "45m")
+            "Pil.", cols[0], cols[1], cols[2], cols[3])
         prev_lines.append(header)
         prev_lines.append("-" * len(header))
         if not pilot_info:
             prev_lines.append(" (in attesa giri)")
-        for pid, nome, media, _, _ in pilot_info:
-            row = [int((mm * 60) / media) if media > 0 else 0
-                    for mm in self._LIVE_HORIZONS]
+        for pid, nome, media, tempi, _ in pilot_info:
+            n_fatti = len(tempi)
+            row = []
+            for mm in self._LIVE_HORIZONS:
+                # Quanti giri TOTALI alla fine di una sessione di
+                # mm minuti, se l'utente ha gia' fatto n_fatti giri
+                # in currenttime_sec secondi e mantiene la media:
+                #   giri_totali = n_fatti + (mm*60 - now) / media
+                # Se now > mm*60 (sessione gia' finita), niente
+                # giri rimanenti, totale = giri_fatti.
+                resto_sec = max(0, mm * 60 - currenttime_sec)
+                giri_rest = (int(resto_sec / media)
+                             if media > 0 else 0)
+                row.append(n_fatti + giri_rest)
             prev_lines.append(" %-6s %5d %5d %5d %5d" % (
                 nome, row[0], row[1], row[2], row[3]))
 
@@ -1482,10 +1579,19 @@ class LapTimer:
         col.pack_propagate(False)
         col.pack(side="left", fill="y", padx=2, pady=2)
 
-        # Header: nome pilota (grande) + numero trasponder (piccolo)
+        # Header: iniziali grandi (es. "M.G.") + nome completo
+        # piccolo sotto ("Marabella Giuseppe") + numero trasponder.
+        # Cosi' a colpo d'occhio vedi le iniziali, ma se vuoi
+        # leggere il nome completo c'e'.
         tk.Label(col, text=nome_vis, bg=c["sfondo_celle"], fg=colore,
                  font=self._f_best, anchor="center").pack(
             fill="x", padx=2, pady=(3, 0))
+        if nome_raw:
+            nome_full = nome_raw[:22]  # tronca se troppo lungo
+            tk.Label(col, text=nome_full,
+                     bg=c["sfondo_celle"], fg=c["testo_dim"],
+                     font=(FONT_MONO, 7),
+                     anchor="center").pack(fill="x", padx=2)
         tk.Label(col, text="#%d" % pilot_num,
                  bg=c["sfondo_celle"], fg=c["testo_dim"],
                  font=self._f_status).pack()
@@ -2180,10 +2286,11 @@ class LapTimer:
                            font=(FONT_MONO, 8), anchor="center")
         canvas.create_line(10, 36, w - 10, 36, fill=c["linee"], dash=(2, 2))
 
-        # Proiezioni per 5, 20, 30, 45 minuti
+        # Proiezioni per 7, 20, 30, 45 minuti (7 = prove libere/
+        # qualifiche RC tipiche, 20-30-45 = finali).
         # Il pilota che passa il traguardo appena prima dello scadere
         # completa un giro in piu, percio +1 al conteggio base
-        durate = [5, 20, 30, 45]
+        durate = [7, 20, 30, 45]
         y_start = 46
         row_h = (h - y_start - 6) // len(durate)
 
@@ -2307,11 +2414,20 @@ class LapTimer:
         # In modalita' MyRCM ESC = salva tempi accumulati e chiudi
         # subito (niente analisi intermedia: i tempi arrivano dal
         # server, non dall'utente, niente da revisionare).
-        if getattr(self, "_myrcm_recorder", None) is not None:
+        rec = getattr(self, "_myrcm_recorder", None)
+        n_pil = len(self._live_pilots) if hasattr(self, "_live_pilots") else 0
+        print("[laptimer ESC] _myrcm_recorder=%r  n_piloti=%d  "
+              "_live_mode=%r  stato=%r"
+              % (rec is not None, n_pil,
+                 getattr(self, "_live_mode", False), self.stato))
+        if rec is not None:
+            print("[laptimer ESC] chiamo _myrcm_salva_tempi_live...")
             try:
                 self._myrcm_salva_tempi_live()
             except Exception as e:
                 print("[laptimer] errore salva MyRCM:", e)
+                import traceback as _tb
+                _tb.print_exc()
             self._chiudi()
             return
         # In modalita' LIVE ESC fa due step come in manuale:

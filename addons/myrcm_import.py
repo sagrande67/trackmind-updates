@@ -1325,6 +1325,34 @@ def _norm_fase_mr(s):
     return None
 
 
+def parse_group_live(group_str):
+    """Parse del GROUP MyRCM live (METADATA.GROUP del WebSocket).
+    Esempio: 'GT8_SPORT :: Prove :: Batteria 2 - Manche 1'
+    Ritorna (categoria_tag, fase, manche) tutti come stringhe.
+
+    Le tre parti:
+      - categoria_tag: tag corto categoria (es. "GT8_SPORT")
+      - fase: tipo turno (es. "Prove", "Qualif", "Finale")
+      - manche: numero/lettera (es. "1", "2", "A")
+    """
+    if not group_str:
+        return None, None, None
+    parts = [p.strip() for p in group_str.split("::")]
+    cat_tag = parts[0] if len(parts) > 0 else None
+    fase = parts[1] if len(parts) > 1 else None
+    body = parts[2] if len(parts) > 2 else ""
+    # body tipico: "Batteria 2 - Manche 1" o "Manche 4 - Qualif 1"
+    # o "Finals A - Gruppo finale 1"
+    manche = None
+    sub = [p.strip() for p in body.split(" - ")]
+    for s in sub:
+        m = _norm_manche_mr(s)
+        if m:
+            manche = m
+            break
+    return cat_tag, fase, manche
+
+
 def _match_orario_da_tt(time_table, categoria_nome, titolo_sessione):
     """Cerca nel time table l'orario di una sessione MyRCM.
     titolo_sessione tipico: 'Prove :: Manche 1 - Prove 1',

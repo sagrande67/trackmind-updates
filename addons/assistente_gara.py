@@ -595,12 +595,143 @@ class AssistenteGaraMonitor:
             # manche del pilota
             self._recorder.add_event_listener(
                 self._auto_apri_ui_live)
+            # Listener per riallineare la time table sul tempo reale
+            # MyRCM (se cronometraggio in tilt o ritardo non
+            # registrato come "delay_min")
+            self._recorder.add_event_listener(
+                self._on_myrcm_event_riallineo)
             self._recorder.start()
             self._ui_live = None
             self._ui_live_attiva_per_group = None
         except Exception as e:
             print("[ag] errore avvio recorder MyRCM:", e)
             self._recorder = None
+
+    def _on_myrcm_event_riallineo(self, meta, data):
+        """Listener: ad ogni EVENT MyRCM con RACESTATE=rsRunning,
+        cerca nella time table la riga corrispondente al GROUP
+        attualmente in pista. Se la pianificazione TrackMind dice
+        ora_X ma in realta' MyRCM e' partito alle ora_Y > ora_X,
+        applica delay = (Y - X) cosi' il countdown si riallinea
+        automaticamente. Trigger una sola volta per group (non
+        oscilla ad ogni messaggio)."""
+        try:
+            state = (meta or {}).get("RACESTATE", "")
+            group = (meta or {}).get("GROUP", "") or ""
+            if state not in ("rsRunning", "rsStarted"):
+                return
+            if not group:
+                return
+            # Una sola volta per group (debounce)
+            ultimo = getattr(self,
+                             "_ultimo_group_riallineato", None)
+            if ultimo == group:
+                return
+            self._ultimo_group_riallineato = group
+            # Parse del GROUP -> categoria_tag, fase, manche
+            try:
+                from myrcm_import import parse_group_live
+            except Exception:
+                return
+            cat_tag, fase, manche = parse_group_live(group)
+            if not (cat_tag and manche):
+                return
+            # Cerca nella time_table COMPLETA (non filtrata per
+            # categoria pilota) la riga matching
+            tt_full = self.time_table or []
+            riga_match = None
+            cat_low = cat_tag.lower()
+            fase_low = (fase or "").lower()
+            for r in tt_full:
+                r_cat = (r.get("categoria", "") or "").lower()
+                if cat_low not in r_cat:
+                    continue
+                r_man = self._estrai_num_manche(r.get("manche", ""))
+                if r_man != manche:
+                    continue
+                if fase_low:
+                    r_grp = (r.get("gruppo", "") or "").lower()
+                    if not self._fase_compatibile(fase_low, r_grp):
+                        continue
+                riga_match = r
+                break
+            if riga_match is None:
+                return
+            base_dt = riga_match.get("base_date")
+            ora_str = riga_match.get("ora", "")
+            if not base_dt or not ora_str:
+                return
+            # dt_pianificato = base_date + ora_str (HH:MM)
+            try:
+                hh, mm = ora_str.split(":")[:2]
+                dt_plan = base_dt.replace(hour=int(hh),
+                                          minute=int(mm),
+                                          second=0,
+                                          microsecond=0)
+            except Exception:
+                return
+            now = self._now()
+            delta_min = (now - dt_plan).total_seconds() / 60.0
+            # Solo se il delay reale e' significativamente diverso
+            # da quello attuale (margine 0.5 min) E positivo
+            # (ritardi, non anticipi)
+            if delta_min < 0.5:
+                return
+            new_delay = int(round(delta_min))
+            if abs(new_delay - self.delay_min) < 1:
+                return
+            print("[ag riallineo] GROUP %r in corso: pianif=%s "
+                  "now=%s delay reale=%d min (era %d)"
+                  % (group[:60], dt_plan.strftime("%H:%M"),
+                     now.strftime("%H:%M"), new_delay,
+                     self.delay_min))
+            self.delay_min = new_delay
+            self._salva_stato()
+            # Notifica subito i tick listener (UI countdown si
+            # aggiorna senza aspettare il prossimo tick)
+            try:
+                for cb in list(self._tick_listeners):
+                    try:
+                        cb(None, None, now)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as e:
+            print("[ag riallineo] errore:", e)
+
+    @staticmethod
+    def _estrai_num_manche(s):
+        """Estrae numero/lettera manche da 'Manche 1', 'Group 1',
+        'Final A' ecc. Stessa logica di _norm_manche_mr."""
+        try:
+            from myrcm_import import _norm_manche_mr
+            return _norm_manche_mr(s)
+        except Exception:
+            import re as _re
+            m = _re.search(
+                r'(?:manche|group|batteria|gruppo)\s*(\d+)',
+                (s or "").lower())
+            if m:
+                return m.group(1)
+            return None
+
+    @staticmethod
+    def _fase_compatibile(fase_myrcm, gruppo_tt):
+        """True se la fase MyRCM (es. 'Prove') e' compatibile col
+        campo gruppo della time table (es. 'Controlled practice 1').
+        Cross-lingua IT/EN."""
+        f = (fase_myrcm or "").lower()
+        g = (gruppo_tt or "").lower()
+        # Mapping fase -> parole chiave nel gruppo
+        if "prove" in f or "practice" in f:
+            return ("practice" in g or "prove" in g
+                    or "training" in g or "freie" in g)
+        if "qualif" in f:
+            return "qualif" in g
+        if "final" in f:
+            return "final" in g
+        return True  # generico, accetta
 
     def _auto_apri_ui_live(self, meta, data):
         """Chiamato a ogni EVENT WebSocket. Quando rileva che la
@@ -632,6 +763,34 @@ class AssistenteGaraMonitor:
                              set())
             if group in chiusi:
                 return
+            # CHIUSURA AUTOMATICA in 3 casi:
+            # 1) RACESTATE diventa rsFinished/rsClosed
+            # 2) GROUP cambia (sessione precedente finita anche se
+            #    MyRCM non ha mandato rsFinished esplicito)
+            # 3) REMAININGTIME = 0:00:00 (countdown a zero)
+            if (self._ui_live is not None
+                    and self._ui_live_attiva_per_group):
+                rem = (meta or {}).get("REMAININGTIME", "") or ""
+                rem_zero = rem.strip() in ("0:00:00", "00:00:00",
+                                           "0:00", "00:00", "")
+                grp_aperto = self._ui_live_attiva_per_group
+                if (state in ("rsFinished", "rsClosed")
+                        and grp_aperto == group):
+                    print("[ag] auto-close LapTimer: sessione "
+                          "finita (rsFinished)")
+                    self._chiudi_ui_live()
+                    return
+                if grp_aperto and grp_aperto != group:
+                    print("[ag] auto-close LapTimer: GROUP cambiato "
+                          "(%r -> %r)" % (grp_aperto[:40],
+                                           group[:40]))
+                    self._chiudi_ui_live()
+                    return
+                if (rem_zero and state in ("rsRunning", "rsStarted")
+                        and grp_aperto == group):
+                    print("[ag] auto-close LapTimer: REMAININGTIME=0")
+                    self._chiudi_ui_live()
+                    return
             # Apertura: stato RUNNING + non gia' aperta per questo group
             running = state in ("rsStarted", "rsRunning")
             if running and not self._ui_live_attiva_per_group == group:
@@ -640,11 +799,6 @@ class AssistenteGaraMonitor:
                 # bene)
                 if self._group_e_del_pilota(group):
                     self._apri_ui_live_pilota(group)
-            # Chiusura automatica a fine sessione
-            elif (state in ("rsFinished", "rsClosed")
-                  and self._ui_live is not None
-                  and self._ui_live_attiva_per_group == group):
-                self._chiudi_ui_live()
         except Exception as e:
             print("[ag] errore auto_apri_ui:", e)
 
@@ -728,18 +882,16 @@ class AssistenteGaraMonitor:
 
     def _chiudi_ui_live(self):
         """Chiusura automatica del LapTimer MyRCM al termine
-        sessione (rsFinished). Chiama _chiudi() del LapTimer che a
-        sua volta invoca _on_close (= _on_ui_live_chiusa) che
-        ridisegna la schermata Assistente Gara."""
+        sessione. Chiama _chiudi() del LapTimer che SALVA i tempi
+        accumulati + invoca _on_close (= _on_ui_live_chiusa) che
+        distrugge l'overlay e disattiva il recorder.
+        IMPORTANTE: NON disattivare il recorder PRIMA di _chiudi
+        altrimenti il check 'if _myrcm_recorder' in _chiudi e
+        _myrcm_salva_tempi_live fallisce e i tempi NON vengono
+        salvati. La disattivazione listener avviene dopo via
+        _on_ui_live_chiusa."""
         ui = self._ui_live
         if ui is not None:
-            try:
-                if hasattr(ui, "disattiva_myrcm_live"):
-                    ui.disattiva_myrcm_live()
-            except Exception:
-                pass
-            # Chiama _chiudi() del LapTimer per chiusura effettiva +
-            # ridisegno schermata Assistente Gara via on_close.
             try:
                 if hasattr(ui, "_chiudi"):
                     ui._chiudi()
