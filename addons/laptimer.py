@@ -340,7 +340,18 @@ class LapTimer:
         _live_stop_e_salva ma con tipo='myrcm' e dati estratti dal
         recorder MyRCM. Idempotente: se non ci sono tempi non fa
         nulla. Flag _myrcm_salvati evita doppio salvataggio quando
-        chiamato da _on_stop seguito da _chiudi."""
+        chiamato da _on_stop seguito da _chiudi.
+
+        Se _myrcm_no_save=True (apertura mid-session: la sessione
+        era gia' partita da piu' di 60s al momento di apertura del
+        LapTimer) NON salva nulla. I giri pregressi sono persi e
+        salveremmo un file con solo gli ultimi 3-4 giri reali, che
+        sporcherebbe i grafici e l'analisi IA."""
+        if getattr(self, "_myrcm_no_save", False):
+            print("[laptimer MyRCM] MID-SESSION: NO SAVE "
+                  "(apertura a sessione gia' in corso)")
+            self._myrcm_salvati = True
+            return
         if getattr(self, "_myrcm_salvati", False):
             print("[laptimer MyRCM] gia' salvato (skip)")
             return
@@ -1360,7 +1371,29 @@ class LapTimer:
     # mezzo" persi (caso raro: connessione laggata) usiamo come tempo
     # il LAPTIME corrente come placeholder, cosi' la lista resta
     # contigua e classifica/best/passo restano coerenti.
-    def attiva_myrcm_live(self, recorder):
+    @staticmethod
+    def _parse_myrcm_time(s):
+        """Parse formato MyRCM 'M:SS.mmm' o 'H:MM:SS.mmm' o
+        '23.551' a secondi float. Ritorna 0.0 se non parsabile."""
+        if s is None:
+            return 0.0
+        s = str(s).strip()
+        if not s:
+            return 0.0
+        try:
+            if ":" in s:
+                parts = s.split(":")
+                if len(parts) == 2:
+                    return int(parts[0]) * 60 + float(parts[1])
+                if len(parts) == 3:
+                    return (int(parts[0]) * 3600
+                            + int(parts[1]) * 60
+                            + float(parts[2]))
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def attiva_myrcm_live(self, recorder, mid_session=False):
         """Attiva la modalita' MyRCM. `recorder` = MyRcmLiveRecorder
         gia' connesso. Si abbona ai suoi event_listeners e converte
         EVENT MyRCM in chiamate _live_on_lap per riusare 100% della
@@ -1373,9 +1406,33 @@ class LapTimer:
         creiamo SUBITO le colonne anche se la sessione e' in
         rsPrepared (in attesa del via). Cosi' l'utente vede tutti
         i partenti gia' incolonnati, in attesa che parta la gara
-        e si popolino i tempi."""
+        e si popolino i tempi.
+
+        Param `mid_session`: True se ci siamo connessi a meta'
+        sessione (CURRENTTIME > 60s al momento dell'apertura). In
+        quel caso il flag _myrcm_no_save viene messo a True e
+        _myrcm_salva_tempi_live skippa il salvataggio al close.
+        Vediamo i tempi live ma NON generiamo file scouting parziali
+        (i giri pre-connessione sono persi, salveremmo solo gli
+        ultimi 3-4 giri della manche, peggio che niente)."""
         self._myrcm_recorder = recorder
+        # Flag mid-session: blocca il salvataggio finale dei tempi
+        # se siamo entrati a manche gia' iniziata.
+        self._myrcm_no_save = bool(mid_session)
         self._myrcm_prev_laps = {}  # pilot_num -> n_giri_visti
+        # ABSOLUTTIME (tempo cumulato sessione del pilota) visto al
+        # giro precedente. Usato per ricavare il tempo del nuovo
+        # giro come delta = abs_now - abs_prev. Piu' affidabile di
+        # leggere direttamente LAPTIME, che a volte non e' ancora
+        # aggiornato quando arriva il primo EVENT col nuovo LAPS.
+        self._myrcm_prev_abs = {}   # pilot_num -> float (secondi)
+        # Set dei piloti per cui abbiamo gia' "baseline" (= primo
+        # snapshot ricevuto). Evita di generare N giri spuri tutti
+        # uguali quando ci connettiamo a meta' sessione e MyRCM ci
+        # dice "il pilota ha gia' fatto 5 giri" senza darci lo
+        # storico dei tempi singoli. Iniziamo a contare solo i
+        # giri NUOVI da quel momento.
+        self._myrcm_baseline_done = set()
         # Forza modalita' LIVE riusando la setup gia' esistente
         self._live_attiva_modo()
         # Pre-popola mapping piloti + crea colonne dai dati gia'
@@ -1393,10 +1450,17 @@ class LapTimer:
         # Banner LIVE
         try:
             if self._live_banner is not None:
-                self._live_banner.config(
-                    text="MyRCM LIVE: in ascolto (%d piloti)"
-                         % len(self._live_pilots),
-                    fg=self.colori.get("stato_ok", "#39ff14"))
+                if self._myrcm_no_save:
+                    self._live_banner.config(
+                        text=("MyRCM LIVE [MID-SESSION: TEMPI NON "
+                              "SALVATI] (%d piloti)"
+                              % len(self._live_pilots)),
+                        fg=self.colori.get("stato_avviso", "#ffcc00"))
+                else:
+                    self._live_banner.config(
+                        text="MyRCM LIVE: in ascolto (%d piloti)"
+                             % len(self._live_pilots),
+                        fg=self.colori.get("stato_ok", "#39ff14"))
         except Exception:
             pass
 
@@ -1479,14 +1543,24 @@ class LapTimer:
             pass
 
         # Aggiorna _live_banner: stato + trascorso (info
-        # complementare al countdown principale).
+        # complementare al countdown principale). Se siamo entrati
+        # mid-session il banner mostra anche l'avviso "TEMPI NON
+        # SALVATI" in giallo per ricordare all'utente che stiamo
+        # solo visualizzando.
         try:
             lbl_b = getattr(self, "_live_banner", None)
             if lbl_b is not None and lbl_b.winfo_exists():
-                lbl_b.config(
-                    text="MyRCM: %s  |  Trascorso: %s"
-                         % (state_label, cur),
-                    fg=col_tempo)
+                if getattr(self, "_myrcm_no_save", False):
+                    lbl_b.config(
+                        text=("MyRCM: %s  |  Trascorso: %s  |  "
+                              "[MID-SESSION: TEMPI NON SALVATI]"
+                              % (state_label, cur)),
+                        fg=c.get("stato_avviso", "#ffcc00"))
+                else:
+                    lbl_b.config(
+                        text="MyRCM: %s  |  Trascorso: %s"
+                             % (state_label, cur),
+                        fg=col_tempo)
         except (tk.TclError, Exception):
             pass
 
@@ -1532,28 +1606,43 @@ class LapTimer:
                 laps_now = int(p.get("LAPS", 0) or 0)
             except (ValueError, TypeError):
                 continue
+            abs_now = self._parse_myrcm_time(p.get("ABSOLUTTIME"))
+            # BASELINE: primo EVENT mai visto per questo pilota.
+            # Registra LAPS e ABSOLUTTIME correnti come punto di
+            # partenza, NON genera giri. Cosi' se ci colleghiamo a
+            # meta' sessione (es. pilota gia' a giro 5) non
+            # produciamo 5 tempi spuri uguali alla media.
+            if pn not in self._myrcm_baseline_done:
+                self._myrcm_baseline_done.add(pn)
+                self._myrcm_prev_laps[pn] = laps_now
+                self._myrcm_prev_abs[pn] = abs_now
+                continue
             laps_prev = self._myrcm_prev_laps.get(pn, 0)
             if laps_now <= laps_prev:
                 continue
-            # Tempo del giro appena completato (ultimo lap)
-            try:
-                lt = float(p.get("LAPTIME", 0) or 0)
-            except (ValueError, TypeError):
-                lt = 0.0
-            if lt <= 0:
-                # Niente tempo utile: aspetta prossimo update
-                continue
-            # Genera chiamate _live_on_lap per ogni giro nuovo. Se
-            # ne mancano piu' di uno, replichiamo il LAPTIME (caso
-            # raro di update perso).
+            # Tempo del/dei giri nuovi: differenza ABSOLUTTIME tra
+            # adesso e l'ultima volta. Se ABSOLUTTIME non
+            # disponibile, fallback su LAPTIME.
+            abs_prev = self._myrcm_prev_abs.get(pn, 0.0)
             n_nuovi = laps_now - laps_prev
+            if abs_now > abs_prev > 0:
+                delta_tot = abs_now - abs_prev
+                lt_per_giro = (delta_tot / n_nuovi
+                               if n_nuovi > 0 else 0.0)
+            else:
+                lt_per_giro = self._parse_myrcm_time(
+                    p.get("LAPTIME"))
+            if lt_per_giro <= 0:
+                continue
             for _ in range(n_nuovi):
                 try:
-                    self._live_on_lap(pn, 0, lt, None, "myrcm")
+                    self._live_on_lap(pn, 0, lt_per_giro, None,
+                                       "myrcm")
                 except Exception as e:
                     print("[laptimer] errore _live_on_lap myrcm:", e)
                     break
             self._myrcm_prev_laps[pn] = laps_now
+            self._myrcm_prev_abs[pn] = abs_now
 
     # Larghezza fissa colonna pilota in px (abbastanza per 10 char
     # monospace a 12pt circa). Cosi' con 1 pilota la colonna resta

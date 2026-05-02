@@ -791,16 +791,51 @@ class AssistenteGaraMonitor:
                     print("[ag] auto-close LapTimer: REMAININGTIME=0")
                     self._chiudi_ui_live()
                     return
-            # Apertura: stato RUNNING + non gia' aperta per questo group
+            # Apertura: stato RUNNING + non gia' aperta per questo
+            # group. Se la sessione e' gia' in corso da piu' di 60s
+            # (ci siamo connessi a meta' manche) APRIAMO comunque la
+            # UI per visualizzare i tempi live, ma marchiamo
+            # mid_session=True cosi' al close il LapTimer NON salva
+            # i giri (sarebbero parziali, mancano i primi N giri
+            # pregressi). Decisione utente: meglio vedere senza
+            # salvare che non vedere affatto.
             running = state in ("rsStarted", "rsRunning")
             if running and not self._ui_live_attiva_per_group == group:
+                ct_str = (meta or {}).get("CURRENTTIME", "0:00") or "0:00"
+                ct_sec = self._parse_time_str(ct_str)
+                mid_session = ct_sec > 60
+                if mid_session:
+                    print("[ag] LapTimer apertura MID-SESSION: "
+                          "sessione %r gia' in corso da %ds. "
+                          "I tempi NON verranno salvati al close."
+                          % (group[:60], ct_sec))
                 # Verifica che il group corrente corrisponda a una
                 # manche del pilota (se non c'e' filtro, va sempre
                 # bene)
                 if self._group_e_del_pilota(group):
-                    self._apri_ui_live_pilota(group)
+                    self._apri_ui_live_pilota(group,
+                                              mid_session=mid_session)
         except Exception as e:
             print("[ag] errore auto_apri_ui:", e)
+
+    def _parse_time_str(self, s):
+        """Parse stringa CURRENTTIME/REMAININGTIME MyRCM in secondi.
+        Accetta formati 'SS', 'MM:SS', 'H:MM:SS'. Ritorna 0 se
+        parsing fallisce."""
+        try:
+            s = (s or "0").strip()
+            if not s:
+                return 0
+            parts = s.split(":")
+            if len(parts) == 3:
+                return (int(parts[0]) * 3600
+                        + int(parts[1]) * 60
+                        + int(float(parts[2])))
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(float(parts[1]))
+            return int(float(s))
+        except (ValueError, TypeError):
+            return 0
 
     def _group_e_del_pilota(self, group):
         """True se il GROUP MyRCM corrente corrisponde a una manche
@@ -823,12 +858,17 @@ class AssistenteGaraMonitor:
                 return True
         return False
 
-    def _apri_ui_live_pilota(self, group):
+    def _apri_ui_live_pilota(self, group, mid_session=False):
         """Apre il LapTimer in modalita' MyRCM live. Riusa la
         schermata griglia colonne gia' fatta per LapMonitor BLE,
         alimentata dai dati WebSocket MyRCM tramite il recorder
         gia' attivo. Niente UI custom: LapTimer e' lo stesso
-        addon di sempre."""
+        addon di sempre.
+
+        Param `mid_session`: True se la sessione era gia' partita
+        (CURRENTTIME > 60s) al momento dell'apertura. In quel caso
+        il LapTimer mostra i tempi LIVE ma NON salva nulla al close
+        (i giri sarebbero parziali, manca lo storico iniziale)."""
         if self._ui_live is not None:
             self._chiudi_ui_live()
         try:
@@ -870,12 +910,16 @@ class AssistenteGaraMonitor:
                 dati_dir=dati_dir,
                 parent=self._ui_live_overlay,
                 on_close=self._on_ui_live_chiusa)
-            # Attiva modalita' MyRCM dopo che la UI e' stata creata
+            # Attiva modalita' MyRCM dopo che la UI e' stata creata.
+            # Passa il flag mid_session cosi' il LapTimer sa se deve
+            # disabilitare il salvataggio (sessione gia' in corso).
             self.root.after(50, lambda: lt.attiva_myrcm_live(
-                self._recorder))
+                self._recorder, mid_session=mid_session))
             self._ui_live = lt
             self._ui_live_attiva_per_group = group
-            print("[ag] LapTimer MyRCM aperto per %s" % group[:60])
+            print("[ag] LapTimer MyRCM aperto per %s%s"
+                  % (group[:60],
+                     " [MID-SESSION: NO SAVE]" if mid_session else ""))
         except Exception as e:
             print("[ag] errore apertura LapTimer MyRCM:", e)
             self._ui_live = None
