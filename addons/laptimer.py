@@ -1157,7 +1157,54 @@ class LapTimer:
         self._live_aggiorna_prev_passo()
 
     @staticmethod
-    def _live_classifica_predittiva(pilot_info, rem_sec, n_passo=3):
+    def _live_calcola_passo(tempi, finestra=10, soglia_outlier=1.4):
+        """Calcola il passo gara di un pilota partendo dalla lista
+        dei tempi giri validi, con filtro degli outlier.
+
+        Strategia:
+          - Considera gli ULTIMI `finestra` giri validi (default 10).
+            Su 3 giri soli (vecchia media) un singolo errore tipo
+            "fuori pista 40s" inquina pesantemente la stima; su una
+            finestra di 10 il peso del singolo si dimezza E si puo'
+            applicare il filtro outlier.
+          - Calcola il `best` del pilota su tutti i tempi.
+          - Scarta dagli ultimi N i giri > best * soglia_outlier
+            (default 1.4 = +40% sopra il best, palesemente errore:
+            pit, contatto lungo, taglio pista andato male).
+          - Se dopo il filtro restano almeno 3 giri puliti, ritorna
+            la loro media (passo "vero").
+          - Altrimenti fallback alla media degli ultimi N senza
+            filtro (sessione troppo corta o pilota in difficolta'
+            cronica - meglio una stima approssimata che zero).
+
+        Cosi' la classifica predittiva non viene piu' falsata da un
+        singolo errore isolato.
+
+        Args:
+          tempi: lista di tempi giro validi (sec, ordine cronologico)
+          finestra: dimensione finestra ultimi giri (default 10)
+          soglia_outlier: rapporto vs best oltre cui scartare
+                          (default 1.4)
+
+        Ritorna: passo medio in secondi (float), 0.0 se non
+        calcolabile.
+        """
+        if not tempi:
+            return 0.0
+        best = min(tempi)
+        if best <= 0:
+            return 0.0
+        ultimi = tempi[-finestra:] if len(tempi) > finestra else tempi
+        soglia = best * soglia_outlier
+        filtrati = [t for t in ultimi if t <= soglia]
+        if len(filtrati) >= 3:
+            return sum(filtrati) / len(filtrati)
+        if ultimi:
+            return sum(ultimi) / len(ultimi)
+        return 0.0
+
+    @staticmethod
+    def _live_classifica_predittiva(pilot_info, rem_sec, n_passo=10):
         """Calcola la classifica finale prevista date le info dei
         piloti correnti e i secondi rimanenti alla fine sessione.
 
@@ -1167,11 +1214,13 @@ class LapTimer:
           rem_sec:    secondi rimanenti alla fine della sessione
                       (REMAININGTIME del server MyRCM)
           n_passo:    quanti ultimi giri considerare per il "passo"
-                      recente (default 3)
+                      recente (default 10). Una finestra ampia +
+                      filtro outlier rende la stima robusta agli
+                      errori isolati (taglio pista, contatto).
 
         Algoritmo:
-          - Per ogni pilota: passo = media degli ultimi n_passo giri
-            (o tutti se ne ha meno).
+          - Per ogni pilota: passo = _live_calcola_passo (media
+            ultimi n_passo giri filtrati per outlier).
           - giri_aggiuntivi_frac = rem_sec / passo (giri completi
             che riesce a fare nel tempo rimanente, frazione inclusa)
           - giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
@@ -1194,8 +1243,11 @@ class LapTimer:
         for pid, nome, media_glob, tempi, _tot in pilot_info:
             if not tempi:
                 continue
-            ultimi = tempi[-n_passo:]
-            passo = sum(ultimi) / len(ultimi) if ultimi else 0
+            # Usa il calcolo centralizzato con filtro outlier:
+            # un singolo giro tipo "fuori pista 40s" non deve
+            # falsare la proiezione finale del pilota.
+            passo = LapTimer._live_calcola_passo(
+                tempi, finestra=n_passo, soglia_outlier=1.4)
             if passo <= 0:
                 continue
             giri_attuali = len(tempi)
@@ -1356,7 +1408,7 @@ class LapTimer:
                 prev_lines.append(" (in attesa giri)")
             else:
                 cls = self._live_classifica_predittiva(
-                    pilot_info, rem_sec, n_passo=3)
+                    pilot_info, rem_sec, n_passo=10)
                 for r in cls:
                     pos_str = "%d." % r["pos"]
                     nome_short = r["nome"][:7]
@@ -1408,11 +1460,16 @@ class LapTimer:
         passo_lines.append("-" * len(header_p))
         if not pilot_info:
             passo_lines.append(" (in attesa giri)")
-        # Ordine: piloti con passo migliore in alto
+        # Ordine: piloti con passo migliore in alto.
+        # Passo calcolato con la stessa logica della classifica
+        # predittiva (finestra 10 giri + filtro outlier 1.4x best),
+        # cosi' i due pannelli sono coerenti tra loro.
         passo_rows = []
         for pid, nome, media_glob, tempi, _ in pilot_info:
-            ultimi = tempi[-3:]
-            passo = sum(ultimi) / len(ultimi)
+            passo = LapTimer._live_calcola_passo(
+                tempi, finestra=10, soglia_outlier=1.4)
+            if passo <= 0:
+                continue
             delta = passo - media_glob
             if delta < -0.05:
                 trend = "migl."  # verde in senso semantico

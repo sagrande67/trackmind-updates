@@ -2542,19 +2542,37 @@ class AssistenteGara:
 
         # Tree turni della giornata: ogni turno e' una riga colorata
         # in base al suo stato (passato/in corso/prossimo/futuro).
-        # Canvas scrollabile per gestire eventi con molti turni.
+        # Layout split (v05.06.17): la time table sta SEMPRE a
+        # sinistra, e quando entriamo in zona pre-gara (-15..-1 min)
+        # la checklist appare come pannello affiancato a destra
+        # invece di sostituire il tree. Cosi' l'utente continua a
+        # vedere il proprio turno mentre prepara la macchina.
         list_frame = tk.Frame(self.root, bg=c["sfondo"])
         list_frame.pack(fill="both", expand=True, padx=10, pady=4)
-        sb = tk.Scrollbar(list_frame, bg=c["sfondo"],
+
+        # Sub-pane sinistro: tree turni (sempre visibile, espande
+        # finche' la checklist non occupa il lato destro)
+        tt_pane = tk.Frame(list_frame, bg=c["sfondo"])
+        tt_pane.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(tt_pane, bg=c["sfondo"],
                           troughcolor=c["sfondo"],
                           activebackground=c["dati"])
         sb.pack(side="right", fill="y")
-        self._tt_canvas = tk.Canvas(list_frame, bg=c["sfondo_celle"],
+        self._tt_canvas = tk.Canvas(tt_pane, bg=c["sfondo_celle"],
                                      highlightthickness=0,
                                      yscrollcommand=sb.set,
                                      bd=1, relief="solid")
         self._tt_canvas.pack(side="left", fill="both", expand=True)
         sb.config(command=self._tt_canvas.yview)
+
+        # Sub-pane destro: pannello checklist (creato sempre, mostrato
+        # solo quando in zona pre-gara). Width dinamica al primo
+        # show; pack_propagate=False per rispettarla.
+        self._checklist_pane = tk.Frame(list_frame,
+                bg=c["sfondo_celle"], bd=1, relief="solid",
+                highlightbackground="#664400", highlightthickness=2)
+        # NON packato qui: viene mostrato/nascosto da
+        # _aggiorna_stato_tree_turni a -15 min
         self._tt_inner = tk.Frame(self._tt_canvas, bg=c["sfondo_celle"])
         self._tt_canvas.create_window((0, 0), window=self._tt_inner,
                                        anchor="nw", tags="inner")
@@ -2702,11 +2720,16 @@ class AssistenteGara:
     def _aggiorna_stato_tree_turni(self, now):
         """Ad ogni tick, ricolora le righe del tree in base allo
         stato (passato/in corso/prossimo/futuro). Inoltre gestisce
-        lo switch tree <-> checklist quando il prossimo turno si
-        avvicina a -15 minuti."""
+        l'apparizione del pannello checklist laterale quando il
+        prossimo turno si avvicina a -15 minuti.
+
+        Layout split (v05.06.17): il tree turni resta SEMPRE
+        visibile a sinistra, la checklist appare come pannello
+        affiancato a destra in zona pre-gara. Quindi la colorazione
+        del tree va sempre eseguita."""
         c = self.c
-        # ── Switch tree <-> checklist a -15 min ──
-        # Determina secondi al prossimo turno (per il check)
+        # ── Mostra/nascondi pannello checklist a -15 min ──
+        # Determina secondi al prossimo turno
         secs_min = None
         if getattr(self, "_tt_rows", None):
             for row in self._tt_rows:
@@ -2717,31 +2740,23 @@ class AssistenteGara:
                 if s > 0 and (secs_min is None or s < secs_min):
                     secs_min = s
         # Range per mostrare la checklist: da -15 min a -1 min.
-        # Sotto -1 min (= AVVIA MOTORE) tornano i turni cosi' l'utente
-        # vede di nuovo la sua riga IN CORSO.
+        # Sotto -1 min (= AVVIA MOTORE) la checklist sparisce cosi'
+        # il pilota ha tutto lo schermo per il suo turno IN CORSO.
         in_range_checklist = (
             secs_min is not None and 60 < secs_min <= 15 * 60)
-        checklist_attiva = getattr(self, "_checklist_visibile", False)
-        monitor = AssistenteGaraMonitor.get(self._top)
-        if in_range_checklist and not checklist_attiva:
-            # Entra in zona checklist: sostituisci tree con checklist.
+        if in_range_checklist:
+            # Mostra pannello affiancato (idempotente)
             try:
                 self._mostra_checklist_nel_tree()
             except Exception:
                 pass
-            return  # niente colorazione tree (e' nascosto)
-        if (not in_range_checklist) and checklist_attiva:
-            # Esci dalla zona checklist: ripristina tree turni.
-            self._checklist_visibile = False
+        else:
+            # Nascondi pannello (idempotente)
             try:
-                if monitor is not None:
-                    self._popola_tree_turni(monitor)
+                self._nascondi_checklist()
             except Exception:
                 pass
-        if checklist_attiva:
-            # In checklist: niente da ricolorare (i widget sono altri)
-            return
-        # ── Colorazione standard del tree turni ──
+        # ── Colorazione standard del tree turni (sempre) ──
         if not getattr(self, "_tt_rows", None):
             return
         # Trova il "prossimo turno" per evidenziarlo
@@ -3062,50 +3077,81 @@ Edita questa lista col bottone CHECKLIST nell'header.
                              "errore")
 
     def _mostra_checklist_nel_tree(self):
-        """Sostituisce il tree turni con la checklist pre-gara.
-        Chiamato quando il countdown entra in stato "prep" (-15min)
-        o "attesa" (-3min)."""
-        if not hasattr(self, "_tt_inner"):
+        """Mostra la checklist pre-gara come pannello AFFIANCATO al
+        tree turni (non lo sostituisce). Layout split a partire da
+        v05.06.17: SX = time table sempre visibile, DX = checklist
+        in zona pre-gara (-15 min..-1 min).
+        Idempotente: se gia' visibile non ricostruisce."""
+        if not hasattr(self, "_checklist_pane"):
             return
+        if getattr(self, "_checklist_visibile", False):
+            return  # gia' mostrato
+        c = self.c
+        # Pulisci eventuali widget precedenti nel pannello
         try:
-            for w in list(self._tt_inner.winfo_children()):
+            for w in list(self._checklist_pane.winfo_children()):
                 try:
                     w.destroy()
                 except Exception:
                     pass
         except Exception:
             return
-        c = self.c
+        # Calcola larghezza ~40% dello schermo come pannello
+        # checklist. Min 280px (uConsole 480px), max 500px (desktop).
+        try:
+            screen_w = self.root.winfo_width() or 800
+            ck_w = max(280, min(500, int(screen_w * 0.40)))
+        except Exception:
+            ck_w = 320
         # Header riga
-        hr = tk.Frame(self._tt_inner, bg="#664400")
+        hr = tk.Frame(self._checklist_pane, bg="#664400")
         hr.pack(fill="x", padx=2, pady=(2, 4))
         tk.Label(hr, text=">>> CHECKLIST PRE-GARA <<<",
                  bg="#664400", fg="#ffaa00",
                  font=self._f_btn, anchor="center").pack(
             fill="x", padx=4, pady=4)
-        # Testo della checklist (Text widget readonly per layout
-        # multi-riga rispettando le interruzioni del file).
-        txt_frame = tk.Frame(self._tt_inner, bg=c["sfondo_celle"])
+        # Testo della checklist (Text widget readonly + scrollbar
+        # interna per liste lunghe)
+        txt_frame = tk.Frame(self._checklist_pane,
+                             bg=c["sfondo_celle"])
         txt_frame.pack(fill="both", expand=True, padx=4, pady=4)
+        ck_sb = tk.Scrollbar(txt_frame, bg=c["sfondo"],
+                             troughcolor=c["sfondo"],
+                             activebackground=c["dati"])
+        ck_sb.pack(side="right", fill="y")
         txt = tk.Text(txt_frame, font=self._f_info,
                       bg=c["sfondo_celle"], fg=c["stato_avviso"],
                       relief="flat", bd=0, wrap="word",
-                      height=20)
-        txt.pack(fill="both", expand=True)
+                      yscrollcommand=ck_sb.set)
+        txt.pack(side="left", fill="both", expand=True)
+        ck_sb.config(command=txt.yview)
         try:
             txt.insert("1.0", self._carica_checklist())
             txt.config(state="disabled")
         except Exception:
             pass
-        # Forza redraw scroll region
+        # Mostra il pannello a destra del list_frame, larghezza fissa
         try:
-            self._tt_inner.update_idletasks()
-            self._tt_canvas.configure(
-                scrollregion=self._tt_canvas.bbox("all"))
+            self._checklist_pane.config(width=ck_w)
+            self._checklist_pane.pack_propagate(False)
+            self._checklist_pane.pack(side="right", fill="y",
+                                       padx=(8, 0))
         except Exception:
             pass
         # Marca lo stato per non ricostruire ad ogni tick
         self._checklist_visibile = True
+
+    def _nascondi_checklist(self):
+        """Nasconde il pannello checklist. Chiamato quando esciamo
+        dalla zona pre-gara (es. AVVIA MOTORE -1 min, oppure il
+        turno e' passato)."""
+        if not getattr(self, "_checklist_visibile", False):
+            return
+        try:
+            self._checklist_pane.pack_forget()
+        except Exception:
+            pass
+        self._checklist_visibile = False
 
     # =================================================================
     #  Chiusura / controllo monitor
