@@ -1157,34 +1157,26 @@ class LapTimer:
         self._live_aggiorna_prev_passo()
 
     @staticmethod
-    def _live_calcola_passo(tempi, finestra=10, soglia_outlier=1.4):
-        """Calcola il passo gara di un pilota partendo dalla lista
-        dei tempi giri validi, con filtro degli outlier.
+    def _live_calcola_passo(tempi, soglia_outlier=1.4):
+        """Calcola il passo gara di un pilota su TUTTI i giri validi
+        della sessione corrente, con filtro outlier.
 
-        Strategia:
-          - Considera gli ULTIMI `finestra` giri validi (default 10).
-            Su 3 giri soli (vecchia media) un singolo errore tipo
-            "fuori pista 40s" inquina pesantemente la stima; su una
-            finestra di 10 il peso del singolo si dimezza E si puo'
-            applicare il filtro outlier.
-          - Calcola il `best` del pilota su tutti i tempi.
-          - Scarta dagli ultimi N i giri > best * soglia_outlier
-            (default 1.4 = +40% sopra il best, palesemente errore:
-            pit, contatto lungo, taglio pista andato male).
-          - Se dopo il filtro restano almeno 3 giri puliti, ritorna
-            la loro media (passo "vero").
-          - Altrimenti fallback alla media degli ultimi N senza
-            filtro (sessione troppo corta o pilota in difficolta'
-            cronica - meglio una stima approssimata che zero).
-
-        Cosi' la classifica predittiva non viene piu' falsata da un
-        singolo errore isolato.
+        Filosofia (corretta in v05.06.19):
+          - NIENTE finestra mobile "ultimi N giri": un pilota che si
+            ritira a 8 giri non ha "ultimi 10", e una finestra fissa
+            renderebbe inutile il filtro outlier.
+          - Tutti i giri validi della sessione costituiscono la base.
+          - Filtro outlier: scarta i giri > best * soglia_outlier
+            (default 1.4 = +40% sopra il best, errore palese: pit,
+            contatto, taglio pista lungo).
+          - Se dopo il filtro restano almeno 3 giri puliti, media
+            filtrata. Altrimenti media completa (sessione corta o
+            pilota in difficolta' cronica).
 
         Args:
           tempi: lista di tempi giro validi (sec, ordine cronologico)
-          finestra: dimensione finestra ultimi giri (default 10)
           soglia_outlier: rapporto vs best oltre cui scartare
-                          (default 1.4)
+                          (default 1.4 = giri > +40% sopra best)
 
         Ritorna: passo medio in secondi (float), 0.0 se non
         calcolabile.
@@ -1194,71 +1186,85 @@ class LapTimer:
         best = min(tempi)
         if best <= 0:
             return 0.0
-        ultimi = tempi[-finestra:] if len(tempi) > finestra else tempi
         soglia = best * soglia_outlier
-        filtrati = [t for t in ultimi if t <= soglia]
+        filtrati = [t for t in tempi if t <= soglia]
         if len(filtrati) >= 3:
             return sum(filtrati) / len(filtrati)
-        if ultimi:
-            return sum(ultimi) / len(ultimi)
-        return 0.0
+        return sum(tempi) / len(tempi)
 
     @staticmethod
-    def _live_classifica_predittiva(pilot_info, rem_sec, n_passo=10):
+    def _live_classifica_predittiva(pilot_info, rem_sec,
+                                     currenttime_sec=0,
+                                     soglia_ritiro_factor=1.5):
         """Calcola la classifica finale prevista date le info dei
-        piloti correnti e i secondi rimanenti alla fine sessione.
+        piloti correnti, i secondi rimanenti alla fine sessione e
+        il tempo trascorso (per rilevare i piloti FERMI/ritirati).
 
         Input:
           pilot_info: lista di tuple (pid, nome_vis, media_glob,
                       tempi_validi, sum_tempi)
           rem_sec:    secondi rimanenti alla fine della sessione
                       (REMAININGTIME del server MyRCM)
-          n_passo:    quanti ultimi giri considerare per il "passo"
-                      recente (default 10). Una finestra ampia +
-                      filtro outlier rende la stima robusta agli
-                      errori isolati (taglio pista, contatto).
+          currenttime_sec: secondi trascorsi dall'inizio sessione
+                      (CURRENTTIME del server MyRCM). Serve per
+                      rilevare i ritirati: se il gap fra orologio
+                      sessione e ABSOLUTTIME del pilota supera
+                      passo*soglia_ritiro_factor, il pilota e'
+                      considerato fermo (ritiro/incidente).
+          soglia_ritiro_factor: gap > passo*factor -> pilota fermo
+                      (default 1.5 = e' passato 50% in piu' del
+                      tempo che servirebbe per un giro normale).
 
         Algoritmo:
-          - Per ogni pilota: passo = _live_calcola_passo (media
-            ultimi n_passo giri filtrati per outlier).
-          - giri_aggiuntivi_frac = rem_sec / passo (giri completi
-            che riesce a fare nel tempo rimanente, frazione inclusa)
-          - giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
-            (proiezione del totale al traguardo)
-          - Ordina decrescente per giri_finali_frac.
-          - Leader = primo. Per gli altri calcola gap:
-              delta_frac = leader.giri_finali_frac - mio.giri_finali_frac
-              delta_giri = int(delta_frac)
-              tempo_frac = (delta_frac - delta_giri) * passo_leader
-            Format gap:
-              0 giri: "-X.Xs"   (gap solo in tempo)
-              1 giro: "-1g Ns"  (1 giro indietro + frazione in s)
-              N giri: "-Ng"     (multipli)
+          - passo = _live_calcola_passo (TUTTI i giri filtrati per
+            outlier).
+          - absoluttime = sum(tempi) (tempo cumulato del pilota,
+            equivalente all'ABSOLUTTIME MyRCM).
+          - gap_secs = currenttime_sec - absoluttime (quanto e'
+            passato dall'ultimo passaggio del pilota).
+          - Se gap_secs > passo * soglia_ritiro_factor -> FERMO:
+            niente proiezione, giri_finali = giri_attuali, gap
+            mostrato come "RIT".
+          - Altrimenti: proiezione normale come prima.
+          - Sort decrescente per giri_finali_frac (i fermi finiscono
+            in fondo perche' non aggiungono giri).
+          - Leader = primo NON-fermo (se tutti fermi, primo per giri).
 
         Ritorna lista di dict:
-          {pos, pid, nome, giri_int, giri_frac, passo, gap_str}
+          {pos, pid, nome, giri_int, giri_frac, passo, gap_str,
+           fermo}
         ordinata per posizione finale (1 = leader).
         """
         proiezioni = []
         for pid, nome, media_glob, tempi, _tot in pilot_info:
             if not tempi:
                 continue
-            # Usa il calcolo centralizzato con filtro outlier:
-            # un singolo giro tipo "fuori pista 40s" non deve
-            # falsare la proiezione finale del pilota.
+            # Passo su TUTTI i giri filtrati per outlier
             passo = LapTimer._live_calcola_passo(
-                tempi, finestra=n_passo, soglia_outlier=1.4)
+                tempi, soglia_outlier=1.4)
             if passo <= 0:
                 continue
             giri_attuali = len(tempi)
-            giri_aggiuntivi_frac = (rem_sec / passo
-                                     if rem_sec > 0 else 0)
-            giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
+            absoluttime = sum(tempi)  # tempo ultimo passaggio
+            # Rilevamento ritiro: l'orologio sessione avanza ma il
+            # pilota non passa piu' dal traguardo
+            gap_secs = max(0.0, currenttime_sec - absoluttime)
+            e_fermo = (currenttime_sec > 0
+                       and gap_secs > passo * soglia_ritiro_factor)
+            if e_fermo:
+                # Resta dov'e' (niente giri aggiuntivi proiettati)
+                giri_finali_frac = float(giri_attuali)
+            else:
+                giri_aggiuntivi_frac = (rem_sec / passo
+                                         if rem_sec > 0 else 0)
+                giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
             proiezioni.append({
                 "pid": pid, "nome": nome, "passo": passo,
                 "giri_attuali": giri_attuali,
                 "giri_finali_frac": giri_finali_frac,
                 "giri_finali_int": int(giri_finali_frac),
+                "fermo": e_fermo,
+                "gap_secs": gap_secs,
             })
         # Sort decrescente per giri previsti totali
         proiezioni.sort(key=lambda x: -x["giri_finali_frac"])
@@ -1268,7 +1274,11 @@ class LapTimer:
         leader_passo = leader["passo"]
         risultato = []
         for pos, p in enumerate(proiezioni, start=1):
-            if pos == 1:
+            if p.get("fermo"):
+                # Pilota ritirato/fermo: niente proiezione, niente
+                # gap calcolato. Etichetta dedicata.
+                gap_str = "RIT"
+            elif pos == 1:
                 gap_str = "LEAD"
             else:
                 delta_frac = (leader["giri_finali_frac"]
@@ -1293,6 +1303,7 @@ class LapTimer:
                 "giri_frac": p["giri_finali_frac"],
                 "passo": p["passo"],
                 "gap_str": gap_str,
+                "fermo": p.get("fermo", False),
             })
         return risultato
 
@@ -1408,7 +1419,8 @@ class LapTimer:
                 prev_lines.append(" (in attesa giri)")
             else:
                 cls = self._live_classifica_predittiva(
-                    pilot_info, rem_sec, n_passo=10)
+                    pilot_info, rem_sec,
+                    currenttime_sec=currenttime_sec)
                 for r in cls:
                     pos_str = "%d." % r["pos"]
                     nome_short = r["nome"][:7]
