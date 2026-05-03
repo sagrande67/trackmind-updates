@@ -1156,6 +1156,94 @@ class LapTimer:
         # Render iniziale con stato vuoto
         self._live_aggiorna_prev_passo()
 
+    @staticmethod
+    def _live_classifica_predittiva(pilot_info, rem_sec, n_passo=3):
+        """Calcola la classifica finale prevista date le info dei
+        piloti correnti e i secondi rimanenti alla fine sessione.
+
+        Input:
+          pilot_info: lista di tuple (pid, nome_vis, media_glob,
+                      tempi_validi, sum_tempi)
+          rem_sec:    secondi rimanenti alla fine della sessione
+                      (REMAININGTIME del server MyRCM)
+          n_passo:    quanti ultimi giri considerare per il "passo"
+                      recente (default 3)
+
+        Algoritmo:
+          - Per ogni pilota: passo = media degli ultimi n_passo giri
+            (o tutti se ne ha meno).
+          - giri_aggiuntivi_frac = rem_sec / passo (giri completi
+            che riesce a fare nel tempo rimanente, frazione inclusa)
+          - giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
+            (proiezione del totale al traguardo)
+          - Ordina decrescente per giri_finali_frac.
+          - Leader = primo. Per gli altri calcola gap:
+              delta_frac = leader.giri_finali_frac - mio.giri_finali_frac
+              delta_giri = int(delta_frac)
+              tempo_frac = (delta_frac - delta_giri) * passo_leader
+            Format gap:
+              0 giri: "-X.Xs"   (gap solo in tempo)
+              1 giro: "-1g Ns"  (1 giro indietro + frazione in s)
+              N giri: "-Ng"     (multipli)
+
+        Ritorna lista di dict:
+          {pos, pid, nome, giri_int, giri_frac, passo, gap_str}
+        ordinata per posizione finale (1 = leader).
+        """
+        proiezioni = []
+        for pid, nome, media_glob, tempi, _tot in pilot_info:
+            if not tempi:
+                continue
+            ultimi = tempi[-n_passo:]
+            passo = sum(ultimi) / len(ultimi) if ultimi else 0
+            if passo <= 0:
+                continue
+            giri_attuali = len(tempi)
+            giri_aggiuntivi_frac = (rem_sec / passo
+                                     if rem_sec > 0 else 0)
+            giri_finali_frac = giri_attuali + giri_aggiuntivi_frac
+            proiezioni.append({
+                "pid": pid, "nome": nome, "passo": passo,
+                "giri_attuali": giri_attuali,
+                "giri_finali_frac": giri_finali_frac,
+                "giri_finali_int": int(giri_finali_frac),
+            })
+        # Sort decrescente per giri previsti totali
+        proiezioni.sort(key=lambda x: -x["giri_finali_frac"])
+        if not proiezioni:
+            return []
+        leader = proiezioni[0]
+        leader_passo = leader["passo"]
+        risultato = []
+        for pos, p in enumerate(proiezioni, start=1):
+            if pos == 1:
+                gap_str = "LEAD"
+            else:
+                delta_frac = (leader["giri_finali_frac"]
+                              - p["giri_finali_frac"])
+                delta_giri = int(delta_frac)
+                frazione_giri = delta_frac - delta_giri
+                tempo_frac = frazione_giri * leader_passo
+                if delta_giri == 0:
+                    gap_str = "-%.1fs" % tempo_frac
+                elif delta_giri == 1:
+                    if tempo_frac >= 0.1:
+                        gap_str = "-1g%ds" % int(round(tempo_frac))
+                    else:
+                        gap_str = "-1g"
+                else:
+                    gap_str = "-%dg" % delta_giri
+            risultato.append({
+                "pos": pos,
+                "pid": p["pid"],
+                "nome": p["nome"],
+                "giri_int": p["giri_finali_int"],
+                "giri_frac": p["giri_finali_frac"],
+                "passo": p["passo"],
+                "gap_str": gap_str,
+            })
+        return risultato
+
     def _live_aggiorna_prev_passo(self):
         """Ricalcola e aggiorna i pannelli laterali PREVISIONE e PASSO.
         Chiamato dopo ogni giro ricevuto (BLE o simulato)."""
@@ -1236,30 +1324,72 @@ class LapTimer:
                 pass
 
         prev_lines = []
-        # Header dinamico dagli orizzonti correnti
-        cols = ["%dm" % h for h in self._LIVE_HORIZONS]
-        header = " %-6s %5s %5s %5s %5s" % (
-            "Pil.", cols[0], cols[1], cols[2], cols[3])
-        prev_lines.append(header)
-        prev_lines.append("-" * len(header))
-        if not pilot_info:
-            prev_lines.append(" (in attesa giri)")
-        for pid, nome, media, tempi, _ in pilot_info:
-            n_fatti = len(tempi)
-            row = []
-            for mm in self._LIVE_HORIZONS:
-                # Quanti giri TOTALI alla fine di una sessione di
-                # mm minuti, se l'utente ha gia' fatto n_fatti giri
-                # in currenttime_sec secondi e mantiene la media:
-                #   giri_totali = n_fatti + (mm*60 - now) / media
-                # Se now > mm*60 (sessione gia' finita), niente
-                # giri rimanenti, totale = giri_fatti.
-                resto_sec = max(0, mm * 60 - currenttime_sec)
-                giri_rest = (int(resto_sec / media)
-                             if media > 0 else 0)
-                row.append(n_fatti + giri_rest)
-            prev_lines.append(" %-6s %5d %5d %5d %5d" % (
-                nome, row[0], row[1], row[2], row[3]))
+        # Modo MyRCM: estrai REMAININGTIME e usa la classifica
+        # predittiva (chi sara' davanti a fine gara, basata su
+        # passo recente di ognuno).
+        rem_sec = 0
+        in_modo_myrcm = (
+            getattr(self, "_myrcm_recorder", None) is not None)
+        if in_modo_myrcm:
+            try:
+                meta = self._myrcm_recorder.metadata_live() or {}
+                rem_str = (meta.get("REMAININGTIME")
+                           or "0:00:00").strip()
+                rem_sec = int(self._parse_myrcm_time(rem_str))
+            except Exception:
+                rem_sec = 0
+        if in_modo_myrcm:
+            # ── PROIEZIONE FINE GARA (modo MyRCM) ──
+            # Header con countdown dinamico
+            mm = rem_sec // 60
+            ss = rem_sec % 60
+            prev_lines.append(" PROIEZIONE FINE GARA")
+            if rem_sec > 0:
+                prev_lines.append("        in -%d:%02d" % (mm, ss))
+            else:
+                prev_lines.append("    SESSIONE FINITA")
+            header = " %-3s %-7s %3s %5s" % (
+                "P.", "Pilota", "Gir", "Gap")
+            prev_lines.append(header)
+            prev_lines.append("-" * len(header))
+            if not pilot_info:
+                prev_lines.append(" (in attesa giri)")
+            else:
+                cls = self._live_classifica_predittiva(
+                    pilot_info, rem_sec, n_passo=3)
+                for r in cls:
+                    pos_str = "%d." % r["pos"]
+                    nome_short = r["nome"][:7]
+                    prev_lines.append(
+                        " %-3s %-7s %3d %5s" % (
+                            pos_str, nome_short,
+                            r["giri_int"], r["gap_str"]))
+        else:
+            # ── Modo BLE/manuale: tabellone orizzonti fissi ──
+            # Header dinamico dagli orizzonti correnti
+            cols = ["%dm" % h for h in self._LIVE_HORIZONS]
+            header = " %-6s %5s %5s %5s %5s" % (
+                "Pil.", cols[0], cols[1], cols[2], cols[3])
+            prev_lines.append(header)
+            prev_lines.append("-" * len(header))
+            if not pilot_info:
+                prev_lines.append(" (in attesa giri)")
+            for pid, nome, media, tempi, _ in pilot_info:
+                n_fatti = len(tempi)
+                row = []
+                for mm in self._LIVE_HORIZONS:
+                    # Quanti giri TOTALI alla fine di una sessione di
+                    # mm minuti, se l'utente ha gia' fatto n_fatti giri
+                    # in currenttime_sec secondi e mantiene la media:
+                    #   giri_totali = n_fatti + (mm*60 - now) / media
+                    # Se now > mm*60 (sessione gia' finita), niente
+                    # giri rimanenti, totale = giri_fatti.
+                    resto_sec = max(0, mm * 60 - currenttime_sec)
+                    giri_rest = (int(resto_sec / media)
+                                 if media > 0 else 0)
+                    row.append(n_fatti + giri_rest)
+                prev_lines.append(" %-6s %5d %5d %5d %5d" % (
+                    nome, row[0], row[1], row[2], row[3]))
 
         try:
             self._live_prev_text.config(state="normal")
