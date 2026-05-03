@@ -608,26 +608,70 @@ class AssistenteGaraMonitor:
             self._recorder = None
 
     def _on_myrcm_event_riallineo(self, meta, data):
-        """Listener: ad ogni EVENT MyRCM con RACESTATE=rsRunning,
-        cerca nella time table la riga corrispondente al GROUP
-        attualmente in pista. Se la pianificazione TrackMind dice
-        ora_X ma in realta' MyRCM e' partito alle ora_Y > ora_X,
-        applica delay = (Y - X) cosi' il countdown si riallinea
-        automaticamente. Trigger una sola volta per group (non
-        oscilla ad ogni messaggio)."""
+        """Listener: riallinea la time table usando il GROUP che
+        MyRCM sta cronometrando IN QUESTO MOMENTO come ancora di
+        verita'. Idea utente: "myrcm trasmette anche la sessione e
+        manche che sta per cronometrare, basta verificare quella con
+        la time table - se diversa, c'e' qualcosa che non va".
+
+        Per ogni EVENT con stato Running riceviamo:
+            GROUP        = sessione attualmente in pista
+            CURRENTTIME  = secondi trascorsi dall'inizio di QUELLA
+                           sessione
+
+        Calcoliamo l'orario di partenza REALE della sessione:
+            dt_partenza_reale = now - CURRENTTIME
+            delta_reale = dt_partenza_reale - dt_pianificato
+
+        Cosi' otteniamo il delay PRECISO a prescindere da quando
+        TrackMind si e' collegato al WebSocket.
+
+        Esempi:
+        - TM connesso al via:
+            now=17:00, CT=00:00, pianif=17:00
+            -> partenza_reale=17:00, delta=0 (puntuale)
+        - TM connesso a meta' sessione:
+            now=17:30, CT=25:00, pianif=17:00
+            -> partenza_reale=17:05, delta=+5 min
+            (NON +30 min come calcolerebbe il delta crudo
+             "now - pianif")
+        - Sessione partita in anticipo:
+            now=17:30, CT=35:00, pianif=17:00
+            -> partenza_reale=16:55, delta=-5 min
+
+        Permettiamo anche delay negativi (anticipi) e riduzioni del
+        delay esistente: il delta calcolato e' sempre la verita' del
+        momento, non c'e' motivo di filtrarlo. Il vecchio check
+        `delta < 0.5` (solo ritardi) e' stato rimosso perche'
+        impediva la calibrazione al ribasso quando il programma
+        recuperava il ritardo.
+
+        Debounce: una sola riallineo per group (`_groups_riallineati`
+        set). Un group nuovo (cambio batteria/manche) puo' rivalidare
+        il delay con valori diversi."""
         try:
+            from datetime import timedelta
             state = (meta or {}).get("RACESTATE", "")
             group = (meta or {}).get("GROUP", "") or ""
-            if state not in ("rsRunning", "rsStarted"):
-                return
             if not group:
                 return
-            # Una sola volta per group (debounce)
-            ultimo = getattr(self,
-                             "_ultimo_group_riallineato", None)
-            if ultimo == group:
+            # Init strutture stato (mantengo _stato_per_group per
+            # eventuali futuri usi diagnostici)
+            if not hasattr(self, "_stato_per_group"):
+                self._stato_per_group = {}
+            if not hasattr(self, "_groups_riallineati"):
+                self._groups_riallineati = set()
+            self._stato_per_group[group] = state
+            # Filtro: solo stati Running (CURRENTTIME ha senso solo
+            # se la sessione e' davvero in corso)
+            if state not in ("rsRunning", "rsStarted"):
                 return
-            self._ultimo_group_riallineato = group
+            # Debounce: gia' fatto per questo group
+            if group in self._groups_riallineati:
+                return
+            # Estrai CURRENTTIME (secondi dall'inizio della sessione)
+            ct_str = (meta or {}).get("CURRENTTIME", "0:00") or "0:00"
+            ct_sec = self._parse_time_str(ct_str)
             # Parse del GROUP -> categoria_tag, fase, manche
             try:
                 from myrcm_import import parse_group_live
@@ -656,10 +700,18 @@ class AssistenteGaraMonitor:
                 riga_match = r
                 break
             if riga_match is None:
+                # Group MyRCM non corrisponde a nessuna riga TT.
+                # Non posso riallineare ma marco come processato
+                # per non ritentare ad ogni messaggio.
+                print("[ag riallineo] SKIP group %r: nessuna riga TT "
+                      "matching (cat=%r fase=%r manche=%r)"
+                      % (group[:60], cat_tag, fase, manche))
+                self._groups_riallineati.add(group)
                 return
             base_dt = riga_match.get("base_date")
             ora_str = riga_match.get("ora", "")
             if not base_dt or not ora_str:
+                self._groups_riallineati.add(group)
                 return
             # dt_pianificato = base_date + ora_str (HH:MM)
             try:
@@ -669,22 +721,34 @@ class AssistenteGaraMonitor:
                                           second=0,
                                           microsecond=0)
             except Exception:
+                self._groups_riallineati.add(group)
                 return
             now = self._now()
-            delta_min = (now - dt_plan).total_seconds() / 60.0
-            # Solo se il delay reale e' significativamente diverso
-            # da quello attuale (margine 0.5 min) E positivo
-            # (ritardi, non anticipi)
-            if delta_min < 0.5:
-                return
+            # Orario di partenza REALE = now - CURRENTTIME
+            dt_partenza_reale = now - timedelta(seconds=ct_sec)
+            delta_min = (dt_partenza_reale - dt_plan).total_seconds() / 60.0
             new_delay = int(round(delta_min))
-            if abs(new_delay - self.delay_min) < 1:
+            old_delay = self.delay_min
+            # Marca come processato a prescindere
+            self._groups_riallineati.add(group)
+            self._ultimo_group_riallineato = group
+            # Soglia di rumore: aggiorna solo se differenza >= 1 min
+            # (evitiamo continue micro-correzioni di pochi secondi)
+            if abs(new_delay - old_delay) < 1:
+                print("[ag riallineo] GROUP %r: delay invariato "
+                      "(%d min) - pianif=%s partenza_reale=%s "
+                      "(now=%s, CT=%ds)"
+                      % (group[:60], old_delay,
+                         dt_plan.strftime("%H:%M"),
+                         dt_partenza_reale.strftime("%H:%M:%S"),
+                         now.strftime("%H:%M:%S"), ct_sec))
                 return
-            print("[ag riallineo] GROUP %r in corso: pianif=%s "
-                  "now=%s delay reale=%d min (era %d)"
-                  % (group[:60], dt_plan.strftime("%H:%M"),
-                     now.strftime("%H:%M"), new_delay,
-                     self.delay_min))
+            print("[ag riallineo] GROUP %r: delay %d -> %d min "
+                  "(pianif=%s partenza_reale=%s now=%s CT=%ds)"
+                  % (group[:60], old_delay, new_delay,
+                     dt_plan.strftime("%H:%M"),
+                     dt_partenza_reale.strftime("%H:%M:%S"),
+                     now.strftime("%H:%M:%S"), ct_sec))
             self.delay_min = new_delay
             self._salva_stato()
             # Notifica subito i tick listener (UI countdown si

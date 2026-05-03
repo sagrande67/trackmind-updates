@@ -1254,19 +1254,60 @@ def salva_scouting(sessione, scouting_dir, transponder_suffix="", setup_snapshot
 def _norm_manche_mr(s):
     """Estrae il numero/lettera di manche da 'Manche 4', 'Group 1',
     'Batteria 2', 'Final A', 'Finals B' (italiano + inglese).
+    Distingue i tipi di finale per evitare collisioni quando in una
+    stessa giornata convivono SubFinal A, MainFinal A, LastChance
+    Final A: una etichetta '"A"' sola le confonderebbe e il match
+    sulla time table aggancerebbe la riga sbagliata.
+
+    Etichette generate:
+      - 'Manche/Group/Batteria/Gruppo N'   -> 'N'      (numero puro)
+      - '1/2 SubFinal X' / 'SubFinal X'    -> 'SUB-X'
+      - 'MainFinal X' / 'Main Final X'     -> 'MAIN-X'
+      - 'LastChance Final X' /
+        'Last Chance Final X'              -> 'LC-X'
+      - 'Final X' / 'Finals X' / 'Finale X' (senza prefisso) -> 'X'
+      - 'Final run N'                      -> 'N' (caso run di
+                                              cronometraggio)
+      - 'N' (numero da solo)               -> 'N'
+
     Ritorna stringa o None."""
     s_low = (s or "").lower().strip()
     if not s_low:
         return None
+    # Manche/Group/Batteria/Gruppo + N (caso piu' comune: prove)
     m = re.search(r'(?:manche|group|batteria|gruppo)\s*(\d+)', s_low)
     if m:
         return m.group(1)
-    # Final/Finals/Finale/Finali con spazio obbligatorio (altrimenti
-    # 'finals a' verrebbe matchato come 'final' + 's' = 'S' invece
-    # di 'finals' + ' ' + 'a' = 'A').
+    # Tipi di finale specializzati: testati PRIMA della regex
+    # 'final\s+X' generica perche' contengono 'final' come substring
+    # e altrimenti collasserebbero tutti su 'X' senza distinzione.
+    # SubFinal X / 1/2 SubFinal X
+    m = re.search(r'subfinal\s+([a-z]|\d+)\b', s_low)
+    if m:
+        return "SUB-" + m.group(1).upper()
+    # MainFinal X (no spazio)
+    m = re.search(r'mainfinal\s+([a-z]|\d+)\b', s_low)
+    if m:
+        return "MAIN-" + m.group(1).upper()
+    # Main Final X (con spazio)
+    m = re.search(r'\bmain\s+final\s+([a-z]|\d+)\b', s_low)
+    if m:
+        return "MAIN-" + m.group(1).upper()
+    # LastChance Final X (no spazio)
+    m = re.search(r'lastchance\s+final\s+([a-z]|\d+)\b', s_low)
+    if m:
+        return "LC-" + m.group(1).upper()
+    # Last Chance Final X (con spazio)
+    m = re.search(r'\blast\s+chance\s+final\s+([a-z]|\d+)\b', s_low)
+    if m:
+        return "LC-" + m.group(1).upper()
+    # Final/Finals/Finale/Finali standard con spazio obbligatorio
+    # (altrimenti 'finals a' verrebbe matchato come 'final' + 's' =
+    # 'S' invece di 'finals' + ' ' + 'a' = 'A').
     m = re.search(r'final(?:e|i|s)?\s+([a-z]|\d+)\b', s_low)
     if m:
         return m.group(1).upper()
+    # Numero da solo
     m = re.search(r'^(\d+)$', s_low)
     if m:
         return m.group(1)
