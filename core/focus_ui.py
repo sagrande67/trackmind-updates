@@ -106,19 +106,41 @@ def evidenzia_listbox(lb, colori=None):
         except (tk.TclError, IndexError):
             pass
 
-    # Strategia v05.06.36: l'highlight si attiva SOLO quando
-    # l'utente preme un tasto di navigazione (frecce, PgUp/PgDn,
-    # Home/End) o clicca col mouse/touch. NON sull'evento
-    # <FocusIn> (che Tk scatena automaticamente al pack del
-    # Toplevel, ingannando il flag).
-    # Cosi' all'apertura della schermata la lista resta sempre
-    # nuda, e il segnale "le frecce funzionano qui" arriva
-    # contestualmente alla prima freccia premuta dall'utente.
+    # Strategia v05.06.38: l'highlight si attiva quando il focus
+    # arriva sulla Listbox (l'utente capisce subito "frecce
+    # attive qui"), MA non sui <FocusIn> che Tk scatena
+    # automaticamente al pack del Toplevel (= prima dell'
+    # interazione utente).
+    # Tecnica: un flag "armed" che parte False e diventa True
+    # dopo 700ms dalla creazione del widget. I <FocusIn> ricevuti
+    # prima (= auto al pack) vengono ignorati; dopo, ogni
+    # <FocusIn> reale (TAB, click) accende l'highlight.
+    lb._focus_ui_armed = False
+
+    def _arm():
+        try:
+            lb._focus_ui_armed = True
+        except Exception:
+            pass
+
+    try:
+        lb.after(700, _arm)
+    except tk.TclError:
+        pass
 
     def _on_user_action(_evt=None):
-        """Frecce / PgUp / PgDn / Home / End / click mouse:
-        l'utente sta interagendo con la lista -> accendi
-        highlight."""
+        """Frecce / PgUp / PgDn / Home / End / click: l'utente
+        sta interagendo con la lista -> accendi highlight."""
+        lb._focus_ui_has_focus = True
+        _refresh()
+
+    def _on_focus_in(_evt=None):
+        """Il focus arriva sulla Listbox (TAB, click). Lo
+        consideriamo solo se il widget e' gia' "armed" (= sono
+        passati i 700ms del setup iniziale, escludendo il
+        FocusIn auto del pack)."""
+        if not getattr(lb, "_focus_ui_armed", False):
+            return
         lb._focus_ui_has_focus = True
         _refresh()
 
@@ -142,17 +164,12 @@ def evidenzia_listbox(lb, colori=None):
         except tk.TclError:
             pass
 
-    # Bind FocusOut per spegnere quando l'utente esce
+    # Bind FocusIn (armato dopo 700ms) e FocusOut
     try:
+        lb.bind("<FocusIn>", _on_focus_in, add="+")
         lb.bind("<FocusOut>", _on_focus_out, add="+")
     except tk.TclError:
         pass
-
-    # NIENTE bind <FocusIn>: Tk lo scatena automaticamente al
-    # pack del Toplevel anche senza interazione utente, e su
-    # uConsole il flag arriverebbe a True senza che l'utente
-    # abbia toccato nulla. Solo le interazioni reali (frecce,
-    # click) accendono l'highlight.
     # Rimuove il dotbox tratteggiato di default (poco visibile sul
     # tema retro, sostituito dall'evidenziazione completa)
     try:
@@ -210,10 +227,29 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         except tk.TclError:
             pass
 
-    # Strategia v05.06.36: highlight solo su interazione utente
-    # (frecce, click), non su <FocusIn> auto al pack del Toplevel.
+    # Strategia v05.06.38: vedi commento in evidenzia_listbox.
+    # Flag "armed" dopo 700ms per ignorare il <FocusIn> auto del
+    # pack iniziale ma accettare quelli successivi (TAB/click).
+    tree._focus_ui_armed = False
+
+    def _arm():
+        try:
+            tree._focus_ui_armed = True
+        except Exception:
+            pass
+
+    try:
+        tree.after(700, _arm)
+    except tk.TclError:
+        pass
 
     def _on_user_action(_evt=None):
+        tree._focus_ui_has_focus = True
+        _refresh()
+
+    def _on_focus_in(_evt=None):
+        if not getattr(tree, "_focus_ui_armed", False):
+            return
         tree._focus_ui_has_focus = True
         _refresh()
 
@@ -222,10 +258,10 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         _refresh()
 
     try:
+        tree.bind("<FocusIn>", _on_focus_in, add="+")
         tree.bind("<FocusOut>", _on_focus_out, add="+")
     except tk.TclError:
         pass
-    # NIENTE bind <FocusIn>: vedi commento in evidenzia_listbox.
 
     # Eventi che ATTIVANO l'highlight (interazione reale, non
     # focus auto). Niente <FocusIn> nella lista.
