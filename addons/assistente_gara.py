@@ -558,8 +558,29 @@ class AssistenteGaraMonitor:
         self.time_table = []
         self.tt_filtrato = []
         self.delay_min = 0
+        self.clock_offset = timedelta(0)
         # Ferma il recorder MyRCM
         self._ferma_recorder_myrcm()
+        # Cancella file di stato persistito su disco. Senza questo
+        # passo, al prossimo riavvio TrackMind ricarica l'evento e
+        # lo ripropone come se l'utente non avesse mai annullato
+        # (bug v05.06.26: codice di rimozione stava in stato_recorder
+        # dopo un return, quindi non veniva mai eseguito).
+        try:
+            if self._state_path and os.path.exists(self._state_path):
+                os.remove(self._state_path)
+                print("[ag] file stato cancellato:",
+                      self._state_path)
+        except Exception as e:
+            print("[ag] errore cancellazione stato:", e)
+        # Notifica un ultimo tick "spento" cosi' i listener UI
+        # (countdown header, label gara, ecc.) si nascondono
+        # immediatamente senza aspettare il prossimo refresh.
+        for cb in list(self._tick_listeners):
+            try:
+                cb(None, None, datetime.now())
+            except Exception:
+                pass
 
     # ── Recorder MyRCM live (auto-import in background) ──
     def _avvia_recorder_myrcm(self):
@@ -973,7 +994,8 @@ class AssistenteGaraMonitor:
                 pista=(self.evento or {}).get("nome", ""),
                 dati_dir=dati_dir,
                 parent=self._ui_live_overlay,
-                on_close=self._on_ui_live_chiusa)
+                on_close=self._on_ui_live_chiusa,
+                modo="live_myrcm")
             # Attiva modalita' MyRCM dopo che la UI e' stata creata.
             # Passa il flag mid_session cosi' il LapTimer sa se deve
             # disabilitare il salvataggio (sessione gia' in corso).
@@ -1077,20 +1099,6 @@ class AssistenteGaraMonitor:
             return rec.stato()
         except Exception:
             return None
-        self.clock_offset = timedelta(0)
-        # Cancella file di stato cosi' al prossimo avvio l'utente
-        # ricomincia con la scelta evento.
-        try:
-            if self._state_path and os.path.exists(self._state_path):
-                os.remove(self._state_path)
-        except Exception:
-            pass
-        # Notifica un ultimo tick "spento" cosi' i listener si nascondono
-        for cb in list(self._tick_listeners):
-            try:
-                cb(None, None, datetime.now())
-            except Exception:
-                pass
 
     @property
     def attivo(self):
@@ -1557,46 +1565,22 @@ class AssistenteGara:
             return
 
         # ── Form input con stile retro coerente (RetroField) ──
-        # Tre campi: filtro nazione, ID/URL evento, simulazione data.
-        # I RetroField hanno lo stesso look del resto di TrackMind:
-        # celle singole verde su nero, cursore lampeggiante, font
-        # monospace WarGames-style. Niente piu' Entry tk grezze.
+        # Due campi: ID/URL evento, simulazione data. Il filtro
+        # nazione e' stato rimosso in v05.06.25 - vengono mostrati
+        # tutti gli eventi MyRCM ONLINE da tutte le nazioni.
         form_frame = tk.Frame(self.root, bg=c["sfondo"])
         form_frame.pack(fill="x", padx=10, pady=(6, 4))
 
-        # Riga 1: filtro nazione
+        # Riga 1: bottone AGGIORNA standalone (lista eventi online)
         bar = tk.Frame(form_frame, bg=c["sfondo"])
         bar.pack(fill="x", pady=(0, 2))
-        if _HAS_RETROFIELD:
-            self._sf_naz = RetroField(bar, label="Filtro nazione",
-                                       tipo="S", lunghezza=8,
-                                       on_enter=lambda: self._carica_eventi(),
-                                       label_width=22)
-            self._sf_naz.pack(side="left", padx=(0, 8))
-            try:
-                self._sf_naz.set("ita")
-            except Exception:
-                pass
-        else:
-            self._naz_var = tk.StringVar(value="ita")
-            tk.Label(bar, text="Filtro nazione:", bg=c["sfondo"],
-                     fg=c["label"], font=self._f_info).pack(side="left",
-                                                             padx=(0, 6))
-            ent = tk.Entry(bar, textvariable=self._naz_var,
-                           font=self._f_info, width=8,
-                           bg=c["sfondo_celle"], fg=c["dati"],
-                           insertbackground=c["dati"],
-                           relief="solid", bd=1)
-            ent.pack(side="left", padx=(0, 8))
-            ent.bind("<Return>", lambda e: self._carica_eventi())
+        tk.Label(bar, text="Eventi MyRCM online (tutte le nazioni):",
+                 bg=c["sfondo"], fg=c["label"],
+                 font=self._f_info).pack(side="left", padx=(0, 8))
         tk.Button(bar, text="AGGIORNA", font=self._f_btn,
                   bg=c["cerca_sfondo"], fg=c["cerca_testo"],
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._carica_eventi).pack(side="left", padx=4)
-        tk.Label(bar,
-                 text="(svuota per tutti gli eventi mondiali)",
-                 bg=c["sfondo"], fg=c["testo_dim"],
-                 font=self._f_small).pack(side="left", padx=(8, 0))
 
         # Riga 2: apri per ID o URL evento (NIENTE bottone inline:
         # l'utente compila ID + altri campi, poi preme APRI EVENTO
@@ -1737,6 +1721,13 @@ class AssistenteGara:
         self.root.after(200, self._carica_eventi)
 
     def _leggi_naz(self):
+        """v05.06.25: filtro nazione rimosso. Ritorna stringa vuota
+        cosi' lista_eventi_online_completa scarica TUTTI gli eventi
+        MyRCM mondiali. Mantenuto per retrocompat con altri punti
+        del codice che potrebbero ancora chiamarlo."""
+        return ""
+
+    def _leggi_naz_legacy(self):
         """Legge il filtro nazione dal RetroField o dalla StringVar
         di fallback."""
         try:
@@ -2022,9 +2013,11 @@ class AssistenteGara:
         self._eventi = eventi or []
         if not self._eventi:
             self._lb_eventi.insert("end",
-                "  Nessun evento online trovato per questo filtro.")
-            self._set_status("Lista vuota: prova a svuotare il filtro "
-                              "nazione o riprovare piu' tardi.", "avviso")
+                "  Nessun evento MyRCM online in questo momento.")
+            self._set_status("Lista vuota: nessun cronometraggio MyRCM "
+                              "in corso. Riprova tra qualche minuto, "
+                              "oppure inserisci ID/URL manualmente.",
+                              "avviso")
             return
         for ev in self._eventi:
             riga = "  %s  -  %s  [%s]" % (

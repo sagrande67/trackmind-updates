@@ -1924,13 +1924,33 @@ class Crono:
                 if getattr(self, "_refresh_silenzioso_flag", False):
                     self._refresh_silenzioso_flag = False
                     if tot > 0 or n_scouting > 0:
-                        # Rebuild lista TUTTI I TEMPI mantenendo
-                        # filtri/selezione (gia' settati in pending
-                        # da _refresh_silenzioso_tutti_tempi)
+                        # Invalida la cache delle sessioni: anche se
+                        # NON ricostruiamo subito la schermata, al
+                        # prossimo rientro in TUTTI I TEMPI l'utente
+                        # vede comunque i nuovi dati.
                         try:
                             self._tutti_sess_cache = None
                         except Exception:
                             pass
+                        # Guardia: se durante il download (lento per
+                        # MyRCM, 5-15s) l'utente e' uscito da TUTTI
+                        # I TEMPI per andare in GRAFICO / ANALISI IA
+                        # / RIVEDI, NON ricostruire la schermata
+                        # (sbatterebbe fuori l'utente). Basta aver
+                        # invalidato la cache: al rientro spontaneo
+                        # vedra' i dati aggiornati.
+                        try:
+                            at_widget = getattr(self, "_at", None)
+                            if at_widget is None or \
+                                    not at_widget.winfo_exists():
+                                # Utente non in TUTTI I TEMPI: skip
+                                # rebuild
+                                return
+                        except (tk.TclError, AttributeError):
+                            return
+                        # Utente ancora in TUTTI I TEMPI: rebuild
+                        # mantenendo filtri/selezione (gia' settati
+                        # in pending da _refresh_silenzioso_tutti_tempi)
                         try:
                             self._schermata_tutti_tempi()
                         except Exception:

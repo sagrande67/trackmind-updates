@@ -373,7 +373,78 @@ def _estrai_parole_chiave(nome_pista):
     return chiave
 
 
-def lista_eventi_online_completa(filtro_nazione=""):
+# Filtro RC-only per la lista eventi MyRCM. Strategia ibrida con
+# whitelist + blacklist (v05.06.28):
+#   1. Se il testo (organizzatore + nome evento) matcha la WHITELIST
+#      RC (scale 1/X, parole-chiave RC tipiche) -> INCLUDE.
+#   2. Altrimenti, se matcha la BLACKLIST non-RC (kart, sci,
+#      pattinaggio, ecc.) -> ESCLUDE.
+#   3. Altrimenti (testo ambiguo, es. "Westerviks Electrical Race"
+#      che dal nome non si capisce se RC ma sul sito MyRCM e'
+#      filtrato sotto Scale 1:8) -> INCLUDE per default ottimistico.
+# Word-boundary su tutto per ridurre falsi positivi.
+
+_RC_HINT_PATTERN = re.compile(
+    r'(?:'
+    # Scale RC (frazione o due-punti): 1/5, 1/8, 1/10, 1/12, 1/24,
+    # 1/28, 1:5, 1:8, ecc. (numeri ragionevoli da 4 a 99)
+    r'\b1[/:][0-9]{1,2}\b|'
+    # Sigle RC inequivocabili
+    r'\brc\b|\befra\b|\bifmar\b|\bfmsi\b|\bfems\b|\bnbrca\b|'
+    r'\broar\b|\borca\b|\bbrca\b|'
+    # Tipi vetture RC
+    r'\bbuggy\b|\btruggy\b|\btouring\b|'
+    r'\bonroad\b|\bon\s+road\b|\boffroad\b|\boff\s+road\b|'
+    r'\bdrift\b|\bcrawler\b|\bshort\s+course\b|\bsc\s+truck\b|'
+    # Carburante / propulsione tipici RC
+    r'\bnitro\b|\bbrushless\b|\bglow\b|\bic\s+track\b|'
+    r'\belettric\w*|\belectric\s+(?:rc|buggy|car|track)|'
+    # Termini "modellismo" multilingua (DE/IT/SE/NO/EN)
+    r'\bmodellsport\b|\bmodellbau\b|\bmodellbil\b|'
+    r'\bmodellbilklubb?\b|\bmodellklubb?\b|\bmodellauto\b|'
+    r'\bmodellismo\b|\bmodel\s+racing\b|'
+    # Mini-Z e altre serie note
+    r'\bmini-?z\b|\bgt8\b|\btc[0-9]\b|\bf1\s+rc\b|'
+    # Termini "klubblop/klubblauf" (norvegese/svedese "club race")
+    r'\bklubblop\b|\bklubblauf\b'
+    r')',
+    re.IGNORECASE)
+
+_NON_RC_PATTERN = re.compile(
+    r'\b('
+    # Kart e varianti: qualsiasi parola che inizia con "kart"
+    # cattura kart, karts, kartodrom, kartbahn, kartarena, kartrace,
+    # kartracing, kartrennen, ecc. Niente RC inizia con "kart"
+    # quindi e' sicuro.
+    r'karts?|kart[a-z]+|gokart[a-z]*|go-kart[a-z]*|'
+    # Pattinaggio (skater, skating, skateboard, ecc.)
+    r'skat[a-z]+|iceskate|inline|rollerblades?|'
+    # Sport invernali / acquatici
+    r'ski|sci|alpine|nordica|biathlon|'
+    r'swim|nuoto|athletic|atletica|'
+    # Running / endurance non-RC
+    r'running|corsa|marathon|triathlon|cycling|ciclismo|'
+    # Altri
+    r'minigolf|bowling|curling|hockey|'
+    r'modellbahn|eisenbahn'  # treni modello (NON modellsport!)
+    r')\b',
+    re.IGNORECASE)
+
+
+def _e_evento_rc(testo):
+    """True se il testo (organizzatore + nome evento) sembra di
+    modellismo RC. Strategia whitelist+blacklist con default
+    ottimistico (vedi commento sopra)."""
+    if not testo:
+        return True  # Niente info: meglio mostrare che escludere
+    if _RC_HINT_PATTERN.search(testo):
+        return True   # Match RC chiaro
+    if _NON_RC_PATTERN.search(testo):
+        return False  # Match non-RC chiaro
+    return True       # Ambiguo: default ottimistico
+
+
+def lista_eventi_online_completa(filtro_nazione="", solo_rc=True):
     """Ritorna TUTTI gli eventi attualmente "online" su MyRCM, senza
     filtro per pista. Usato dall'addon Assistente Gara per mostrare la
     lista da cui l'utente sceglie il proprio evento.
@@ -381,6 +452,10 @@ def lista_eventi_online_completa(filtro_nazione=""):
     Param `filtro_nazione`: se valorizzato (es. "ITA"), filtra solo gli
     eventi di quella nazione. Match insensibile case + presenza
     sottostringa (cosi' "ita" matcha "Italia").
+    Param `solo_rc` (default True): se True, esclude eventi non-RC
+    (kart, pattinaggio, sci, ecc.) tramite blacklist word-boundary
+    su organizzatore + nome evento. MyRCM ospita anche sport diversi
+    dal modellismo RC che non interessano agli utenti TrackMind.
 
     Ritorna lista di dict:
         [{event_id, nome, organizzatore, nazione, link}, ...]
@@ -414,6 +489,14 @@ def lista_eventi_online_completa(filtro_nazione=""):
         # Filtro nazione (opzionale)
         if naz_filter and naz_filter not in nazione.lower():
             continue
+
+        # Filtro RC-only: strategia whitelist+blacklist con default
+        # ottimistico (vedi _e_evento_rc). Esclude solo cio' che e'
+        # palesemente non-RC; gli ambigui passano (default include).
+        if solo_rc:
+            testo_completo = "%s %s" % (organizzatore, evento_text)
+            if not _e_evento_rc(testo_completo):
+                continue
 
         # Estrai event ID dal link rapporti
         link = rapporti.get("link", "") if isinstance(rapporti, dict) else ""

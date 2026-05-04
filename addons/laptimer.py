@@ -221,7 +221,24 @@ class LapTimer:
     STOP        = 4
 
     def __init__(self, setup="", pilota="", pista="", dati_dir="", record_id="",
-                 parent=None, on_close=None, setup_snapshot=None):
+                 parent=None, on_close=None, setup_snapshot=None,
+                 modo="picker"):
+        """Param `modo` (v05.06.22): seleziona la fonte dei tempi
+        SENZA che il LapTimer faccia scelte automatiche all'avvio.
+          - 'picker' (default): mostra schermata di scelta MODALITA'
+            con 3 bottoni MANUALE / LIVE LapMonitor / LIVE MyRCM.
+            L'utente decide esplicitamente cosa usare. Niente scan
+            BLE forzato all'avvio quando vuole solo cronometrare a
+            mano (eliminate le ~36s di tentativi BLE che
+            rallentavano la sessione manuale).
+          - 'manuale': salta il picker, va dritto al cronometro
+            mono-pilota a SPAZIO. Niente scan BLE.
+          - 'live_ble': salta il picker, parte subito lo scan BLE
+            come faceva la versione precedente.
+          - 'live_myrcm': salta il picker. Usato da AssistenteGara
+            per aprire il LapTimer in modalita' MyRCM dopo aver
+            chiamato attiva_myrcm_live. Niente scan BLE.
+        """
         self.setup = setup or "Setup Sconosciuto"
         self.pilota = pilota or "Pilota"
         self.pista = pista or ""
@@ -230,6 +247,7 @@ class LapTimer:
         self.setup_snapshot = setup_snapshot or {}  # dati setup "fotografati"
         self._on_close = on_close
         self._embedded = parent is not None
+        self._modo_iniziale = modo
         self.stato = self.FUEL_SELECT
         self.serbatoio = 0
         self.t_start = 0.0
@@ -268,8 +286,15 @@ class LapTimer:
         self.colori = _carica_colori()
         self._init_root(parent)
         self._init_fonts()
-        # Direttamente alla schermata timer (fuel select rimosso)
-        self._schermata_timer()
+        # Avvia secondo la modalita' richiesta
+        if self._modo_iniziale == "picker":
+            # Mostra il picker MANUALE/LapMonitor/MyRCM
+            self._schermata_modo_picker()
+        else:
+            # Modo gia' deciso dal chiamante: vai dritto al timer.
+            # Lo scan BLE parte solo se modo='live_ble' (vedi
+            # _schermata_timer).
+            self._schermata_timer()
 
     def _init_root(self, parent=None):
         c = self.colori
@@ -648,6 +673,156 @@ class LapTimer:
             return row_h * 12
 
     # =================================================================
+    #  SCHERMATA 1: PICKER MODALITA' (v05.06.22)
+    # =================================================================
+    def _schermata_modo_picker(self):
+        """Schermata di scelta modalita' di cronometraggio.
+        Mostrata all'avvio del LapTimer quando il chiamante non ha
+        gia' deciso la fonte dei tempi (modo='picker').
+
+        Tre opzioni:
+          - MANUALE: cronometro mono-pilota a SPAZIO (stile classico).
+            Niente scan BLE -> niente rallentamenti, niente conflitti
+            con la stampante BT durante la sessione.
+          - LIVE LapMonitor: scan BLE per ricevitore LapM* + griglia
+            multi-pilota popolata dai trasponder (modalita' v05.05.36).
+          - LIVE MyRCM: collegamento al recorder MyRCM gia' attivo
+            (richiede AssistenteGara aperto). Se non c'e' recorder,
+            mostra messaggio informativo e torna al picker.
+        """
+        self._pulisci()
+        c = self.colori
+        try:
+            self.root.title(f"TrackMind LapTimer  v{__version__}")
+        except Exception:
+            pass
+        # Header
+        header = tk.Frame(self.root, bg=c["sfondo"])
+        header.pack(fill="x", pady=(20, 10))
+        tk.Label(header, text="MODALITA' CRONOMETRAGGIO",
+                 bg=c["sfondo"], fg=c["dati"],
+                 font=self._f_big).pack()
+        sub = "Setup: %s   |   Pilota: %s" % (
+            self.setup[:30], self.pilota[:20])
+        tk.Label(header, text=sub,
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_status).pack(pady=(4, 0))
+        tk.Label(header, text="Scegli come acquisire i tempi giro:",
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_info).pack(pady=(20, 0))
+
+        # Container bottoni
+        cont = tk.Frame(self.root, bg=c["sfondo"])
+        cont.pack(expand=True, fill="both", padx=40, pady=20)
+
+        def _make_btn(parent, titolo, descr, callback, abilitato=True,
+                       hint=""):
+            f = tk.Frame(parent, bg=c["sfondo_celle"],
+                         bd=2, relief="ridge",
+                         highlightbackground=c["linee"],
+                         highlightthickness=1)
+            f.pack(fill="x", pady=8, padx=20)
+            fg_t = c["dati"] if abilitato else c["testo_dim"]
+            fg_d = c["testo_dim"]
+            cur = "hand2" if abilitato else "arrow"
+            tk.Label(f, text=titolo, bg=c["sfondo_celle"],
+                     fg=fg_t, font=self._f_lap,
+                     anchor="w").pack(fill="x", padx=14, pady=(8, 2))
+            tk.Label(f, text=descr, bg=c["sfondo_celle"],
+                     fg=fg_d, font=self._f_info,
+                     anchor="w", justify="left").pack(
+                fill="x", padx=14, pady=(0, 8))
+            if hint:
+                tk.Label(f, text=hint, bg=c["sfondo_celle"],
+                         fg=c["stato_avviso"], font=self._f_status,
+                         anchor="w").pack(fill="x", padx=14,
+                                          pady=(0, 8))
+            if abilitato:
+                f.configure(cursor=cur)
+                f.bind("<Button-1>", lambda e: callback())
+                for ch in f.winfo_children():
+                    ch.configure(cursor=cur)
+                    ch.bind("<Button-1>", lambda e: callback())
+            return f
+
+        _make_btn(cont, "[ 1 ]  MANUALE",
+                  "Cronometro mono-pilota con tasto SPAZIO.\n"
+                  "Premi SPAZIO ad ogni passaggio del traguardo.\n"
+                  "Tasti 1-9, 0 simulano altri trasponder per test.",
+                  lambda: self._scegli_modo("manuale"))
+
+        ble_ok = _HAS_LAPMONITOR and _HAS_BLEAK
+        _make_btn(cont, "[ 2 ]  LIVE  -  LapMonitor BT",
+                  "Ricevitore LapMonitor Bluetooth.\n"
+                  "Scan automatico, griglia multi-pilota dai\n"
+                  "trasponder. Richiede ricevitore acceso.",
+                  lambda: self._scegli_modo("live_ble"),
+                  abilitato=ble_ok,
+                  hint=("" if ble_ok else
+                        "Modulo BLE non disponibile (manca bleak)"))
+
+        myrcm_ok = getattr(self, "_myrcm_recorder", None) is not None
+        _make_btn(cont, "[ 3 ]  LIVE  -  MyRCM",
+                  "Cronometraggio dal sito MyRCM (live timing).\n"
+                  "Richiede Assistente Gara aperto con evento\n"
+                  "selezionato. Se non disponibile, prima apri\n"
+                  "Assistente Gara dal menu principale.",
+                  lambda: self._scegli_modo("live_myrcm"),
+                  abilitato=myrcm_ok,
+                  hint=("" if myrcm_ok else
+                        "Recorder MyRCM non attivo: usa "
+                        "Assistente Gara per attivarlo."))
+
+        # Bottoniera in basso: ESCI
+        bottom = tk.Frame(self.root, bg=c["sfondo"])
+        bottom.pack(side="bottom", fill="x", pady=10)
+        btn_esc = tk.Button(bottom, text="ESCI",
+                            command=self._chiudi,
+                            bg=c.get("pulsanti_sfondo", "#1a3a1a"),
+                            fg=c.get("pulsanti_testo",
+                                     c.get("dati", "#39ff14")),
+                            font=self._f_info, bd=1, relief="ridge",
+                            activebackground=c.get("dati", "#39ff14"),
+                            activeforeground=c.get("sfondo",
+                                                   "#0a0a0a"))
+        btn_esc.pack(pady=8)
+
+        # Scorciatoie tastiera 1/2/3 per scelta rapida + ESC
+        self.root.bind("<Key-1>",
+                       lambda e: self._scegli_modo("manuale"))
+        self.root.bind("<Key-2>",
+                       lambda e: (self._scegli_modo("live_ble")
+                                  if ble_ok else None))
+        self.root.bind("<Key-3>",
+                       lambda e: (self._scegli_modo("live_myrcm")
+                                  if myrcm_ok else None))
+        self.root.bind("<Escape>", lambda e: self._chiudi())
+
+    def _scegli_modo(self, modo):
+        """Callback dei bottoni del picker. Memorizza la scelta e
+        passa alla schermata timer (lo scan BLE parte solo se
+        modo='live_ble', vedi _schermata_timer)."""
+        self._modo_iniziale = modo
+        # Pulisci binding del picker prima di passare avanti
+        try:
+            for k in ("<Key-1>", "<Key-2>", "<Key-3>", "<Escape>"):
+                self.root.unbind(k)
+        except Exception:
+            pass
+        if modo == "live_myrcm":
+            # Niente di particolare: il recorder MyRCM e' gia'
+            # attivo (verificato dal picker). Va al timer e attende
+            # gli EVENT WebSocket.
+            self._schermata_timer()
+            # Riattiva il listener MyRCM se non gia' fatto: il
+            # picker e' stato mostrato dopo che attiva_myrcm_live
+            # era stato chiamato? Improbabile in questo flusso,
+            # ma rendiamolo idempotente.
+            return
+        # Manuale o LIVE BLE -> schermata timer normale
+        self._schermata_timer()
+
+    # =================================================================
     #  SCHERMATA 2: TIMER
     # =================================================================
     def _schermata_timer(self):
@@ -803,17 +978,44 @@ class LapTimer:
                             lambda e, n=i: self._sim_trasponder(n))
         self.root.bind("<Key-0>", lambda e: self._sim_trasponder(10))
 
-        # Avvia scan BLE LapMonitor in background (5s). Se trova e
-        # connette -> passa a modalita' LIVE multi-pilota. Se non
-        # trova, resta tutto come oggi (manuale mono-pilota).
-        self._avvia_scan_lapmonitor()
+        # Avvia scan BLE LapMonitor SOLO se il modo iniziale e'
+        # 'live_ble' (utente ha esplicitamente scelto LapMonitor dal
+        # picker). In 'manuale' niente scan = niente conflitti BLE
+        # con la sessione manuale. In 'live_myrcm' niente scan
+        # perche' il recorder MyRCM e' gia' in funzione.
+        if getattr(self, "_modo_iniziale", "picker") == "live_ble":
+            self._avvia_scan_lapmonitor()
 
     def _sim_trasponder(self, pilot_num):
-        """Simula un passaggio trasponder per un numero pilota dato.
-        Usato dai tasti 1-9, 0 per test multi-pilota senza hardware.
-        La logica e' identica a quella del LapMonitorClient reale:
-        primo passaggio -> delta=None (solo baseline), successivi
-        -> delta = tempo dall'ultimo passaggio stesso pilota."""
+        """Registra il passaggio sotto il traguardo del pilota
+        numerato (tasti 1-9, 0 = pilota 10).
+
+        Stessa logica del LapMonitorClient BLE reale:
+          - PRIMO press del pilota N -> delta=None (solo baseline:
+            il pilota e' appena passato per la prima volta, parte
+            il SUO cronometro personale, niente giro registrato).
+          - Press successivi -> delta = tempo dall'ultimo passaggio
+            dello stesso pilota = giro completato.
+
+        In modo MANUALE: richiede SPAZIO premuto prima (= "VIA della
+        manche", `self.stato == self.RUNNING`). Se l'utente preme un
+        numero senza aver dato il VIA, il passaggio viene IGNORATO
+        (no auto-avvio, l'utente deve dare prima il via alla manche
+        con SPAZIO). Nei modi BLE/MyRCM e nei test mono-pilota
+        legacy, comportamento storico (auto-avvia LIVE in ATTESA)."""
+        modo = getattr(self, "_modo_iniziale", "picker")
+        # In MANUALE serve SPAZIO premuto prima (tempo manche)
+        if modo == "manuale" and self.stato != self.RUNNING:
+            # Feedback visivo opzionale (status bar)
+            try:
+                if hasattr(self, "_lbl_status"):
+                    self._lbl_status.config(
+                        text="Premi SPAZIO per avviare la manche, "
+                             "poi i tasti 1-9 per i passaggi piloti",
+                        fg=self.colori.get("stato_avviso", "#ffaa00"))
+            except Exception:
+                pass
+            return
         # Attiva LIVE se non ancora attivo (primo keypress)
         if not self._live_mode:
             # Serve che il timer sia in ATTESA o RUNNING
@@ -1474,12 +1676,12 @@ class LapTimer:
             passo_lines.append(" (in attesa giri)")
         # Ordine: piloti con passo migliore in alto.
         # Passo calcolato con la stessa logica della classifica
-        # predittiva (finestra 10 giri + filtro outlier 1.4x best),
+        # predittiva (TUTTI i giri filtrati per outlier 1.4x best),
         # cosi' i due pannelli sono coerenti tra loro.
         passo_rows = []
         for pid, nome, media_glob, tempi, _ in pilot_info:
             passo = LapTimer._live_calcola_passo(
-                tempi, finestra=10, soglia_outlier=1.4)
+                tempi, soglia_outlier=1.4)
             if passo <= 0:
                 continue
             delta = passo - media_glob
@@ -2218,12 +2420,26 @@ class LapTimer:
         # giri.
         if getattr(self, "_myrcm_recorder", None) is not None:
             return "break"
+        modo = getattr(self, "_modo_iniziale", "picker")
         if self.stato == self.ATTESA:
             self._avvia()
+            # In modo MANUALE, SPAZIO avvia il "tempo manche" e
+            # attiva subito la griglia multi-pilota: da ora in poi
+            # i tasti 1-9 (e 0 = pilota 10) registrano i passaggi
+            # dei piloti sotto il traguardo. Primo press di N =
+            # baseline (start cronometro personale del pilota N,
+            # niente giro registrato). Press successivi = giri
+            # reali col tempo passaggio-a-passaggio. Stessa logica
+            # del modo LIVE BLE / MyRCM.
+            if modo == "manuale" and not self._live_mode:
+                try:
+                    self._live_attiva_modo()
+                except Exception as e:
+                    print("[laptimer] errore attivazione LIVE manuale:", e)
         elif self.stato == self.RUNNING:
-            # In LIVE multi-pilota i giri arrivano dal ricevitore BLE:
-            # SPAZIO non deve aggiungere giri manuali alla colonna
-            # mono-pilota (che tra l'altro non esiste piu').
+            # In LIVE multi-pilota i giri arrivano dal ricevitore BLE
+            # o dai tasti 1-9 (modo manuale): SPAZIO non deve
+            # aggiungere giri manuali alla colonna mono-pilota.
             if self._live_mode:
                 return
             if self._space_locked:
