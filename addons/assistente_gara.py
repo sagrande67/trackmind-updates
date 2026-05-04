@@ -1691,6 +1691,15 @@ class AssistenteGara:
                               lambda e: self._scegli_evento())
         self._lb_eventi.bind("<Return>",
                               lambda e: self._scegli_evento())
+        # v05.06.30: evidenziazione visibile della riga corrente
+        # (sfondo verde brillante + testo nero) anche senza focus
+        try:
+            from focus_ui import evidenzia_listbox
+            self._refresh_lb_eventi = evidenzia_listbox(
+                self._lb_eventi, colori=c)
+        except Exception as _e:
+            print("[ag] focus_ui non disponibile:", _e)
+            self._refresh_lb_eventi = lambda: None
 
         # Bottoni in fondo: UNICO "APRI EVENTO" che usa l'ID se
         # compilato, altrimenti la selezione della lista. Cosi' sai
@@ -2027,6 +2036,11 @@ class AssistenteGara:
             self._lb_eventi.insert("end", riga)
         self._lb_eventi.selection_set(0)
         self._lb_eventi.activate(0)
+        # Riapplica evidenziazione visibile dopo il rebuild lista
+        try:
+            self._refresh_lb_eventi()
+        except Exception:
+            pass
         # Niente focus auto qui: l'utente puo' voler compilare prima
         # i campi (ID, simulazione, nome) e poi premere APRI EVENTO.
         # Se preferisce usare la lista basta cliccarla o premere Tab.
@@ -2138,6 +2152,13 @@ class AssistenteGara:
         # TAB esce verso il bottone APRI CATEGORIA.
         self._lb_cat.bind("<Tab>", lambda e: (
             btn_apri_cat.focus_set(), "break")[-1])
+        # v05.06.30: evidenziazione visibile riga corrente
+        try:
+            from focus_ui import evidenzia_listbox
+            self._refresh_lb_cat = evidenzia_listbox(
+                self._lb_cat, colori=c)
+        except Exception:
+            self._refresh_lb_cat = lambda: None
         self._lb_cat.insert("end", "  Caricamento categorie...")
 
         btnbar = tk.Frame(self.root, bg=c["sfondo"])
@@ -2192,6 +2213,11 @@ class AssistenteGara:
             self._lb_cat.insert("end", riga)
         self._lb_cat.selection_set(0)
         self._lb_cat.activate(0)
+        # Riapplica evidenziazione visibile dopo rebuild lista
+        try:
+            self._refresh_lb_cat()
+        except Exception:
+            pass
         # Focus sulla listbox cosi' frecce su/giu' (native) e
         # Enter/Tab funzionano subito senza dover cliccare.
         try:

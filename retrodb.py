@@ -2912,6 +2912,15 @@ class RetroDBApp:
         sb = tk.Scrollbar(lista_frame, orient="vertical", command=self._wifi_listbox.yview)
         sb.pack(side="right", fill="y")
         self._wifi_listbox.configure(yscrollcommand=sb.set)
+        # v05.06.30: evidenziazione visibile riga corrente (sfondo
+        # verde brillante + testo nero) anche senza focus tastiera
+        try:
+            from core.focus_ui import evidenzia_listbox
+            self._wifi_lb_refresh = evidenzia_listbox(
+                self._wifi_listbox, colori=c)
+        except Exception as _e:
+            print("[retrodb] focus_ui non disponibile:", _e)
+            self._wifi_lb_refresh = lambda: None
 
         tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(2), _S(2)))
 
@@ -3056,6 +3065,11 @@ class RetroDBApp:
                     self._wifi_listbox.activate(sel_idx)
                     self._wifi_listbox.see(sel_idx)
                     self._wifi_on_select()
+                    # Riapplica evidenziazione visibile dopo rebuild
+                    try:
+                        self._wifi_lb_refresh()
+                    except Exception:
+                        pass
                 else:
                     self._wifi_status.config(text="Nessuna rete trovata - premi AGGIORNA",
                                               fg=c["stato_avviso"])
