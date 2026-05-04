@@ -199,9 +199,24 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
     Compatibile con altri tag esistenti sulla riga: aggiunge/rimuove
     solo `tag_name`, non tocca gli altri.
     """
+    from tkinter import ttk
     c = colori or {}
+    bg_normale = c.get("sfondo_celle", "#080808")
+    fg_normale = c.get("dati", "#39ff14")
     bg_corrente = c.get("dati", "#39ff14")
     fg_corrente = c.get("sfondo", "#0a0a0a")
+
+    # Per ttk.Treeview lo style.map[("selected", ...)] ha priorita'
+    # sui tag, quindi il tag "focus_riga" da solo non basta a
+    # nascondere/mostrare la selezione. Modifichiamo dinamicamente
+    # il style.map del widget per neutralizzare il colore selected
+    # quando ha_focus=False.
+    style_name = "Retro.Treeview"
+    try:
+        style_name = tree.cget("style") or "Retro.Treeview"
+    except tk.TclError:
+        pass
+    _style = ttk.Style()
 
     try:
         tree.tag_configure(tag_name,
@@ -216,6 +231,24 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         try:
             ha_focus = bool(getattr(tree, "_focus_ui_has_focus",
                                      False))
+            # Modifica lo style.map del Treeview cosi' lo stato
+            # "selected" cambia colore in base al focus:
+            # - focus ON: verde fluo + nero (la selezione si vede)
+            # - focus OFF: colori normali (la selezione e'
+            #   memorizzata internamente ma graficamente invisibile)
+            try:
+                if ha_focus:
+                    _style.map(style_name,
+                        background=[("selected", bg_corrente)],
+                        foreground=[("selected", fg_corrente)])
+                else:
+                    _style.map(style_name,
+                        background=[("selected", bg_normale)],
+                        foreground=[("selected", fg_normale)])
+            except tk.TclError:
+                pass
+            # Manteniamo anche il tag (utile se altri pezzi del
+            # codice vogliono distinguere la riga "in focus")
             sel = set(tree.selection()) if ha_focus else set()
             for iid in tree.get_children(""):
                 tags = list(tree.item(iid, "tags") or [])
