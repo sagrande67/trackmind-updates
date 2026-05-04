@@ -103,55 +103,53 @@ def evidenzia_listbox(lb, colori=None):
         except (tk.TclError, IndexError):
             pass
 
-    # Disabilita il focus auto: Tk al pack del Toplevel cerca il
-    # primo widget con `takefocus=1` e gli da' il focus. La
-    # Listbox tipicamente lo ottiene per prima e scatena <FocusIn>
-    # all'apertura della schermata. Settando `takefocus=0` la
-    # lista viene esclusa dal "first focus traversal" e il TAB:
-    # rimane focus-eligible al CLICK del mouse (comportamento
-    # nativo Tk: il click assegna sempre focus, ignora takefocus).
-    # Quando l'utente clicca, riabilitiamo TAB cosi' la
-    # navigazione successiva e' fluida.
-    try:
-        lb.config(takefocus=0)
-    except tk.TclError:
-        pass
+    # Strategia v05.06.36: l'highlight si attiva SOLO quando
+    # l'utente preme un tasto di navigazione (frecce, PgUp/PgDn,
+    # Home/End) o clicca col mouse/touch. NON sull'evento
+    # <FocusIn> (che Tk scatena automaticamente al pack del
+    # Toplevel, ingannando il flag).
+    # Cosi' all'apertura della schermata la lista resta sempre
+    # nuda, e il segnale "le frecce funzionano qui" arriva
+    # contestualmente alla prima freccia premuta dall'utente.
 
-    def _on_focus_in(_evt=None):
+    def _on_user_action(_evt=None):
+        """Frecce / PgUp / PgDn / Home / End / click mouse:
+        l'utente sta interagendo con la lista -> accendi
+        highlight."""
         lb._focus_ui_has_focus = True
-        # L'utente ha appena interagito (click o TAB esplicito):
-        # da ora la lista partecipa al ciclo TAB normalmente.
-        try:
-            lb.config(takefocus=1)
-        except tk.TclError:
-            pass
         _refresh()
 
     def _on_focus_out(_evt=None):
+        """Il widget ha perso il focus (TAB-out, ESC, click
+        altrove): spegni highlight."""
         lb._focus_ui_has_focus = False
         _refresh()
 
-    # Bind focus separati: gestiscono SOLO lo stato focus
-    try:
-        lb.bind("<FocusIn>", _on_focus_in, add="+")
-        lb.bind("<FocusOut>", _on_focus_out, add="+")
-    except tk.TclError:
-        pass
-
-    # Bind eventi che cambiano la riga selezionata (rifresca solo
-    # se la lista ha gia' il focus, sennò non fa nulla di visibile)
-    eventi = (
-        "<<ListboxSelect>>",
+    # Bind frecce/PgUp/etc che ATTIVANO l'highlight
+    user_eventi = (
         "<KeyRelease-Up>", "<KeyRelease-Down>",
         "<KeyRelease-Prior>", "<KeyRelease-Next>",
         "<KeyRelease-Home>", "<KeyRelease-End>",
         "<ButtonRelease-1>",
+        "<<ListboxSelect>>",
     )
-    for ev in eventi:
+    for ev in user_eventi:
         try:
-            lb.bind(ev, _refresh, add="+")
+            lb.bind(ev, _on_user_action, add="+")
         except tk.TclError:
             pass
+
+    # Bind FocusOut per spegnere quando l'utente esce
+    try:
+        lb.bind("<FocusOut>", _on_focus_out, add="+")
+    except tk.TclError:
+        pass
+
+    # NIENTE bind <FocusIn>: Tk lo scatena automaticamente al
+    # pack del Toplevel anche senza interazione utente, e su
+    # uConsole il flag arriverebbe a True senza che l'utente
+    # abbia toccato nulla. Solo le interazioni reali (frecce,
+    # click) accendono l'highlight.
     # Rimuove il dotbox tratteggiato di default (poco visibile sul
     # tema retro, sostituito dall'evidenziazione completa)
     try:
@@ -209,20 +207,11 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         except tk.TclError:
             pass
 
-    # Stesso pattern Listbox: takefocus=0 di default per evitare
-    # il "first focus traversal" automatico di Tk al pack del
-    # Toplevel. Click mouse riassegna focus comunque.
-    try:
-        tree.config(takefocus=0)
-    except tk.TclError:
-        pass
+    # Strategia v05.06.36: highlight solo su interazione utente
+    # (frecce, click), non su <FocusIn> auto al pack del Toplevel.
 
-    def _on_focus_in(_evt=None):
+    def _on_user_action(_evt=None):
         tree._focus_ui_has_focus = True
-        try:
-            tree.config(takefocus=1)
-        except tk.TclError:
-            pass
         _refresh()
 
     def _on_focus_out(_evt=None):
@@ -230,21 +219,23 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         _refresh()
 
     try:
-        tree.bind("<FocusIn>", _on_focus_in, add="+")
         tree.bind("<FocusOut>", _on_focus_out, add="+")
     except tk.TclError:
         pass
+    # NIENTE bind <FocusIn>: vedi commento in evidenzia_listbox.
 
+    # Eventi che ATTIVANO l'highlight (interazione reale, non
+    # focus auto). Niente <FocusIn> nella lista.
     eventi = (
         "<<TreeviewSelect>>",
         "<KeyRelease-Up>", "<KeyRelease-Down>",
         "<KeyRelease-Prior>", "<KeyRelease-Next>",
         "<KeyRelease-Home>", "<KeyRelease-End>",
-        "<ButtonRelease-1>", "<FocusIn>",
+        "<ButtonRelease-1>",
     )
     for ev in eventi:
         try:
-            tree.bind(ev, _refresh, add="+")
+            tree.bind(ev, _on_user_action, add="+")
         except tk.TclError:
             pass
     _refresh()
