@@ -1726,6 +1726,14 @@ class AssistenteGara:
                            lambda e: self._apri_popup_simulazione())
         except Exception:
             pass
+        # Forza focus iniziale sul toplevel per togliere il focus
+        # auto-assegnato da Tk alla Listbox (v05.06.34): la lista
+        # eventi parte SPENTA finche' l'utente non ci arriva con
+        # TAB/click. Cosi' "highlight verde" = "frecce attive QUI".
+        try:
+            self.root.focus_set()
+        except Exception:
+            pass
         # Auto-carica all'avvio
         self.root.after(200, self._carica_eventi)
 

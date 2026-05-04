@@ -2967,6 +2967,15 @@ class RetroDBApp:
 
         self.root.bind("<Escape>", lambda e: self._wifi_esci())
 
+        # Forza focus iniziale sul toplevel per togliere il focus
+        # auto-assegnato da Tk alla Listbox (v05.06.34): la lista
+        # reti parte SPENTA finche' l'utente non ci arriva con
+        # TAB/click. Cosi' "highlight verde" = "frecce attive QUI".
+        try:
+            self.root.focus_set()
+        except Exception:
+            pass
+
         # Avvia scan + auto-refresh ogni 15 sec
         self._wifi_reti = []
         self._wifi_auto_refresh = True
