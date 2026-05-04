@@ -63,21 +63,48 @@ def evidenzia_listbox(lb, colori=None):
     fg_normale = c.get("dati", "#39ff14")
     bg_corrente = c.get("dati", "#39ff14")
     fg_corrente = c.get("sfondo", "#0a0a0a")
+    # Prefisso visivo: freccia "▶" sulla riga corrente, 2 spazi
+    # sulle altre per allineamento. Si vede SEMPRE, indipendente
+    # da focus o stile selezione.
+    PREFIX_ON = "\u25b6 "   # "▶ " (freccia piena destra)
+    PREFIX_OFF = "  "        # 2 spazi (stessa larghezza)
+
+    def _strip_prefix(txt):
+        """Rimuove eventuale prefisso precedentemente aggiunto."""
+        if txt.startswith(PREFIX_ON):
+            return txt[len(PREFIX_ON):]
+        if txt.startswith(PREFIX_OFF):
+            return txt[len(PREFIX_OFF):]
+        return txt
 
     def _refresh(_evt=None):
+        # Flag anti-ricorsione: la sequenza delete/insert qui
+        # sotto rilancia <<ListboxSelect>>, che richiamerebbe
+        # _refresh -> loop infinito. Con il flag il refresh
+        # innescato dal nostro stesso lavoro viene ignorato.
+        if getattr(lb, "_focus_ui_updating", False):
+            return
+        lb._focus_ui_updating = True
         try:
             sel = lb.curselection()
             n = lb.size()
             if sel:
                 idx_sel = sel[0]
             else:
-                # Se nessuna selezione, prova l'indice "active"
-                # (la riga focused col dotbox tk)
                 try:
                     idx_sel = lb.index("active")
                 except tk.TclError:
                     idx_sel = -1
             for i in range(n):
+                # Aggiorna testo (con prefisso) solo se diverso
+                txt_attuale = lb.get(i)
+                txt_pulito = _strip_prefix(txt_attuale)
+                want_prefix = PREFIX_ON if i == idx_sel else PREFIX_OFF
+                txt_voluto = want_prefix + txt_pulito
+                if txt_attuale != txt_voluto:
+                    lb.delete(i)
+                    lb.insert(i, txt_voluto)
+                # Colori
                 if i == idx_sel:
                     lb.itemconfig(i,
                                    bg=bg_corrente, fg=fg_corrente,
@@ -88,8 +115,19 @@ def evidenzia_listbox(lb, colori=None):
                                    bg=bg_normale, fg=fg_normale,
                                    selectbackground=bg_corrente,
                                    selectforeground=fg_corrente)
+            # Ripristina la selezione tk dopo i delete/insert
+            # (delete azzera anche curselection)
+            if 0 <= idx_sel < n:
+                try:
+                    lb.selection_clear(0, "end")
+                    lb.selection_set(idx_sel)
+                    lb.activate(idx_sel)
+                except tk.TclError:
+                    pass
         except (tk.TclError, IndexError):
             pass
+        finally:
+            lb._focus_ui_updating = False
 
     eventi = (
         "<<ListboxSelect>>",
