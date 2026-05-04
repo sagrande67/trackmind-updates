@@ -103,8 +103,28 @@ def evidenzia_listbox(lb, colori=None):
         except (tk.TclError, IndexError):
             pass
 
+    # Disabilita il focus auto: Tk al pack del Toplevel cerca il
+    # primo widget con `takefocus=1` e gli da' il focus. La
+    # Listbox tipicamente lo ottiene per prima e scatena <FocusIn>
+    # all'apertura della schermata. Settando `takefocus=0` la
+    # lista viene esclusa dal "first focus traversal" e il TAB:
+    # rimane focus-eligible al CLICK del mouse (comportamento
+    # nativo Tk: il click assegna sempre focus, ignora takefocus).
+    # Quando l'utente clicca, riabilitiamo TAB cosi' la
+    # navigazione successiva e' fluida.
+    try:
+        lb.config(takefocus=0)
+    except tk.TclError:
+        pass
+
     def _on_focus_in(_evt=None):
         lb._focus_ui_has_focus = True
+        # L'utente ha appena interagito (click o TAB esplicito):
+        # da ora la lista partecipa al ciclo TAB normalmente.
+        try:
+            lb.config(takefocus=1)
+        except tk.TclError:
+            pass
         _refresh()
 
     def _on_focus_out(_evt=None):
@@ -189,8 +209,20 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
         except tk.TclError:
             pass
 
+    # Stesso pattern Listbox: takefocus=0 di default per evitare
+    # il "first focus traversal" automatico di Tk al pack del
+    # Toplevel. Click mouse riassegna focus comunque.
+    try:
+        tree.config(takefocus=0)
+    except tk.TclError:
+        pass
+
     def _on_focus_in(_evt=None):
         tree._focus_ui_has_focus = True
+        try:
+            tree.config(takefocus=1)
+        except tk.TclError:
+            pass
         _refresh()
 
     def _on_focus_out(_evt=None):
