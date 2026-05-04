@@ -86,10 +86,13 @@ def evidenzia_listbox(lb, colori=None):
                     idx_sel = -1
             ha_focus = bool(getattr(lb, "_focus_ui_has_focus", False))
             for i in range(n):
-                # Solo COLORI: niente cambi di testo, niente
-                # prefisso. Lo stato focus + sfondo verde brillante
-                # sulla riga corrente bastano a comunicare "le
-                # frecce funzionano qui".
+                # Tk applica `selectbackground` alle righe in
+                # `selection_set`, IGNORANDO il `bg` di itemconfig.
+                # Quindi senza focus dobbiamo neutralizzare ANCHE
+                # selectbackground/selectforeground (= colori
+                # normali), altrimenti la riga selezionata appare
+                # comunque evidenziata. Solo quando ha_focus, la
+                # riga corrente passa al verde brillante.
                 if ha_focus and i == idx_sel:
                     lb.itemconfig(i,
                                    bg=bg_corrente, fg=fg_corrente,
@@ -98,8 +101,8 @@ def evidenzia_listbox(lb, colori=None):
                 else:
                     lb.itemconfig(i,
                                    bg=bg_normale, fg=fg_normale,
-                                   selectbackground=bg_corrente,
-                                   selectforeground=fg_corrente)
+                                   selectbackground=bg_normale,
+                                   selectforeground=fg_normale)
         except (tk.TclError, IndexError):
             pass
 
