@@ -77,6 +77,14 @@ def evidenzia_listbox(lb, colori=None):
             return txt[len(PREFIX_OFF):]
         return txt
 
+    # Flag focus tastiera: highlight visibile SOLO quando il widget
+    # ha effettivamente il focus (= le frecce su/giu' sono valide
+    # qui). Senza focus la lista appare normale, cosi' l'utente non
+    # confonde "riga selezionata in passato" con "qui posso navigare
+    # con le frecce ora". Setup iniziale a False finche' Tk non
+    # notifica un <FocusIn>.
+    lb._focus_ui_has_focus = False
+
     def _refresh(_evt=None):
         # Flag anti-ricorsione: la sequenza delete/insert qui
         # sotto rilancia <<ListboxSelect>>, che richiamerebbe
@@ -95,17 +103,30 @@ def evidenzia_listbox(lb, colori=None):
                     idx_sel = lb.index("active")
                 except tk.TclError:
                     idx_sel = -1
+            ha_focus = bool(getattr(lb, "_focus_ui_has_focus", False))
             for i in range(n):
-                # Aggiorna testo (con prefisso) solo se diverso
+                # Testo: prefisso ▶ SOLO se la lista ha il focus
+                # tastiera E questa e' la riga corrente. Altrimenti
+                # niente prefisso (lista appare "spenta", chiarendo
+                # che le frecce non sono attive qui).
                 txt_attuale = lb.get(i)
                 txt_pulito = _strip_prefix(txt_attuale)
-                want_prefix = PREFIX_ON if i == idx_sel else PREFIX_OFF
-                txt_voluto = want_prefix + txt_pulito
+                if ha_focus and i == idx_sel:
+                    txt_voluto = PREFIX_ON + txt_pulito
+                elif ha_focus:
+                    # Spazi di allineamento solo quando la lista
+                    # e' attiva, per non far "saltare" il testo
+                    # quando l'utente entra/esce con TAB
+                    txt_voluto = PREFIX_OFF + txt_pulito
+                else:
+                    # Senza focus, testo nudo: niente segnali visivi
+                    txt_voluto = txt_pulito
                 if txt_attuale != txt_voluto:
                     lb.delete(i)
                     lb.insert(i, txt_voluto)
-                # Colori
-                if i == idx_sel:
+                # Colori: sfondo verde brillante solo per riga
+                # corrente E SOLO se la lista ha focus
+                if ha_focus and i == idx_sel:
                     lb.itemconfig(i,
                                    bg=bg_corrente, fg=fg_corrente,
                                    selectbackground=bg_corrente,
@@ -129,12 +150,29 @@ def evidenzia_listbox(lb, colori=None):
         finally:
             lb._focus_ui_updating = False
 
+    def _on_focus_in(_evt=None):
+        lb._focus_ui_has_focus = True
+        _refresh()
+
+    def _on_focus_out(_evt=None):
+        lb._focus_ui_has_focus = False
+        _refresh()
+
+    # Bind focus separati: gestiscono SOLO lo stato focus
+    try:
+        lb.bind("<FocusIn>", _on_focus_in, add="+")
+        lb.bind("<FocusOut>", _on_focus_out, add="+")
+    except tk.TclError:
+        pass
+
+    # Bind eventi che cambiano la riga selezionata (rifresca solo
+    # se la lista ha gia' il focus, sennò non fa nulla di visibile)
     eventi = (
         "<<ListboxSelect>>",
         "<KeyRelease-Up>", "<KeyRelease-Down>",
         "<KeyRelease-Prior>", "<KeyRelease-Next>",
         "<KeyRelease-Home>", "<KeyRelease-End>",
-        "<ButtonRelease-1>", "<FocusIn>",
+        "<ButtonRelease-1>",
     )
     for ev in eventi:
         try:
@@ -154,8 +192,9 @@ def evidenzia_listbox(lb, colori=None):
 
 def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
     """Evidenzia la riga corrente di un Treeview con sfondo verde
-    brillante + testo nero, applicando un tag dedicato. Persistente
-    anche senza focus.
+    brillante + testo nero, applicando un tag dedicato. Visibile
+    SOLO quando il widget ha il focus tastiera (le frecce sono
+    attive); senza focus la riga appare normale.
 
     Args:
         tree: istanza ttk.Treeview gia' creata
@@ -180,9 +219,13 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
     except tk.TclError:
         pass
 
+    tree._focus_ui_has_focus = False
+
     def _refresh(_evt=None):
         try:
-            sel = set(tree.selection())
+            ha_focus = bool(getattr(tree, "_focus_ui_has_focus",
+                                     False))
+            sel = set(tree.selection()) if ha_focus else set()
             for iid in tree.get_children(""):
                 tags = list(tree.item(iid, "tags") or [])
                 if tag_name in tags:
@@ -192,6 +235,20 @@ def evidenzia_treeview(tree, colori=None, tag_name="focus_riga"):
                 tree.item(iid, tags=tuple(tags))
         except tk.TclError:
             pass
+
+    def _on_focus_in(_evt=None):
+        tree._focus_ui_has_focus = True
+        _refresh()
+
+    def _on_focus_out(_evt=None):
+        tree._focus_ui_has_focus = False
+        _refresh()
+
+    try:
+        tree.bind("<FocusIn>", _on_focus_in, add="+")
+        tree.bind("<FocusOut>", _on_focus_out, add="+")
+    except tk.TclError:
+        pass
 
     eventi = (
         "<<TreeviewSelect>>",
