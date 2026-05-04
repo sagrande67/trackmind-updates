@@ -3182,6 +3182,13 @@ class RetroDBApp:
         sb = tk.Scrollbar(lista_frame, orient="vertical", command=self._upd_listbox.yview)
         sb.pack(side="right", fill="y")
         self._upd_listbox.configure(yscrollcommand=sb.set)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_listbox
+            self._upd_lb_refresh = evidenzia_listbox(
+                self._upd_listbox, colori=c)
+        except Exception:
+            self._upd_lb_refresh = lambda: None
 
         tk.Frame(self._vista, bg=c["linee"], height=1).pack(fill="x", padx=_S(10), pady=(_S(2), _S(2)))
 
@@ -3259,6 +3266,10 @@ class RetroDBApp:
                 fg=c["stato_ok"])
             self._upd_listbox.selection_set(0)
             self._upd_listbox.focus_set()
+            try:
+                self._upd_lb_refresh()
+            except Exception:
+                pass
         else:
             self._upd_status.config(
                 text="Nessun aggiornamento disponibile (v%s e' corrente)" % APP_VERSION,
@@ -3565,9 +3576,19 @@ class RetroDBApp:
         sb = tk.Scrollbar(list_frame, orient="vertical", command=lb.yview)
         sb.pack(side="right", fill="y")
         lb.configure(yscrollcommand=sb.set)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_listbox
+            _bk_refresh = evidenzia_listbox(lb, colori=c)
+        except Exception:
+            _bk_refresh = lambda: None
 
         for f, fp, size_kb, info_txt in zip_files:
             lb.insert("end", "  %s  (%.0f KB)%s" % (f, size_kb, info_txt))
+        try:
+            _bk_refresh()
+        except Exception:
+            pass
 
         lb.selection_set(0)
         lb.focus_set()
@@ -5626,6 +5647,12 @@ class RetroDBApp:
         hsb.pack(side="bottom", fill="x")
         step_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         step_tree.pack(side="left", fill="both", expand=True)
+        # v05.06.39: highlight visibile della riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_treeview
+            evidenzia_treeview(step_tree, colori=c)
+        except Exception:
+            pass
 
         for col_id, titolo, larg in colonne:
             step_tree.heading(col_id, text=titolo, anchor="w")
@@ -5920,6 +5947,12 @@ class RetroDBApp:
         hsb.pack(side="bottom", fill="x")
         storico_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         storico_tree.pack(side="left", fill="both", expand=True)
+        # v05.06.39: highlight visibile della riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_treeview
+            evidenzia_treeview(storico_tree, colori=c)
+        except Exception:
+            pass
 
         for col_id, titolo, larg in colonne:
             storico_tree.heading(col_id, text=titolo, anchor="w")
@@ -6259,6 +6292,13 @@ class RetroDBApp:
         st_sb = tk.Scrollbar(storico_frame, orient="vertical", command=self._storico_listbox.yview)
         st_sb.pack(side="right", fill="y")
         self._storico_listbox.configure(yscrollcommand=st_sb.set)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_listbox
+            self._storico_lb_refresh = evidenzia_listbox(
+                self._storico_listbox, colori=c)
+        except Exception:
+            self._storico_lb_refresh = lambda: None
 
         for riga in storico_righe:
             self._storico_listbox.insert("end", riga)
@@ -6301,6 +6341,10 @@ class RetroDBApp:
         # Focus sulla listbox
         self._storico_listbox.selection_set(0)
         self._storico_listbox.focus_set()
+        try:
+            self._storico_lb_refresh()
+        except Exception:
+            pass
 
         # Escape -> torna al wizard
         self.root.bind("<Escape>",
@@ -6478,6 +6522,12 @@ class RetroDBApp:
         hsb.pack(side="bottom", fill="x")
         self._elenco_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self._elenco_tree.pack(side="left", fill="both", expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_treeview
+            evidenzia_treeview(self._elenco_tree, colori=c)
+        except Exception:
+            pass
 
         # Configura colonne
         for col_id, titolo, larg in colonne:
@@ -6859,6 +6909,12 @@ class RetroDBApp:
                 lb.pack(side="left", fill="x", expand=True)
                 lb_sb = tk.Scrollbar(list_frame, orient="vertical", command=lb.yview)
                 lb_sb.pack(side="right", fill="y"); lb.configure(yscrollcommand=lb_sb.set)
+                # v05.06.39: highlight visibile riga corrente al focus
+                try:
+                    from core.focus_ui import evidenzia_listbox
+                    evidenzia_listbox(lb, colori=c)
+                except Exception:
+                    pass
                 if ref_db:
                     ref_td = self.ref_defs.get(alias)
                     if ref_td and ref_td.condiviso:
@@ -7311,6 +7367,12 @@ class RetroDBApp:
         sb = tk.Scrollbar(lb_frame, orient="vertical", command=lb.yview)
         sb.pack(side="right", fill="y")
         lb.configure(yscrollcommand=sb.set)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from core.focus_ui import evidenzia_listbox
+            _sel_lb_refresh = evidenzia_listbox(lb, colori=c)
+        except Exception:
+            _sel_lb_refresh = lambda: None
 
         # Status bar in basso
         status_lbl = tk.Label(sel_frame, text="\u2191\u2193 = naviga  |  Enter = conferma  |  Esc = annulla  |  digita per filtrare",

@@ -267,6 +267,12 @@ class EditorTabelle:
             tree.heading(col,text=tit,anchor="w"); tree.column(col,width=w,anchor="w")
         sb = tk.Scrollbar(tf,orient="vertical",command=tree.yview); sb.pack(side="right",fill="y")
         tree.configure(yscrollcommand=sb.set); tree.pack(side="left",fill="both",expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from focus_ui import evidenzia_treeview
+            evidenzia_treeview(tree, colori=c)
+        except Exception:
+            pass
         os.makedirs(self.def_dir,exist_ok=True)
         for f in sorted(os.listdir(self.def_dir)):
             if not f.endswith(".def"): continue
@@ -633,6 +639,12 @@ class EditorTabelle:
         self._et.column("num",width=35); self._et.column("tipo",width=80); self._et.column("contenuto",width=600)
         sb = tk.Scrollbar(tf,orient="vertical",command=self._et.yview); sb.pack(side="right",fill="y")
         self._et.configure(yscrollcommand=sb.set); self._et.pack(side="left",fill="both",expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from focus_ui import evidenzia_treeview
+            evidenzia_treeview(self._et, colori=c)
+        except Exception:
+            pass
         for i,r in enumerate(self._righe):
             t=r["tipo"]
             if t=="vuoto": cont=""

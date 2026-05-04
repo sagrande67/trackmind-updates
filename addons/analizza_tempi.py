@@ -404,6 +404,12 @@ class AnalizzaTempi:
         vsb.pack(side="right", fill="y")
         self._tree.configure(yscrollcommand=vsb.set)
         self._tree.pack(side="left", fill="both", expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from focus_ui import evidenzia_treeview
+            evidenzia_treeview(self._tree, colori=c)
+        except Exception:
+            pass
 
         self._tree.tag_configure("valido", foreground=c["dati"])
         self._tree.tag_configure("segnalato", foreground=c["stato_errore"])

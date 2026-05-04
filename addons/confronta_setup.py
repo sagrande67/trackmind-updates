@@ -328,6 +328,12 @@ class ConfrontaSetup:
         self._tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         self._tree.pack(fill="both", expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        try:
+            from focus_ui import evidenzia_treeview
+            evidenzia_treeview(self._tree, colori=c, tag_name="focus_riga")
+        except Exception:
+            pass
 
         # Tag per righe selezionate
         self._tree.tag_configure("checked",

@@ -2722,6 +2722,14 @@ class Crono:
         vsb.pack(side="right", fill="y")
         self._at.configure(yscrollcommand=vsb.set)
         self._at.pack(side="left", fill="both", expand=True)
+        # v05.06.39: highlight visibile riga corrente al focus
+        # (usa tag distinto 'focus_riga' per non collidere con il
+        # tag 'focused' gia' usato altrove nel codice TUTTI I TEMPI)
+        try:
+            from focus_ui import evidenzia_treeview
+            evidenzia_treeview(self._at, colori=c, tag_name="focus_riga")
+        except Exception as _e:
+            print("[crono] focus_ui non disponibile:", _e)
 
         # Tag colori per fonte. SOLO foreground - usare anche
         # background interferiva con la barra di selezione/focus
