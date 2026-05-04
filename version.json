@@ -1,7 +1,7 @@
 {
-  "version": "05.06.29",
+  "version": "05.06.32",
   "date": "2026-05-04",
-  "time": "11:35:53",
+  "time": "11:59:12",
   "note": "",
   "files": {
     "conf_manager.py": "root",
@@ -26,6 +26,7 @@
     "centro_controllo.py": "core",
     "editor_tabelle.py": "core",
     "focus_guard.py": "core",
+    "focus_ui.py": "core",
     "lapmonitor.py": "core",
     "meteo.py": "core",
     "myrcm_ws.py": "core",
