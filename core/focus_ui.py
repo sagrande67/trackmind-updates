@@ -63,36 +63,17 @@ def evidenzia_listbox(lb, colori=None):
     fg_normale = c.get("dati", "#39ff14")
     bg_corrente = c.get("dati", "#39ff14")
     fg_corrente = c.get("sfondo", "#0a0a0a")
-    # Prefisso visivo: freccia "▶" sulla riga corrente, 2 spazi
-    # sulle altre per allineamento. Si vede SEMPRE, indipendente
-    # da focus o stile selezione.
-    PREFIX_ON = "\u25b6 "   # "▶ " (freccia piena destra)
-    PREFIX_OFF = "  "        # 2 spazi (stessa larghezza)
-
-    def _strip_prefix(txt):
-        """Rimuove eventuale prefisso precedentemente aggiunto."""
-        if txt.startswith(PREFIX_ON):
-            return txt[len(PREFIX_ON):]
-        if txt.startswith(PREFIX_OFF):
-            return txt[len(PREFIX_OFF):]
-        return txt
 
     # Flag focus tastiera: highlight visibile SOLO quando il widget
     # ha effettivamente il focus (= le frecce su/giu' sono valide
     # qui). Senza focus la lista appare normale, cosi' l'utente non
     # confonde "riga selezionata in passato" con "qui posso navigare
-    # con le frecce ora". Setup iniziale a False finche' Tk non
-    # notifica un <FocusIn>.
+    # con le frecce ora". Niente piu' prefisso ▶ (v05.06.32): basta
+    # il cambio colore, e la lista non viene mai modificata nel
+    # testo (semplifica la logica e mantiene `lb.get(i)` pulito).
     lb._focus_ui_has_focus = False
 
     def _refresh(_evt=None):
-        # Flag anti-ricorsione: la sequenza delete/insert qui
-        # sotto rilancia <<ListboxSelect>>, che richiamerebbe
-        # _refresh -> loop infinito. Con il flag il refresh
-        # innescato dal nostro stesso lavoro viene ignorato.
-        if getattr(lb, "_focus_ui_updating", False):
-            return
-        lb._focus_ui_updating = True
         try:
             sel = lb.curselection()
             n = lb.size()
@@ -105,27 +86,10 @@ def evidenzia_listbox(lb, colori=None):
                     idx_sel = -1
             ha_focus = bool(getattr(lb, "_focus_ui_has_focus", False))
             for i in range(n):
-                # Testo: prefisso ▶ SOLO se la lista ha il focus
-                # tastiera E questa e' la riga corrente. Altrimenti
-                # niente prefisso (lista appare "spenta", chiarendo
-                # che le frecce non sono attive qui).
-                txt_attuale = lb.get(i)
-                txt_pulito = _strip_prefix(txt_attuale)
-                if ha_focus and i == idx_sel:
-                    txt_voluto = PREFIX_ON + txt_pulito
-                elif ha_focus:
-                    # Spazi di allineamento solo quando la lista
-                    # e' attiva, per non far "saltare" il testo
-                    # quando l'utente entra/esce con TAB
-                    txt_voluto = PREFIX_OFF + txt_pulito
-                else:
-                    # Senza focus, testo nudo: niente segnali visivi
-                    txt_voluto = txt_pulito
-                if txt_attuale != txt_voluto:
-                    lb.delete(i)
-                    lb.insert(i, txt_voluto)
-                # Colori: sfondo verde brillante solo per riga
-                # corrente E SOLO se la lista ha focus
+                # Solo COLORI: niente cambi di testo, niente
+                # prefisso. Lo stato focus + sfondo verde brillante
+                # sulla riga corrente bastano a comunicare "le
+                # frecce funzionano qui".
                 if ha_focus and i == idx_sel:
                     lb.itemconfig(i,
                                    bg=bg_corrente, fg=fg_corrente,
@@ -136,19 +100,8 @@ def evidenzia_listbox(lb, colori=None):
                                    bg=bg_normale, fg=fg_normale,
                                    selectbackground=bg_corrente,
                                    selectforeground=fg_corrente)
-            # Ripristina la selezione tk dopo i delete/insert
-            # (delete azzera anche curselection)
-            if 0 <= idx_sel < n:
-                try:
-                    lb.selection_clear(0, "end")
-                    lb.selection_set(idx_sel)
-                    lb.activate(idx_sel)
-                except tk.TclError:
-                    pass
         except (tk.TclError, IndexError):
             pass
-        finally:
-            lb._focus_ui_updating = False
 
     def _on_focus_in(_evt=None):
         lb._focus_ui_has_focus = True
