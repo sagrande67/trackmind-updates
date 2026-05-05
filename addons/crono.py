@@ -2961,38 +2961,47 @@ class Crono:
             except Exception:
                 pass
 
-        # v05.06.41: il tag "focused" e' "focus-aware". All'apertura
-        # della schermata (widget senza focus tastiera) il tag e'
-        # configurato con colori normali = riga "focused"
-        # graficamente invisibile. Quando l'utente raggiunge il
-        # widget (TAB / freccia, dopo i 700ms del timer armed di
-        # focus_ui), il tag passa a verde fluo + nero. Cosi' lo
-        # stato "focused" segnala "le frecce funzionano qui",
-        # coerente con tutte le altre liste del software.
+        # v05.06.42: tag "focused" mantiene SEMPRE i colori verdi
+        # fluo (bg=cursore, fg=testo_cursore). Per nasconderlo
+        # quando il widget non ha focus, RIMUOVIAMO fisicamente
+        # il tag dalle righe (invece di cambiare tag_configure
+        # runtime, che su Tk 8.6 ARM/uConsole non sempre viene
+        # ridisegnato fino al prossimo redraw forzato).
+        # Questo approccio funziona cross-platform (PC + uConsole).
         self._at.tag_configure("focused",
-            background=c["sfondo_celle"], foreground=c["dati"])
+            background=c["cursore"], foreground=c["testo_cursore"])
         # Tag per righe selezionate per IA (✓): sempre visibile
         # (anche senza focus l'utente deve vedere la pre-selezione)
         self._at.tag_configure("checked",
             background=c["pulsanti_sfondo"], foreground=c["dati"])
 
-        # Bind focus-aware sul tag "focused": al FocusIn (armed)
-        # diventa verde fluo, al FocusOut torna invisibile.
+        # Bind focus-aware: al FocusIn (armed) il tag "focused"
+        # viene RIAPPLICATO sulla riga corrente; al FocusOut
+        # viene RIMOSSO da tutte le righe. Cambio del tag sulla
+        # singola riga forza il re-rendering immediato anche su
+        # Tk 8.6 ARM (uConsole).
         def _at_focus_in(_e=None):
             if not getattr(self._at, "_focus_ui_armed", False):
                 return
             try:
-                self._at.tag_configure("focused",
-                    background=c["cursore"],
-                    foreground=c["testo_cursore"])
+                foc = self._at.focus()
+                if foc:
+                    cur_tags = list(self._at.item(foc, "tags") or [])
+                    if "focused" not in cur_tags:
+                        cur_tags.append("focused")
+                        self._at.item(foc, tags=tuple(cur_tags))
             except Exception:
                 pass
 
         def _at_focus_out(_e=None):
+            # Rimuovi tag "focused" da TUTTE le righe = nessuna
+            # evidenziazione visibile senza focus
             try:
-                self._at.tag_configure("focused",
-                    background=c["sfondo_celle"],
-                    foreground=c["dati"])
+                for iid in self._at.get_children(""):
+                    cur_tags = list(self._at.item(iid, "tags") or [])
+                    if "focused" in cur_tags:
+                        cur_tags.remove("focused")
+                        self._at.item(iid, tags=tuple(cur_tags))
             except Exception:
                 pass
 
@@ -3002,11 +3011,20 @@ class Crono:
         self._prev_focused = None
         self._prev_sel = set()
         def _set_riga_tags(child, focused, sel):
-            """Applica i tag focused/checked a UNA singola riga."""
+            """Applica i tag focused/checked a UNA singola riga.
+            v05.06.42: il tag "focused" viene applicato SOLO se
+            il widget ha effettivamente il focus tastiera (controllo
+            tramite il flag _focus_ui_has_focus settato dall'helper
+            evidenzia_treeview). Cosi' anche se _aggiorna_selezione
+            viene chiamato durante la popolazione iniziale (quando
+            Tk auto-focusa il widget), nessuna riga appare verde
+            finche' l'utente non interagisce davvero."""
             try:
                 cur_tags = [t for t in self._at.item(child, "tags")
                             if t not in ("focused", "checked")]
-                if child == focused:
+                ha_focus_ui = bool(getattr(
+                    self._at, "_focus_ui_has_focus", False))
+                if child == focused and ha_focus_ui:
                     cur_tags.append("focused")
                 elif child in sel:
                     cur_tags.append("checked")
