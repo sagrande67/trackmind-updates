@@ -2961,12 +2961,43 @@ class Crono:
             except Exception:
                 pass
 
-        # Tag per riga con focus: inversione colori (sfondo verde chiaro, testo nero)
+        # v05.06.41: il tag "focused" e' "focus-aware". All'apertura
+        # della schermata (widget senza focus tastiera) il tag e'
+        # configurato con colori normali = riga "focused"
+        # graficamente invisibile. Quando l'utente raggiunge il
+        # widget (TAB / freccia, dopo i 700ms del timer armed di
+        # focus_ui), il tag passa a verde fluo + nero. Cosi' lo
+        # stato "focused" segnala "le frecce funzionano qui",
+        # coerente con tutte le altre liste del software.
         self._at.tag_configure("focused",
-            background=c["cursore"], foreground=c["testo_cursore"])
-        # Tag per righe selezionate per IA (✓): sfondo leggermente illuminato
+            background=c["sfondo_celle"], foreground=c["dati"])
+        # Tag per righe selezionate per IA (✓): sempre visibile
+        # (anche senza focus l'utente deve vedere la pre-selezione)
         self._at.tag_configure("checked",
             background=c["pulsanti_sfondo"], foreground=c["dati"])
+
+        # Bind focus-aware sul tag "focused": al FocusIn (armed)
+        # diventa verde fluo, al FocusOut torna invisibile.
+        def _at_focus_in(_e=None):
+            if not getattr(self._at, "_focus_ui_armed", False):
+                return
+            try:
+                self._at.tag_configure("focused",
+                    background=c["cursore"],
+                    foreground=c["testo_cursore"])
+            except Exception:
+                pass
+
+        def _at_focus_out(_e=None):
+            try:
+                self._at.tag_configure("focused",
+                    background=c["sfondo_celle"],
+                    foreground=c["dati"])
+            except Exception:
+                pass
+
+        self._at.bind("<FocusIn>", _at_focus_in, add="+")
+        self._at.bind("<FocusOut>", _at_focus_out, add="+")
 
         self._prev_focused = None
         self._prev_sel = set()
