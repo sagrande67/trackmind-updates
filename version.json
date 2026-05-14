@@ -1,8 +1,8 @@
 {
-  "version": "05.06.96",
-  "date": "2026-05-13",
+  "version": "05.06.97",
+  "date": "2026-05-14",
   "time": "00:00:00",
-  "note": "Avvio: forza attivazione Bluetooth (rfkill/systemctl/bluetoothctl) prima del lancio, cosi' la stampante termica si riconnette anche se l'utente aveva spento il BT dal sistema. Conf: nuovo flag 'topmost_attivo' (sezione INTERFACCIA) per scegliere se TrackMind resta sempre in primo piano (default attivo, utile su uConsole) o si comporta da finestra normale (consigliato su PC desktop).",
+  "note": "Assistente Gara: rimossa l'auto-apertura della vista LIVE. Il recorder di sfondo registra comunque i tempi delle sessioni della categoria selezionata; al loro posto compare una label 'REC' rossa lampeggiante nell'header. Per vedere il live l'utente preme il bottone VEDI LIVE. Versione precedente (05.06.96): forza attivazione Bluetooth all'avvio + flag 'topmost_attivo' in conf.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

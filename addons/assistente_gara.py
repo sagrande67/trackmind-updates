@@ -505,6 +505,14 @@ class AssistenteGaraMonitor:
         self._attivo = False
         self._tick_id = None
         self._ultimo_alert_stato = None  # 'prep' | 'avvia' | None
+        # v05.06.97: stato REC. True quando una sessione della
+        # categoria selezionata e' IN PISTA (RACESTATE running): il
+        # recorder di sfondo sta salvando i tempi. La UI legge questo
+        # flag per far lampeggiare la label REC. L'auto-apertura del
+        # LapTimer LIVE e' stata RIMOSSA: il monitor registra in
+        # silenzio, per vedere il live l'utente preme VEDI LIVE.
+        self._rec_attivo = False
+        self._rec_group = None
 
     def _calcola_state_path(self):
         """Path dove salvare lo stato per la persistenza tra riavvi."""
@@ -625,10 +633,12 @@ class AssistenteGaraMonitor:
                 on_status=lambda m: print("[ag] %s" % m),
                 tk_root=self.root,
             )
-            # Listener per auto-trigger UI live quando inizia la
-            # manche del pilota
+            # Listener per lo stato REC (label lampeggiante) e
+            # l'auto-chiusura della vista LIVE aperta a mano.
+            # NB: l'auto-APERTURA della vista live e' stata rimossa
+            # (v05.06.97): il recorder registra in silenzio.
             self._recorder.add_event_listener(
-                self._auto_apri_ui_live)
+                self._on_event_rec)
             # Listener per riallineare la time table sul tempo reale
             # MyRCM (se cronometraggio in tilt o ritardo non
             # registrato come "delay_min")
@@ -919,99 +929,74 @@ class AssistenteGaraMonitor:
             return "final" in g
         return True  # generico, accetta
 
-    def _auto_apri_ui_live(self, meta, data):
-        """Chiamato a ogni EVENT WebSocket. Quando rileva che la
-        sessione corrente sul WS e' una delle manche del pilota
-        (filtrata) e RACESTATE diventa rsStarted/rsRunning, apre
-        automaticamente la UI live griglia colonne. Quando termina
-        (rsFinished), la chiude.
+    def _on_event_rec(self, meta, data):
+        """Chiamato a ogni EVENT WebSocket. Due compiti:
 
-        Idempotente: non riapre se gia' aperta per la stessa manche.
-        Una sola UI live alla volta per processo. RISPETTA la
-        chiusura manuale: se l'utente ha premuto ESC sul LapTimer
-        per uscire, NON riapre per lo stesso GROUP fino a quando il
-        GROUP non cambia (= passa a una manche diversa)."""
-        # v05.06.50: NON aprire automaticamente il LapTimer se
-        # l'utente non e' MAI passato dalla UI Assistente Gara in
-        # questa sessione TM. Cosi' al login con stato persistito
-        # (evento + categoria salvati su disco) il monitor riparte
-        # silenzioso ma non butta dentro l'utente al LapTimer.
-        # L'utente deve passare DA SOLO per Assistente Gara per
-        # "armare" l'auto-apertura.
-        if not getattr(self, "_user_visited", False):
-            return
+        1. STATO REC — accende self._rec_attivo quando in pista c'e'
+           una sessione della categoria selezionata in stato running.
+           Il recorder di sfondo sta registrando i tempi; la UI legge
+           questo flag per far lampeggiare la label REC.
+
+        2. AUTO-CHIUSURA — se l'utente ha aperto la vista LIVE a mano
+           (bottone VEDI LIVE), la chiude da sola a fine sessione
+           (rsFinished / GROUP cambiato / REMAININGTIME=0), cosi' non
+           resta un overlay morto sopra la time table.
+
+        v05.06.97: l'AUTO-APERTURA del LapTimer LIVE e' stata
+        RIMOSSA. Prima il monitor "buttava dentro" l'utente alla
+        vista live appena partiva la sua manche; ora registra in
+        silenzio e mostra solo la label REC. Per vedere il live
+        l'utente preme VEDI LIVE. Rimosso anche il gate
+        _user_visited: non serviva piu' (gestiva solo l'auto-
+        apertura)."""
         try:
             state = (meta or {}).get("RACESTATE", "")
             group = (meta or {}).get("GROUP", "") or ""
             if not group:
                 return
-            # Track del group corrente per rilevare cambi: se cambia,
-            # svuota la blacklist "chiusi manualmente" cosi' alla
-            # prossima manche pilota apriamo di nuovo automaticamente.
-            ultimo_group = getattr(self, "_ui_live_ultimo_group", None)
-            if ultimo_group is not None and ultimo_group != group:
-                self._ui_live_chiusi_manualmente = set()
-            self._ui_live_ultimo_group = group
-            # Skip se l'utente ha chiuso manualmente la UI per
-            # questo group (non vogliamo riaprirla loop infinito)
-            chiusi = getattr(self, "_ui_live_chiusi_manualmente",
-                             set())
-            if group in chiusi:
-                return
-            # CHIUSURA AUTOMATICA in 3 casi:
-            # 1) RACESTATE diventa rsFinished/rsClosed
-            # 2) GROUP cambia (sessione precedente finita anche se
-            #    MyRCM non ha mandato rsFinished esplicito)
-            # 3) REMAININGTIME = 0:00:00 (countdown a zero)
-            if (self._ui_live is not None
-                    and self._ui_live_attiva_per_group):
-                rem = (meta or {}).get("REMAININGTIME", "") or ""
-                rem_zero = rem.strip() in ("0:00:00", "00:00:00",
-                                           "0:00", "00:00", "")
-                grp_aperto = self._ui_live_attiva_per_group
-                if (state in ("rsFinished", "rsClosed")
-                        and grp_aperto == group):
-                    print("[ag] auto-close LapTimer: sessione "
-                          "finita (rsFinished)")
-                    self._chiudi_ui_live()
-                    return
-                if grp_aperto and grp_aperto != group:
-                    print("[ag] auto-close LapTimer: GROUP cambiato "
-                          "(%r -> %r)" % (grp_aperto[:40],
-                                           group[:40]))
-                    self._chiudi_ui_live()
-                    return
-                if (rem_zero and state in ("rsRunning", "rsStarted")
-                        and grp_aperto == group):
-                    print("[ag] auto-close LapTimer: REMAININGTIME=0")
-                    self._chiudi_ui_live()
-                    return
-            # Apertura: stato RUNNING + non gia' aperta per questo
-            # group. Se la sessione e' gia' in corso da piu' di 60s
-            # (ci siamo connessi a meta' manche) APRIAMO comunque la
-            # UI per visualizzare i tempi live, ma marchiamo
-            # mid_session=True cosi' al close il LapTimer NON salva
-            # i giri (sarebbero parziali, mancano i primi N giri
-            # pregressi). Decisione utente: meglio vedere senza
-            # salvare che non vedere affatto.
+
+            # ── 1. STATO REC ──────────────────────────────────────
+            # Ogni EVENT e' uno snapshot di cosa c'e' in pista ORA.
+            # REC acceso = sessione della mia categoria + running.
             running = state in ("rsStarted", "rsRunning")
-            if running and not self._ui_live_attiva_per_group == group:
-                ct_str = (meta or {}).get("CURRENTTIME", "0:00") or "0:00"
-                ct_sec = self._parse_time_str(ct_str)
-                mid_session = ct_sec > 60
-                if mid_session:
-                    print("[ag] LapTimer apertura MID-SESSION: "
-                          "sessione %r gia' in corso da %ds. "
-                          "I tempi NON verranno salvati al close."
-                          % (group[:60], ct_sec))
-                # Verifica che il group corrente corrisponda a una
-                # manche del pilota (se non c'e' filtro, va sempre
-                # bene)
-                if self._group_e_del_pilota(group):
-                    self._apri_ui_live_pilota(group,
-                                              mid_session=mid_session)
+            if running and self._group_e_della_categoria(group):
+                if not self._rec_attivo or self._rec_group != group:
+                    print("[ag] REC ON: %s" % group[:60])
+                self._rec_attivo = True
+                self._rec_group = group
+            else:
+                if self._rec_attivo:
+                    print("[ag] REC OFF")
+                self._rec_attivo = False
+                self._rec_group = None
+
+            # ── 2. AUTO-CHIUSURA della vista LIVE manuale ─────────
+            # Se non c'e' nessuna vista live aperta, niente da fare.
+            if (self._ui_live is None
+                    or not self._ui_live_attiva_per_group):
+                return
+            rem = (meta or {}).get("REMAININGTIME", "") or ""
+            rem_zero = rem.strip() in ("0:00:00", "00:00:00",
+                                       "0:00", "00:00", "")
+            grp_aperto = self._ui_live_attiva_per_group
+            if (state in ("rsFinished", "rsClosed")
+                    and grp_aperto == group):
+                print("[ag] auto-close LapTimer: sessione "
+                      "finita (rsFinished)")
+                self._chiudi_ui_live()
+                return
+            if grp_aperto and grp_aperto != group:
+                print("[ag] auto-close LapTimer: GROUP cambiato "
+                      "(%r -> %r)" % (grp_aperto[:40], group[:40]))
+                self._chiudi_ui_live()
+                return
+            if (rem_zero and state in ("rsRunning", "rsStarted")
+                    and grp_aperto == group):
+                print("[ag] auto-close LapTimer: REMAININGTIME=0")
+                self._chiudi_ui_live()
+                return
         except Exception as e:
-            print("[ag] errore auto_apri_ui:", e)
+            print("[ag] errore _on_event_rec:", e)
 
     def _parse_time_str(self, s):
         """Parse stringa MyRCM in secondi (int).
@@ -1065,6 +1050,37 @@ class AssistenteGaraMonitor:
             if mm and mm.group(1) == manche_corr:
                 return True
         return False
+
+    def _group_e_della_categoria(self, group):
+        """True se il GROUP MyRCM corrente appartiene alla categoria
+        selezionata per il monitor (a prescindere dalla manche).
+
+        Usato per accendere la label REC: quando in pista c'e' una
+        sessione di QUESTA categoria, il recorder di sfondo la sta
+        registrando, quindi REC deve lampeggiare.
+
+        Il GROUP MyRCM ha forma 'CAT_TAG :: Fase :: Manche'; estraiamo
+        il cat_tag con parse_group_live e lo confrontiamo (in modo
+        tollerante a spazi/underscore/maiuscole) col nome categoria."""
+        if not group:
+            return False
+        try:
+            from myrcm_import import parse_group_live
+            cat_tag, _fase, _manche = parse_group_live(group)
+        except Exception:
+            return False
+        if not cat_tag:
+            return False
+        cat_sel = (self.categoria or {}).get("nome", "") or ""
+        if not cat_sel:
+            return False
+        def _norm(s):
+            return str(s).strip().lower().replace(" ", "").replace("_", "")
+        a = _norm(cat_tag)
+        b = _norm(cat_sel)
+        if not a or not b:
+            return False
+        return a == b or a in b or b in a
 
     def _apri_ui_live_pilota(self, group, mid_session=False):
         """Apre il LapTimer in modalita' MyRCM live. Riusa la
@@ -1158,9 +1174,10 @@ class AssistenteGaraMonitor:
         sessione). Distrugge solo l'overlay che conteneva il
         LapTimer: la schermata sotto (countdown Assistente Gara o
         menu retrodb) torna visibile da sola.
-        Aggiunge il group corrente alla blacklist "chiusi
-        manualmente" per evitare che _auto_apri_ui_live lo
-        riapra subito al prossimo EVENT (loop infinito)."""
+
+        v05.06.97: rimossa la gestione della blacklist "chiusi
+        manualmente" — serviva solo a impedire all'auto-apertura di
+        riaprire la vista, ma l'auto-apertura non esiste piu'."""
         ui = self._ui_live
         if ui is not None:
             try:
@@ -1168,16 +1185,6 @@ class AssistenteGaraMonitor:
                     ui.disattiva_myrcm_live()
             except Exception:
                 pass
-        # Memorizza che l'utente ha chiuso questo group (no auto-
-        # riapertura finche' GROUP non cambia)
-        try:
-            grp_chiuso = self._ui_live_attiva_per_group
-            if grp_chiuso:
-                if not hasattr(self, "_ui_live_chiusi_manualmente"):
-                    self._ui_live_chiusi_manualmente = set()
-                self._ui_live_chiusi_manualmente.add(grp_chiuso)
-        except Exception:
-            pass
         self._ui_live = None
         self._ui_live_attiva_per_group = None
         # Distruggi l'overlay che conteneva il LapTimer.
@@ -2635,6 +2642,13 @@ class AssistenteGara:
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._apri_ui_live_manuale).pack(
             side="left", padx=(6, 0))
+        # Indicatore REC: lampeggia in rosso quando in pista c'e' una
+        # sessione della categoria selezionata (il recorder di sfondo
+        # sta salvando i tempi). NON apre nulla: per vedere il live si
+        # preme VEDI LIVE. Aggiornato da _on_tick_ui (1 Hz).
+        self._lbl_rec = tk.Label(h, text="○ REC", font=self._f_small,
+                                 bg=c["sfondo"], fg=c["testo_dim"])
+        self._lbl_rec.pack(side="right", padx=(0, 10))
         tk.Label(h, text="  TIME TABLE - " + cat_nome[:30],
                  bg=c["sfondo"], fg=c["dati"],
                  font=self._f_title).pack(side="left", padx=(8, 0))
@@ -3031,6 +3045,26 @@ class AssistenteGara:
                 return
         except Exception:
             return
+        # Indicatore REC: pallino rosso lampeggiante (1 Hz) quando in
+        # pista c'e' una sessione della categoria selezionata e il
+        # recorder di sfondo la sta registrando; grigio spento quando
+        # non c'e' nulla da registrare. Va aggiornato PRIMA dei return
+        # anticipati sotto, cosi' lampeggia anche se non c'e' un
+        # prossimo turno in programma.
+        try:
+            lbl_rec = getattr(self, "_lbl_rec", None)
+            if lbl_rec is not None and lbl_rec.winfo_exists():
+                m_rec = AssistenteGaraMonitor.get(self._top)
+                if m_rec is not None and getattr(
+                        m_rec, "_rec_attivo", False):
+                    if (now.second % 2) == 0:
+                        lbl_rec.config(text="● REC", fg="#ff3333")
+                    else:
+                        lbl_rec.config(text="● REC", fg="#5a0000")
+                else:
+                    lbl_rec.config(text="○ REC", fg=c["testo_dim"])
+        except Exception:
+            pass
         # Refresh label "Ritardo" (DIVERGENCE puo' cambiare ad
         # ogni EVENT MyRCM, anche con la stessa schermata aperta).
         # Rebuild del tree turni SOLO quando il delay e' cambiato
