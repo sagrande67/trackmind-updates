@@ -1,8 +1,8 @@
 {
-  "version": "05.06.97",
-  "date": "2026-05-14",
+  "version": "05.06.98",
+  "date": "2026-05-15",
   "time": "00:00:00",
-  "note": "Assistente Gara: rimossa l'auto-apertura della vista LIVE. Il recorder di sfondo registra comunque i tempi delle sessioni della categoria selezionata; al loro posto compare una label 'REC' rossa lampeggiante nell'header. Per vedere il live l'utente preme il bottone VEDI LIVE. Versione precedente (05.06.96): forza attivazione Bluetooth all'avvio + flag 'topmost_attivo' in conf.",
+  "note": "Wi-Fi: roaming proattivo. Da connesso il monitor controlla periodicamente se a portata c'e' una rete conosciuta col segnale nettamente piu' forte (almeno +25 punti) e ci si sposta, ma solo se la rete attuale e' sotto il 70% di segnale. Isteresi anti-flapping + cooldown di 150s. Versione precedente (05.06.97): Assistente Gara senza auto-apertura vista LIVE, label REC lampeggiante. (05.06.96): Bluetooth forzato all'avvio + flag topmost_attivo.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

@@ -387,6 +387,23 @@ def carica_elenco_wifi(path_json):
 
 
 # ─────────────────────────────────────────────────────────────────────
+#  ROAMING - parametri isteresi (anti-flapping)
+# ─────────────────────────────────────────────────────────────────────
+# v05.06.98: da CONNESSO il monitor valuta periodicamente se esiste
+# una rete CONOSCIUTA (password gia' in elenco) col segnale piu'
+# forte e, se conviene, ci si sposta. Per non rimbalzare avanti e
+# indietro tra reti di potenza simile:
+#   - SOGLIA_ROAMING_PCT: la candidata deve battere la rete attuale
+#     di almeno tot punti percentuali di segnale. Sotto questa
+#     differenza si resta dove si e'.
+#   - ROAMING_SEGNALE_COMODO: se il segnale attuale e' gia' >= di
+#     questo valore non si fa nulla — sei gia' messo bene e non
+#     vale la micro-interruzione che comporta lo switch.
+SOGLIA_ROAMING_PCT = 25
+ROAMING_SEGNALE_COMODO = 70
+
+
+# ─────────────────────────────────────────────────────────────────────
 #  THREAD DI MONITORAGGIO
 # ─────────────────────────────────────────────────────────────────────
 
@@ -395,7 +412,6 @@ class AutoRiconnettore(object):
 
     Logica (v05.05.30):
         - Ogni `intervallo_sec` controlla lo stato.
-        - Se e' connesso, non fa nulla.
         - Se e' offline:
             1. Scansiona le reti Wi-Fi visibili.
             2. Legge l'elenco delle Wi-Fi conosciute da `wifi_json_path`.
@@ -404,6 +420,11 @@ class AutoRiconnettore(object):
                b) se fallisce, prova `riconnetti_con_password(ssid, pwd)`
                   ricreando il profilo al volo con la password in elenco.
             4. Cooldown anti-spam tra tentativi consecutivi.
+        - Se e' connesso (v05.06.98): valuta il ROAMING — controlla
+          se a portata c'e' una rete conosciuta col segnale
+          significativamente piu' forte e in tal caso ci si sposta.
+          Isteresi anti-flapping (vedi SOGLIA_ROAMING_PCT e
+          ROAMING_SEGNALE_COMODO sopra) + cooldown dedicato.
 
     Parametri:
         wifi_json_path: path al file dati/wifi.json (tabella wifi TrackMind).
@@ -412,6 +433,8 @@ class AutoRiconnettore(object):
         cooldown_sec: tempo minimo tra due tentativi consecutivi (default 20).
         callback_stato: funzione opzionale (connesso, ssid, evento).
             evento: None/"caduta"/"ripristino"/"tentativo".
+        cooldown_roaming_sec: tempo minimo tra due valutazioni di
+            roaming quando si e' connessi (default 150).
 
     Metodi:
         start(): avvia il thread.
@@ -419,7 +442,8 @@ class AutoRiconnettore(object):
     """
 
     def __init__(self, wifi_json_path="", intervallo_sec=15,
-                 log_path=None, cooldown_sec=20, callback_stato=None):
+                 log_path=None, cooldown_sec=20, callback_stato=None,
+                 cooldown_roaming_sec=150):
         self._wifi_json = wifi_json_path or ""
         self._intervallo = max(5, int(intervallo_sec))
         self._log_path = log_path
@@ -429,6 +453,10 @@ class AutoRiconnettore(object):
         self._thread = None
         self._ultimo_tentativo = 0
         self._era_connesso = None   # None = primo giro, poi True/False
+        # Roaming (da connesso): cooldown dedicato per non valutare
+        # — e soprattutto non switchare — troppo spesso.
+        self._cooldown_roaming = max(30, int(cooldown_roaming_sec))
+        self._ultimo_roaming = 0
 
     # ── controllo ciclo vita ──
     def start(self):
@@ -468,6 +496,15 @@ class AutoRiconnettore(object):
                         self._ultimo_tentativo = ora
                         self._tenta_riconnessione()
                         evento = "tentativo"
+                else:
+                    # Connesso: valuta il roaming verso una rete
+                    # conosciuta significativamente piu' forte.
+                    # Protetto da un cooldown dedicato per evitare
+                    # scan e switch troppo frequenti (anti-flapping).
+                    ora = time.time()
+                    if (ora - self._ultimo_roaming) >= self._cooldown_roaming:
+                        self._ultimo_roaming = ora
+                        self._valuta_roaming(ssid_attuale)
 
                 # Notifica callback UI (se presente)
                 if self._cb:
@@ -544,6 +581,86 @@ class AutoRiconnettore(object):
                           "per '%s')" % ssid)
         self._log("Tutti i tentativi falliti su %d reti candidate"
                   % len(candidate))
+
+    # ── roaming (da connesso) ──
+    def _valuta_roaming(self, ssid_attuale):
+        """Da CONNESSO: controlla se a portata c'e' una rete
+        CONOSCIUTA (password gia' in elenco) col segnale
+        significativamente piu' forte di quella attuale, e in tal
+        caso ci si sposta.
+
+        Isteresi anti-flapping:
+          - la candidata deve superare l'attuale di almeno
+            SOGLIA_ROAMING_PCT punti percentuali di segnale;
+          - se il segnale attuale e' gia' >= ROAMING_SEGNALE_COMODO
+            non si fa nulla (sei gia' messo bene, non vale la
+            micro-interruzione dello switch);
+          - lo switch e' comunque protetto dal cooldown del loop.
+
+        Non fa nulla (silenziosamente) se non c'e' un elenco reti,
+        se lo scan e' vuoto, o se la rete attuale non compare nello
+        scan (in quel caso non e' possibile un confronto affidabile).
+        """
+        ssid_attuale = (ssid_attuale or "").strip()
+        if not ssid_attuale:
+            return
+        elenco = carica_elenco_wifi(self._wifi_json)
+        if not elenco:
+            return
+        visibili = reti_visibili()  # [(ssid, signal_pct), ...] decr.
+        if not visibili:
+            return
+        visibili_map = {ssid.lower(): (ssid, sig)
+                        for ssid, sig in visibili}
+        # Segnale della rete a cui siamo collegati ORA.
+        v_att = visibili_map.get(ssid_attuale.lower())
+        if v_att is None:
+            # La rete attuale non compare nello scan: confronto non
+            # affidabile, salto questo giro.
+            return
+        sig_attuale = v_att[1]
+        # Se siamo gia' messi bene, non vale la pena rischiare una
+        # micro-interruzione: niente roaming.
+        if sig_attuale >= ROAMING_SEGNALE_COMODO:
+            return
+        # Cerca la migliore rete CONOSCIUTA a portata, diversa da
+        # quella attuale e con password (serve per ricreare il
+        # profilo se quello del SO non c'e' o e' stale).
+        migliore = None  # (signal, ssid, password)
+        for rete in elenco:
+            ssid_e = rete["ssid"]
+            if ssid_e.lower() == ssid_attuale.lower():
+                continue
+            pwd = rete["password"] or ""
+            if not pwd:
+                continue
+            v = visibili_map.get(ssid_e.lower())
+            if v is None:
+                continue
+            sig = v[1]
+            if migliore is None or sig > migliore[0]:
+                migliore = (sig, ssid_e, pwd)
+        if migliore is None:
+            return
+        sig_migliore, ssid_migliore, pwd_migliore = migliore
+        guadagno = sig_migliore - sig_attuale
+        if guadagno < SOGLIA_ROAMING_PCT:
+            # Differenza non sufficiente: restiamo dove siamo.
+            return
+        self._log("Roaming: '%s' (%d%%) -> '%s' (%d%%), "
+                  "guadagno +%d punti"
+                  % (ssid_attuale, sig_attuale,
+                     ssid_migliore, sig_migliore, guadagno))
+        # Prova prima il profilo SO gia' salvato, poi ricrea con la
+        # password in elenco.
+        ok = riconnetti(ssid_migliore)
+        if not ok:
+            ok = riconnetti_con_password(ssid_migliore, pwd_migliore)
+        if ok:
+            self._log("Roaming completato su '%s'" % ssid_migliore)
+        else:
+            self._log("Roaming FALLITO su '%s', resto su '%s'"
+                      % (ssid_migliore, ssid_attuale))
 
     # ── log su file ──
     def _log(self, messaggio):
