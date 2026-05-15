@@ -133,7 +133,7 @@ def profili_salvati():
     return nomi
 
 
-def reti_visibili():
+def reti_visibili(rescan=True):
     """Scansiona le reti Wi-Fi a portata e ritorna lista di tuple
     (ssid, signal_pct) con signal in percentuale 0-100.
 
@@ -141,10 +141,24 @@ def reti_visibili():
     sempre la rete piu' forte in auto-riconnect (prima si fermava
     al primo SSID conosciuto in elenco, ignorando il segnale).
 
+    v05.06.99: parametro `rescan` (solo Linux). IMPORTANTE per non
+    staccare la connessione attiva:
+      - rescan=True (default): forza un rescan attivo
+        (`nmcli device wifi rescan`) prima di leggere la lista.
+        Dati freschi, MA su molti chipset il rescan fa saltare la
+        radio di canale e provoca un micro-distacco dalla rete
+        connessa. Da usare SOLO quando si e' gia' offline (es.
+        auto-riconnessione): li' il distacco e' irrilevante.
+      - rescan=False: NON forza il rescan, legge la lista che
+        NetworkManager ha gia' in cache (`--rescan no`). Dati
+        eventualmente un po' vecchi ma ZERO impatto sulla
+        connessione attiva. Da usare quando si e' connessi (es.
+        valutazione roaming).
+
     Su Windows: `netsh wlan show networks mode=bssid` (il modo
-    bssid include il "Segnale" o "Signal" per ogni rete).
-    Su Linux: `nmcli -t -f SSID,SIGNAL device wifi list` (signal
-    in percentuale).
+    bssid include il "Segnale" o "Signal" per ogni rete). Il
+    parametro `rescan` viene ignorato: netsh legge i risultati di
+    scansione gia' raccolti dal SO, non forza un nuovo scan.
 
     Ritorna lista [(ssid, signal_pct), ...]. Per SSID duplicati
     tiene il signal massimo. Lista ordinata per signal decrescente
@@ -191,17 +205,29 @@ def reti_visibili():
                         except (ValueError, TypeError):
                             pass
         else:
-            # Linux: prova rescan, poi lista
-            try:
-                subprocess.run(
-                    ["nmcli", "device", "wifi", "rescan"],
-                    capture_output=True, text=True, timeout=10,
-                )
-            except Exception:
-                pass
+            # Linux
+            if rescan:
+                # Rescan attivo: dati freschi ma puo' causare un
+                # micro-distacco (la radio salta canale). Da usare
+                # solo se gia' offline.
+                try:
+                    subprocess.run(
+                        ["nmcli", "device", "wifi", "rescan"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                except Exception:
+                    pass
+                lista_cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL",
+                             "device", "wifi", "list"]
+            else:
+                # Nessun rescan: usa la cache di NetworkManager.
+                # `--rescan no` garantisce che nmcli NON inneschi
+                # comunque una scansione anche se i dati sono vecchi
+                # -> zero impatto sulla connessione attiva.
+                lista_cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL",
+                             "device", "wifi", "list", "--rescan", "no"]
             r = subprocess.run(
-                ["nmcli", "-t", "-f", "SSID,SIGNAL",
-                 "device", "wifi", "list"],
+                lista_cmd,
                 capture_output=True, text=True, timeout=10,
             )
             for line in r.stdout.splitlines():
@@ -528,7 +554,9 @@ class AutoRiconnettore(object):
             # non spammiamo il log ad ogni ciclo).
             return
 
-        visibili = reti_visibili()  # [(ssid, signal_pct), ...] ord. decr.
+        # Siamo OFFLINE: rescan attivo OK, non c'e' connessione da
+        # disturbare e vogliamo i dati piu' freschi possibile.
+        visibili = reti_visibili(rescan=True)  # ord. per signal decr.
         if not visibili:
             self._log("Scan reti vuoto (adattatore spento o area senza Wi-Fi)")
             return
@@ -607,7 +635,10 @@ class AutoRiconnettore(object):
         elenco = carica_elenco_wifi(self._wifi_json)
         if not elenco:
             return
-        visibili = reti_visibili()  # [(ssid, signal_pct), ...] decr.
+        # Siamo CONNESSI: NIENTE rescan attivo, altrimenti la radio
+        # salta canale e ci stacca dalla rete. Leggiamo la cache di
+        # NetworkManager: per decidere un roaming va piu' che bene.
+        visibili = reti_visibili(rescan=False)
         if not visibili:
             return
         visibili_map = {ssid.lower(): (ssid, sig)

@@ -1,8 +1,8 @@
 {
-  "version": "05.06.98",
+  "version": "05.06.99",
   "date": "2026-05-15",
   "time": "00:00:00",
-  "note": "Wi-Fi: roaming proattivo. Da connesso il monitor controlla periodicamente se a portata c'e' una rete conosciuta col segnale nettamente piu' forte (almeno +25 punti) e ci si sposta, ma solo se la rete attuale e' sotto il 70% di segnale. Isteresi anti-flapping + cooldown di 150s. Versione precedente (05.06.97): Assistente Gara senza auto-apertura vista LIVE, label REC lampeggiante. (05.06.96): Bluetooth forzato all'avvio + flag topmost_attivo.",
+  "note": "Wi-Fi: fix bug roaming. La valutazione roaming da connesso forzava un rescan attivo che su molti chipset causava un micro-distacco dalla rete. Ora da connesso si legge la cache di NetworkManager senza rescan (--rescan no), zero impatto sulla connessione; il rescan attivo resta solo in auto-riconnessione (da offline). Versione precedente (05.06.98): roaming proattivo Wi-Fi. (05.06.97): Assistente Gara senza auto-apertura vista LIVE + label REC. (05.06.96): Bluetooth forzato all'avvio + flag topmost_attivo.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",
