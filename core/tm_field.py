@@ -175,7 +175,10 @@ class RetroField(tk.Frame):
             if is_sep:
                 display, fg, cell_bg = self._separators[i], c["separatori"], c["sfondo_celle"]
             elif self._tipo == "flag":
-                display = "X" if self._flag_value else " "
+                # Quando il flag e' OFF mostriamo il puntino di posto
+                # come tutte le altre celle vuote, non uno spazio
+                # bianco (che faceva sparire visivamente la cella).
+                display = "X" if self._flag_value else DOT_CHAR
                 fg = c["dati"] if self._flag_value else c["puntini"]
                 cell_bg = c["sfondo_celle_piene"] if self._flag_value else c["sfondo_celle"]
             elif char:
@@ -248,7 +251,7 @@ class RetroField(tk.Frame):
                 self._canvas.itemconfig(self._cell_texts[cr], fill=c["testo_cursore"])
             else:
                 char = self._chars[cr]
-                if self._tipo == "flag": display = "X" if self._flag_value else " "
+                if self._tipo == "flag": display = "X" if self._flag_value else DOT_CHAR
                 elif char and self._tipo == "password": display = "*"
                 elif char: display = char
                 else: display = DOT_CHAR

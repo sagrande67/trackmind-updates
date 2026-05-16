@@ -1,0 +1,337 @@
+# ============================================================
+# SETUP RC - Tabella Composita Setup Infinity IF15-2
+# TrackMind v5.0
+# ============================================================
+# Tabella filtrata per pilota (ogni pilota vede solo i suoi).
+# Struttura derivata dal foglio ufficiale "IF15-2 SET-UP SHEET
+# v1.1" + base comune (meteo, sospensioni, ammortizzatori,
+# rapporti, motore) coerente con setup_IF18.def.
+# Auto on-road 1/10 200mm nitro.
+# Nomi campi in italiano coerenti con gli altri setup
+# (Pignone/Corona, Convergenza per Toe, Carreggiata per Width).
+# ============================================================
+
+!accesso;tutti
+!condiviso;falso
+!storico;vero
+!Salva;vero
+!Cerca;vero
+!Nuovo;vero
+!Cancella;vero
+!laptimer;vero
+!speedhive;vero
+!stampa;vero
+!crono;vero
+!sync_date;
+
+# --- Riferimenti tabelle base ---
+@piste;Codice_Pista
+@telai;Codice_Telaio
+@motori;Codice
+@miscela;Marca miscela;Miscela
+@gomme;Codice_Gomma;Gomma_Anteriore
+@gomme;Codice_Gomma;Gomma_Posteriore
+
+# --- Data Setup ---
+Data;10;D
+Ora;5;O
+
+# ============================================================
+# IDENTIFICATIVO SETUP
+# ============================================================
+!sezione;IDENTIFICATIVO
+Nome_Setup;30;S
+# es. "Jilles Final Setup"
+Evento;30;S
+# es. "ENS round 1 2026"
+Localita;30;S
+# es. "Ettlingen, Germany"
+
+# ============================================================
+# CONDIZIONI METEO / PISTA
+# ============================================================
+!sezione;CONDIZIONI METEO / PISTA
+Temp_Esterna;3;N
+Temp_Pista;3;N
+Umidita;3;N
+Condizioni_Pista;12;V
+Vento;10;S
+
+# ============================================================
+# TRASMISSIONE
+# ============================================================
+!sezione;TRASMISSIONE
+Pignone;3;V
+# 15T / 16T / 17T / 20T / 21T / 22T
+Marcia;3;V
+# 1ST oppure 2ND
+Corona;3;V
+# 58T / 59T / 53T / 54T
+Puleggia_Laterale;6;V
+# 25T (STD) / 26T (OPT)
+
+# ============================================================
+# AMMORTIZZATORI ANTERIORI
+# ============================================================
+!sezione;AMMORTIZZATORI ANTERIORI
+Corpo_Ammo_Ant;6;V
+# USP2 / SHORT / STD
+Molla_Ant;4;N
+# numero molla, es. 525
+Tipo_Molla_Ant;6;V
+# STD / OPTION
+Olio_Ammo_Ant;4;N
+# viscosita' olio
+Anello_O_Ant;6;V
+# STD / OPTION
+Pistoni_Ant;10;V
+# 1 x 1.3 Hole / 2 x 1.1 Hole / 3 x 0.9 Hole
+
+# ============================================================
+# AMMORTIZZATORI POSTERIORI
+# ============================================================
+!sezione;AMMORTIZZATORI POSTERIORI
+Corpo_Ammo_Post;6;V
+# USP2 / SHORT / STD
+Molla_Post;4;N
+# numero molla, es. 550
+Tipo_Molla_Post;6;V
+# STD / OPTION
+Olio_Ammo_Post;4;N
+Anello_O_Post;6;V
+# STD / OPTION
+Pistoni_Post;10;V
+# 1 x 1.3 Hole / 2 x 1.1 Hole / 3 x 0.9 Hole
+
+# ============================================================
+# DIFFERENZIALI
+# ============================================================
+# Tipo_Diff_*: selettore mutuamente esclusivo tra UP e STD
+# (sul foglio appare come due caselle barrate, ma e' una scelta
+# singola - non possono essere attive entrambe).
+!sezione;DIFFERENZIALI
+Tipo_Diff_Ant;6;V
+# UP / STD
+Olio_Diff_Ant;4;V
+# es. 2M / 3M / 5M
+Diff_Ant_Codice;8;V
+# es. G228
+Diff_Ant_Regolabile;3;F
+# ADJUSTABLE Yes/No
+Tipo_Diff_Post;6;V
+# UP / STD
+Olio_Diff_Post;6;V
+# es. 80K / 100K / 150K
+Diff_Post_Codice;8;V
+# eventuale codice diff post (se annotato sul foglio)
+Diff_Post_Regolabile;3;F
+
+# ============================================================
+# BARRE ANTI-ROLLIO
+# ============================================================
+!sezione;BARRE ANTI-ROLLIO
+Barra_Ant;4;N
+# mm (es. 2.2)
+Barra_Post;4;N
+# mm (es. 1.6)
+
+# ============================================================
+# ALTEZZE / CARREGGIATE
+# ============================================================
+!sezione;ALTEZZE / CARREGGIATE
+Altezza_Ant;4;N
+# mm (es. 7)
+Altezza_Post;4;N
+# mm (es. 8.5)
+Carreggiata_Ant;5;N
+# mm (es. 199)
+Carreggiata_Post;5;N
+# mm (es. 198.5)
+
+# ============================================================
+# GOMME
+# ============================================================
+!sezione;GOMME
+Marca_Gomme;15;S
+# es. "Matrix 35/37"
+Gomma_Controllata;3;F
+# Yes/No (gomma da regolamento)
+Diametro_Ant_Sx;4;N
+Diametro_Ant_Dx;4;N
+Diametro_Post_Sx;4;N
+Diametro_Post_Dx;4;N
+
+# ============================================================
+# PIATTELLO RUOTA / HEX HUB / ASSE RUOTA
+# ============================================================
+!sezione;RUOTA - PIATTELLO / HUB
+Piattello_Ruota_Ant;3;F
+# Yes/No
+Piattello_Ruota_Post;3;F
+Hex_Hub_Ant;12;V
+# STD / OPT / OPT (Large)
+Hex_Hub_Post;12;V
+U_Drive_Ant;12;V
+# 90 U(OPT) / 90 U(STD) / 0 U(STD) / 0 U(50mm)
+U_Drive_Post;12;V
+Asse_Ruota_Ant;6;V
+# STD / LIGHT
+Asse_Ruota_Post;6;V
+
+# ============================================================
+# CARROZZERIA / TELAIO / PARAURTI
+# ============================================================
+!sezione;CARROZZERIA / TELAIO
+Carrozzeria;15;S
+# es. CZ-1
+Posizione_Carrozzeria;12;V
+# Pre-Cut / Standard
+Ala;25;S
+# es. "high downforce"
+Materiale_Telaio;8;V
+# STD / CARBON
+Foro_Paraurti_Ant;3;V
+# A / B / C / D
+Foro_Paraurti_Post;3;V
+# A / B / C / D
+
+# ============================================================
+# ASSETTO POSIZIONI (Front / Center / Rear)
+# ============================================================
+# Riferimento ai 3 selettori a scala sul fondo del setup sheet
+# (numerati 7..2 per FRONT, 7..1 per CENTER, 7..2/NO per REAR).
+!sezione;ASSETTO POSIZIONI
+Pos_Front;3;V
+# 7 / 6 / 5 / 4 / 3 / 2
+Pos_Center;3;V
+# 7 / 6 / 5 / 4 / 3 / 2 / 1
+Pos_Center_Valore;4;N
+# valore numerico al centro (es. 12)
+Pos_Rear;3;V
+# 7 / 6 / 5 / 4 / 3 / 2 / NO
+
+# ============================================================
+# SOSPENSIONE ANTERIORE
+# ============================================================
+!sezione;SOSPENSIONE ANTERIORE
+Caster;3;N
+# spacer / inclinazione perno (es. 4)
+Knuckle_Plate;8;V
+# G185 / G215 / G187 / G278 / G279
+Shock_Tower_Ant;8;V
+# G185 (STD) / G215 (SHORT) / G279 (USP2)
+Spacer_Ant_SP;3;N
+# spacer perno superiore (mm)
+Toe_Out_Ant;4;N
+# deg (es. 1.2)
+Upper_Shim_Ant;3;N
+# mm (es. 1)
+Upper_Position_Ant;8;V
+# posizione del braccio superiore (pattern pallini sul foglio)
+Camber_Ant;4;N
+# deg (es. 0.5)
+Lower_Sus_Holder;8;V
+# BLACK / SILVER
+Materiale_Knuckle;10;V
+# STANDARD / HARD
+Materiale_Upper_Arm;10;V
+Materiale_Lower_Arm;10;V
+Down_Stop_Ant;4;N
+# mm (es. 0)
+
+# ============================================================
+# SOSPENSIONE POSTERIORE
+# ============================================================
+!sezione;SOSPENSIONE POSTERIORE
+Wheel_Base_Shim;3;N
+# mm (es. 0)
+Spacer_Post_Hub;3;N
+Toe_In_Post;4;N
+# deg (es. 3.5)
+Upper_Position_Post;8;V
+Camber_Post;4;N
+# deg (es. 3.8)
+Sus_Block_Pos;15;V
+# STANDARD / WIDE (G076/G077)
+Spacer_Sus_Block;3;N
+# mm (es. 1)
+Shock_Tower_Post;8;V
+# G183 (STD) / G155 (SHORT) / G280 (USP2)
+Sus_Cover;12;V
+# NO / STANDARD / HARD / CARBON
+Materiale_Sus_Arm;10;V
+# STANDARD / HARD
+Materiale_Rear_Hub;10;V
+Down_Stop_Post;4;N
+# mm (es. 4)
+
+# ============================================================
+# SALVA-SERVO
+# ============================================================
+!sezione;SALVA-SERVO
+Servo_Saver_Pos;3;V
+# 9 / 10 / 11
+Servo_Saver_Materiale;15;V
+# STD / AL / HYBRID (G272)
+Servo_Saver_Numero;3;V
+# 2 / 3 / 4 / 5 / 6 / 7
+
+# ============================================================
+# RINFORZI / CENTER BULK
+# ============================================================
+!sezione;RINFORZI / CENTER BULK
+Upper_Stiffener;3;F
+# Yes/No
+Center_Bulk;6;V
+# STD / NO
+
+# ============================================================
+# PESI
+# ============================================================
+# Sul foglio c'e' una griglia con 4 tipi di peso (28g/29g/14g/9.5g)
+# e 8 slot numerati: si spuntano gli slot dove si e' installato
+# un peso. Per non riempire la form di 8 flag muti, raccolgo
+# tutto in 2 campi chiari: il TIPO di peso usato e la lista
+# testuale degli slot occupati.
+!sezione;PESI
+Peso_Tipo;6;V
+# 28g / 29g / 14g / 9.5g
+Peso_Posizioni;20;S
+# es. "1, 2"  oppure  "1+2+5"  oppure "Nessuno"
+Peso_Note;30;S
+# Note aggiuntive sui pesi (es. "14g extra nel paraurti")
+
+# ============================================================
+# CENTER STIFFENER
+# ============================================================
+# Sul foglio compaiono 3 diversi tipi di stiffener centrale,
+# ognuno con YES/NO. Sono mutuamente esclusivi: si usa UNO solo
+# (o nessuno), quindi modelliamolo come campo a valore singolo.
+!sezione;CENTER STIFFENER
+Center_Stiffener;10;V
+# Nessuno / Tipo 1 / Tipo 2 / Tipo 3
+
+# ============================================================
+# REAR CHASSIS STIFFENER
+# ============================================================
+# Idem: 2 tipi a scelta singola.
+!sezione;REAR CHASSIS STIFFENER
+Rear_Chassis_Stiff;10;V
+# Nessuno / Tipo 1 / Tipo 2
+
+# ============================================================
+# MOTORE / SCARICO
+# ============================================================
+!sezione;MOTORE / SCARICO
+Marca_Frizione;20;S
+Precarico_Frizione;3;V
+Candela;15;S
+Gradazione;1;N
+Venturi;1;N
+
+# ============================================================
+# NOTE / COMMENTO
+# ============================================================
+Commento;120;S
+# Note testuali dal foglio (es. ricambi, kit aggiornamento, pesi extra)
+Note;120;S

@@ -1,8 +1,8 @@
 {
-  "version": "05.06.99",
-  "date": "2026-05-15",
+  "version": "05.07.00",
+  "date": "2026-05-16",
   "time": "00:00:00",
-  "note": "Wi-Fi: fix bug roaming. La valutazione roaming da connesso forzava un rescan attivo che su molti chipset causava un micro-distacco dalla rete. Ora da connesso si legge la cache di NetworkManager senza rescan (--rescan no), zero impatto sulla connessione; il rescan attivo resta solo in auto-riconnessione (da offline). Versione precedente (05.06.98): roaming proattivo Wi-Fi. (05.06.97): Assistente Gara senza auto-apertura vista LIVE + label REC. (05.06.96): Bluetooth forzato all'avvio + flag topmost_attivo.",
+  "note": "Rilascio minore con bugfix e nuova tabella. tm_field: i campi FLAG ora mostrano il puntino di posto quando sono OFF (prima si vedeva una cella vuota e 'rotta'). Nuova tabella setup_IF15_2.def per Infinity IF15-2 1/10 200mm nitro on-road. Riepilogo dalla 05.06.95: 05.07.00 (fix flag display + setup IF15-2), 05.06.99 (fix rescan WiFi che staccava la rete), 05.06.98 (roaming proattivo WiFi), 05.06.97 (Assistente Gara senza auto-apertura LIVE, label REC), 05.06.96 (Bluetooth forzato all'avvio + flag topmost_attivo).",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",
@@ -42,6 +42,7 @@
     "updater.py": "core",
     "wifi_monitor.py": "core",
     "conf.def": "tabelle",
+    "setup_IF15_2.def": "tabelle",
     "logo.png": "loghi"
   },
   "revoche": []
