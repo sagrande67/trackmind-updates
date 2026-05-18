@@ -1,8 +1,8 @@
 {
-  "version": "05.07.03",
+  "version": "05.07.19",
   "date": "2026-05-18",
   "time": "00:00:00",
-  "note": "Restyling pannello laterale Assistente Gara + ottimizzazioni I/O. (1) Pannello assistenza SEMPRE visibile (non piu' solo a -15 min dal turno): in alto CLASSIFICA STIMATA della categoria selezionata aggiornata in tempo reale dal recorder (top 10 piloti, evidenziato il pilota loggato), in basso PROMEMORIA compatto (prime 8 righe della checklist). (2) Tolto il popup POLE: il bottone in alto adesso fa un TOGGLE del pannello tra classifica STIMATA (live, default) e UFFICIALE MyRCM (post-qualifiche). (3) STORICO LIVE in-memory only: rimossa la persistenza ogni 3s su micro-SD; lo storico vive in RAM e viene scritto su disco UNA volta sola a fine sessione (on_sessione_salvata del recorder), in dati/scouting/lap_myrcm_live_*_monitor.json. Crash a meta' sessione = perdita di quella sessione (decisione utente, in cambio di zero stress SD). (4) Tracking _ultimo_group_attivo per sapere quale classifica mostrare. Versione precedente (05.07.01): bugfix dalla gara ENS — filtra_per_categoria sui commissari, match cat_tag a token (REC ora si accende), rimossa auto-chiusura LIVE, storico LIVE persistente (con temp file, ora sostituito dal flusso in-memory).",
+  "note": "05.07.19: HOTFIX indentazione del fallback classifica. Il blocco 'if not righe -> usa fallback ufficiale' era INDENTATO DENTRO il for della classifica stimata. Risultato: se la stimata era vuota (caso normale: nessun dato live), il for non partiva mai e il fallback non veniva eseguito -> pannello sempre vuoto con 'Stato inatteso' nonostante i dati MyRCM fossero correttamente scaricati. Dedentato al livello giusto.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

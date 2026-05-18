@@ -1343,69 +1343,106 @@ def scarica_classifica(event_id, category_id, fase="qualif"):
         return []
     fase_norm = (fase or "qualif").strip().lower()
     if fase_norm in ("qualif", "qualifiche", "q"):
+        # Pagina "Classifiche :: Qualif" = pole position post-qualifiche
         titolo_atteso = "Classifiche :: Qualif"
+        titolo_regex = re.escape(titolo_atteso)
     elif fase_norm in ("finale", "final", "f"):
-        titolo_atteso = "Classifiche :: Finale"
+        # NB: la pagina "Classifiche :: Finale" di MyRCM e' solo la
+        # GRIGLIA DI PARTENZA (piloti ordinati per pole, giri=0).
+        # I VERI risultati della finale sono nella pagina
+        # "Finale :: Finals X - Gruppo finale Y" (es. "Finale ::
+        # Finals A - Gruppo finale 1"). Usiamo un regex generico
+        # per matchare la prima Gruppo finale disponibile.
+        titolo_atteso = "Finale :: Finals X - Gruppo finale Y"
+        titolo_regex = (r"Finale\s*::\s*Finals?\s+\w+\s*-\s*"
+                        r"Gruppo\s+finale\s+\d+")
     else:
         return []
 
     base_url = "https://www.myrcm.ch"
     main_url = "%s/myrcm/report/it/%s/%s" % (
         base_url, event_id, category_id)
+    print("[scarica_classifica] eid=%r cid=%r fase=%r -> main_url=%r"
+          % (event_id, category_id, fase_norm, main_url))
     html_main = _http_get(main_url)
     if not html_main:
-        return []
+        msg = "_http_get main_url VUOTO (rete/timeout?)"
+        print("[scarica_classifica] " + msg)
+        raise RuntimeError(msg)
 
-    # Trova la URL della pagina classifica via regex sul titolo
-    # esatto della voce di menu (case-insensitive per sicurezza).
+    # Trova la URL della pagina classifica via regex sul titolo.
+    # Per qualif: titolo esatto. Per finale: pattern generico
+    # (matcha varianti tipo "Finals A/B/C - Gruppo finale 1/2/...").
     pat = re.compile(
         r"doAjaxCall\s*\(\s*'([^']+\?reportKey=\d+)'\s*,\s*'"
-        + re.escape(titolo_atteso) + r"'",
+        + titolo_regex + r"[^']*'",
         re.IGNORECASE)
     m = pat.search(html_main)
     if not m:
-        return []
+        msg = ("titolo %r non trovato nella pagina (struttura "
+               "myrcm cambiata?)" % titolo_atteso)
+        print("[scarica_classifica] " + msg)
+        raise RuntimeError(msg)
     url_classifica = base_url + m.group(1)
+    print("[scarica_classifica] reportKey URL trovato: %r"
+          % url_classifica)
 
     html_class = _http_get(url_classifica)
     if not html_class:
-        return []
+        msg = "download pagina classifica VUOTO (rete/timeout?)"
+        print("[scarica_classifica] " + msg)
+        raise RuntimeError(msg)
 
     parser = _NestedTableParser()
     try:
         parser.feed(html_class)
-    except Exception:
-        return []
+    except Exception as e:
+        msg = "errore parsing HTML: %s" % str(e)[:80]
+        print("[scarica_classifica] " + msg)
+        raise RuntimeError(msg)
 
     # Cerca la tabella principale: header con 'Pilota' + ('Classifica'
-    # oppure 'Giri'). Le mini-tabelle nidificate hanno header diverso
-    # (Gruppo / Countato / ...) quindi non matchano.
+    # oppure 'Pos' oppure 'Giri'). Le mini-tabelle nidificate hanno
+    # header diverso (Gruppo / Countato / ...) quindi non matchano.
+    # 'Pos' compare nelle pagine "Finale :: Finals X - Gruppo finale Y"
+    # mentre 'Classifica' compare in "Classifiche :: Qualif".
     tab_principale = None
     for t in parser.tables:
         if not t:
             continue
         head = t[0]
         if ("Pilota" in head
-                and ("Classifica" in head or "Giri" in head)):
+                and ("Classifica" in head or "Pos" in head
+                     or "Giri" in head)):
             tab_principale = t
             break
     if not tab_principale:
-        return []
+        msg = ("tabella principale non trovata "
+               "(header 'Pilota' assente nelle %d tabelle)"
+               % len(parser.tables))
+        print("[scarica_classifica] " + msg)
+        raise RuntimeError(msg)
 
     header = tab_principale[0]
 
-    def idx_of(name):
-        try:
-            return header.index(name)
-        except ValueError:
-            return -1
+    def idx_of(*names):
+        """Ritorna l'indice della prima colonna trovata tra `names`,
+        o -1 se nessuna esiste. Cosi' supportiamo entrambi i formati
+        MyRCM (Classifica per qualif, Pos per finale)."""
+        for n in names:
+            try:
+                return header.index(n)
+            except ValueError:
+                continue
+        return -1
 
-    i_pos = idx_of("Classifica")
+    i_pos = idx_of("Classifica", "Pos")
     i_nr = idx_of("Nr.")
     i_pil = idx_of("Pilota")
     i_lic = idx_of("Licenza Nr.")
     i_gir = idx_of("Giri")
     i_tmp = idx_of("Tempo finale")
+    i_best = idx_of("Miglior tempo")
     i_grp = idx_of("Gruppo")
     i_stato = idx_of("Stato")
 
@@ -1433,11 +1470,16 @@ def scarica_classifica(event_id, category_id, fase="qualif"):
             "licenza": get(i_lic),
             "giri": giri,
             "tempo": get(i_tmp),
+            "best": get(i_best),     # miglior tempo (utile per finale)
             "gruppo": get(i_grp),
             "stato": get(i_stato),
         })
 
     risultati.sort(key=lambda x: x["posizione"])
+    print("[scarica_classifica] estratti %d piloti; primi 3: %s"
+          % (len(risultati),
+             ", ".join("%d.%s" % (r["posizione"], r["pilota"])
+                       for r in risultati[:3])))
     return risultati
 
 

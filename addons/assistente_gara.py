@@ -19,6 +19,7 @@ Tutto stdlib + tkinter, niente dipendenze esterne (urllib via myrcm_import).
 import os
 import sys
 import re
+import time
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -544,6 +545,30 @@ class AssistenteGaraMonitor:
         # il nuovo non riceve almeno un evento.
         self._ultimo_group_attivo = None
 
+        # v05.07.09: classifica UFFICIALE MyRCM (qualif + finale)
+        # cacheata nel monitor. Aggiornata a 2 trigger:
+        #   1. Avvio recorder (_avvia_recorder_myrcm) -> utile per
+        #      simulazione su eventi finiti o qualifiche gia' fatte
+        #   2. Fine ogni manche (_on_sessione_finalizzata) -> dopo
+        #      che MyRCM ha pubblicato il report ufficiale
+        # La UI legge questi campi dal pannello: se c'e' la
+        # classifica della FINALE la mostra (e' la piu' aggiornata),
+        # altrimenti ripiega sulla QUALIF.
+        self._classifica_qualif = None
+        self._classifica_finale = None
+        self._classifica_ufficiale_ts = 0
+        # v05.07.15: errore dell'ultimo tentativo di download per
+        # ogni fase. Mostrato dalla UI nel pannello diagnostica
+        # cosi' vediamo PERCHE' un download e' fallito.
+        self._classifica_qualif_err = None
+        self._classifica_finale_err = None
+        # v05.07.17: log circolare degli eventi del worker
+        # classifica (start, http_get, success, fail). Ultimi 8
+        # messaggi visibili nel pannello diagnostica - utile per
+        # capire cosa fa il worker quando l'utente non vede il
+        # terminale.
+        self._classifica_log = []
+
     def _calcola_state_path(self):
         """Path dove salvare lo stato per la persistenza tra riavvi."""
         # Stesso percorso che usa il resto di TrackMind: dati/
@@ -595,6 +620,11 @@ class AssistenteGaraMonitor:
         # pilota. Best-effort: se il modulo manca l'addon continua
         # senza recording.
         self._avvia_recorder_myrcm()
+        # v05.07.14: download classifica ufficiale subito,
+        # INDIPENDENTEMENTE dal recorder. Importante in simulazione
+        # (dove il recorder potrebbe non fare nulla di utile) e
+        # come safety net se _avvia_recorder_myrcm fallisce.
+        self._scarica_classifica_ufficiale_async()
 
     def disattiva(self):
         self._attivo = False
@@ -672,6 +702,11 @@ class AssistenteGaraMonitor:
             # sempre, anche quando la vista LapTimer e' chiusa).
             self._recorder.add_event_listener(
                 self._accumula_giri)
+            # v05.07.17: rimossa la chiamata _scarica_classifica_
+            # ufficiale_async qui dentro. La chiama gia' attiva()
+            # subito dopo _avvia_recorder_myrcm. Avere DUE chiamate
+            # creava due worker concorrenti che si pestavano i piedi
+            # (race su _classifica_qualif).
             # Listener per riallineare la time table sul tempo reale
             # MyRCM (se cronometraggio in tilt o ritardo non
             # registrato come "delay_min")
@@ -1118,11 +1153,24 @@ class AssistenteGaraMonitor:
         v05.07.02: storico IN-MEMORY ONLY. La persistenza ogni 3s su
         temp file e' stata rimossa per risparmiare scritture sulla
         micro-SD. Il dump finale avviene UNA volta sola a fine
-        sessione (_on_sessione_finalizzata -> _salva_live_history_finale)."""
+        sessione (_on_sessione_finalizzata -> _salva_live_history_finale).
+
+        v05.07.05: filtro per CATEGORIA SELEZIONATA. Il WebSocket MyRCM
+        trasmette gli eventi di TUTTE le categorie in pista (quella
+        cronometrata in quel momento, non per forza la nostra). Senza
+        filtro accumulavamo giri di ON_NITRO mentre l'utente aveva
+        selezionato GT_Nitro -> classifica stimata mostrava categoria
+        sbagliata. Adesso skippiamo subito gli eventi che non sono
+        della nostra categoria (stessa logica gia' usata per il REC)."""
         if not data:
             return
         group = (meta or {}).get("GROUP", "") or ""
         if not group:
+            return
+        # v05.07.05: scarta eventi di altre categorie (errore tipico:
+        # storico stimato che mostrava 1/8 Nitro On-Road invece della
+        # GT Cardans Nitro selezionata, perche' MyRCM trasmette tutto).
+        if not self._group_e_della_categoria(group):
             return
 
         # Lazy init dello stato per questo group (solo memoria).
@@ -1130,7 +1178,9 @@ class AssistenteGaraMonitor:
             self._live_history[group] = {}
         # Traccia l'ultimo group attivo: serve alla UI per sapere
         # quale classifica mostrare (la corrente se REC, o l'ultima
-        # vista se nessuno in pista al momento).
+        # vista se nessuno in pista al momento). Ora che filtriamo
+        # per categoria, contiene SEMPRE un group della categoria
+        # selezionata dall'utente.
         self._ultimo_group_attivo = group
 
         grp_state = self._live_history[group]
@@ -1318,21 +1368,101 @@ class AssistenteGaraMonitor:
         Quando il report HTML ufficiale di `group` e' stato scaricato
         e salvato in scouting/, i dati sono definitivi.
 
-        Adesso e' il momento di:
-        1. dumpare lo storico LIVE accumulato in memoria su file
+        Cosa facciamo:
+        1. Dump dello storico LIVE accumulato in memoria su file
            (UNICA scrittura per sessione, no debounce a 3s)
-        2. liberare la RAM (la classifica di questa sessione e'
-           ormai chiusa: non serve piu' nella vista live).
+        2. NON liberiamo la RAM: i dati restano in `_live_history`
+           cosi' la classifica del pannello continua a mostrare la
+           sessione appena finita anche mentre giocano altre
+           categorie (es. tra Qualif 1 e Qualif 2 della tua
+           categoria vediamo l'esito della Qualif 1). La pulizia
+           completa avviene solo al cambio evento, in
+           _ferma_recorder_myrcm.
+        3. v05.07.09: subito dopo, scarichiamo la classifica
+           ufficiale MyRCM aggiornata (qualif): a fine manche
+           MyRCM ha appena pubblicato il nuovo ranking, quindi e'
+           il momento giusto per refresharlo per il pannello UI.
         """
         print("[ag] sessione salvata: %s (%d file)" % (group[:60], n_files))
         try:
             self._salva_live_history_finale(group)
         except Exception as e:
             print("[ag] errore salva live history finale:", e)
-        try:
-            self.cleanup_live_history(group)
-        except Exception as e:
-            print("[ag] errore cleanup live history:", e)
+        # Refresh classifica ufficiale per il pannello
+        self._scarica_classifica_ufficiale_async()
+
+    def _scarica_classifica_ufficiale_async(self):
+        """v05.07.09: scarica in background da MyRCM SIA la classifica
+        finale SIA quella delle qualifiche per la categoria scelta.
+        Memorizza in self._classifica_finale e self._classifica_qualif.
+        Chiamato a evento (avvio monitor / fine manche) - no polling.
+
+        Se MyRCM non ha ancora pubblicato la finale o la qualif (es.
+        evento in corso), quella mancante resta None. La UI mostra
+        la piu' avanzata disponibile (preferenza alla finale)."""
+        eid = (self.evento or {}).get("event_id", "")
+        cid = (self.categoria or {}).get("category_id", "")
+        print("[ag] download classifica: eid=%r cid=%r cat=%r"
+              % (eid, cid,
+                 (self.categoria or {}).get("nome", "")))
+        if not eid or not cid:
+            print("[ag] skip download classifica: eid/cid mancanti")
+            return
+
+        def log(msg):
+            """Aggiunge un messaggio al log circolare del worker.
+            Limitato a ~16 entry per evitare accumulo memoria."""
+            try:
+                ts = datetime.now().strftime("%H:%M:%S")
+                self._classifica_log.append("%s %s" % (ts, msg))
+                if len(self._classifica_log) > 16:
+                    self._classifica_log = self._classifica_log[-16:]
+            except Exception:
+                pass
+            print("[ag classifica] " + msg)
+
+        def worker():
+            log("worker START eid=%r cid=%r" % (eid, cid))
+            try:
+                from myrcm_import import scarica_classifica
+            except Exception as e:
+                log("IMPORT FAIL: %s" % str(e)[:60])
+                return
+            for fase in ("finale", "qualif"):
+                attr = ("_classifica_finale" if fase == "finale"
+                        else "_classifica_qualif")
+                attr_err = attr + "_err"
+                log("inizio fase=%s" % fase)
+                ris = None
+                err = None
+                try:
+                    ris = scarica_classifica(eid, cid, fase)
+                except Exception as e:
+                    err = str(e)[:80]
+                    log("FAIL %s: %s" % (fase, err))
+                if err is None and not ris:
+                    err = "lista vuota"
+                    log("FAIL %s: %s" % (fase, err))
+                if err is None and fase == "finale":
+                    girata = any(int(r.get("giri", 0) or 0) > 0
+                                 for r in (ris or []))
+                    if not girata:
+                        err = ("griglia partenza (finale non corsa)")
+                        log("SKIP finale: %s" % err)
+                        self._classifica_finale = None
+                        ris = None
+                if err is not None:
+                    setattr(self, attr_err, err)
+                    log("end %s con errore" % fase)
+                    continue
+                setattr(self, attr, ris)
+                setattr(self, attr_err, None)
+                self._classifica_ufficiale_ts = time.time()
+                log("OK %s: %d piloti" % (fase, len(ris)))
+            log("worker END")
+
+        threading.Thread(target=worker, daemon=True,
+                         name="cls_ufficiale_dl").start()
 
     def cleanup_live_history(self, group):
         """Libera la RAM occupata dallo storico di `group`. Chiamata
@@ -2996,16 +3126,9 @@ class AssistenteGara:
                   command=self._stop_monitor_con_conferma)
         self._btn_stop.pack(side="left", padx=(6, 0))
         # Bottone CHECKLIST: apre l'editor (notepad retro gia' fatto
-        # per il PROMPT IA) sul file dati/checklist_gara.txt.
-        # L'utente compila la sua lista personale di cose da fare a
-        # 15 min dal turno (es. RIEMPIRE BIBERON, MONTARE GOMME,
-        # VERIFICARE TRASPONDER, ecc.). Quando il countdown raggiunge
-        # -15 min, il tree turni viene sostituito da questa lista.
-        tk.Button(h, text="CHECKLIST", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["cerca_testo"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=self._apri_editor_checklist).pack(
-            side="left", padx=(6, 0))
+        # v05.07.06: bottone CHECKLIST rimosso. Il pannello laterale
+        # adesso mostra solo la classifica stimata (la checklist non
+        # serviva piu' nel workflow in pista).
         # Bottone VEDI LIVE: apre la UI griglia colonne MyRCM live
         # a richiesta. Utile quando la sessione e' ancora in
         # rsPrepared (in attesa del via) oppure per ri-aprirla dopo
@@ -3608,97 +3731,25 @@ Edita questa lista col bottone CHECKLIST nell'header.
                               "errore")
 
     def _toggle_classifica_ufficiale(self):
-        """Bottone POLE: alterna il pannello laterale tra
-        classifica STIMATA (calcolata in tempo reale dal recorder)
-        e classifica UFFICIALE scaricata da MyRCM (Classifiche ::
-        Qualif). Il download avviene in thread per non bloccare
-        la UI; un piccolo cache di 30s evita di riempire MyRCM di
-        richieste se l'utente premette POLE ripetutamente."""
+        """v05.07.13: bottone POLE — forza il REFRESH della classifica
+        ufficiale (qualif + finale) da MyRCM. Niente piu' toggle di
+        modi separati: il rendering del pannello e' unico, sceglie da
+        solo se mostrare classifica stimata (se c'e' live) oppure
+        ufficiale (fallback automatico con filtro temporale)."""
         m = AssistenteGaraMonitor.get(self._top)
         if m is None or not m.attivo:
             self._set_status("Monitor non attivo", "errore")
             return
-        # Toggle del modo classifica
-        modo_corrente = getattr(self, "_cls_modo", "stimata")
-        if modo_corrente == "ufficiale":
-            self._cls_modo = "stimata"
+        try:
+            m._scarica_classifica_ufficiale_async()
             self._set_status(
-                "Classifica: STIMATA (live)", "ok")
-            try:
-                self._aggiorna_classifica_pannello()
-            except Exception:
-                pass
-            return
-        # Passo a UFFICIALE: scarico da MyRCM
-        eid = (m.evento or {}).get("event_id", "")
-        cid = (m.categoria or {}).get("category_id", "")
-        if not eid or not cid:
-            self._set_status(
-                "Evento/categoria non selezionati", "errore")
-            return
-        # Cache 30s per non ri-scaricare se l'utente flipa veloce
-        cache = getattr(self, "_pole_cache", None)
-        if cache is None:
-            cache = {}
-            self._pole_cache = cache
-        ck = (eid, cid, "qualif")
-        now = time.time()
-        hit = cache.get(ck)
-        if hit and (now - hit[0]) < 30.0:
-            self._cls_ufficiale_data = hit[1]
-            self._cls_modo = "ufficiale"
-            self._set_status(
-                "Classifica: UFFICIALE (da cache)", "ok")
-            try:
-                self._aggiorna_classifica_pannello()
-            except Exception:
-                pass
-            return
-        # Download in thread
-        self._set_status("Scarico classifica ufficiale...", "info")
-
-        def worker():
-            try:
-                from myrcm_import import scarica_classifica
-                ris = scarica_classifica(
-                    event_id=eid, category_id=cid, fase="qualif")
-            except Exception as e:
-                ris = None
-                err = str(e)
-            else:
-                err = None
-
-            def finish():
-                if err:
-                    self._set_status(
-                        "Errore download classifica: %s"
-                        % err[:60], "errore")
-                    return
-                if not ris:
-                    self._set_status(
-                        "Nessuna classifica ufficiale disponibile "
-                        "(qualifiche non ancora terminate?)",
-                        "info")
-                    return
-                cache[ck] = (time.time(), ris)
-                self._cls_ufficiale_data = ris
-                self._cls_modo = "ufficiale"
-                self._set_status(
-                    "Classifica: UFFICIALE (%d piloti) — premi POLE "
-                    "per tornare alla stimata" % len(ris), "ok")
-                try:
-                    self._aggiorna_classifica_pannello()
-                except Exception:
-                    pass
-
-            try:
-                self._top.after(0, finish)
-            except Exception:
-                pass
-
-        t = threading.Thread(target=worker,
-                              name="pole_dl", daemon=True)
-        t.start()
+                "Ri-scarico classifica ufficiale da MyRCM...", "ok")
+        except Exception as e:
+            self._set_status("Errore: %s" % str(e)[:60], "errore")
+        try:
+            self._aggiorna_classifica_pannello()
+        except Exception:
+            pass
 
     # Conservato per compatibilita': in v05.07.02 il popup e' stato
     # rimosso, ma il metodo viene mantenuto come no-op nel caso
@@ -3744,18 +3795,19 @@ Edita questa lista col bottone CHECKLIST nell'header.
                              "errore")
 
     def _mostra_checklist_nel_tree(self):
-        """v05.07.02: pannello "ASSISTENZA" SEMPRE visibile sul lato
-        destro del tree turni. Due sezioni:
-          - in alto: CLASSIFICA STIMATA della categoria selezionata
-            (top 10 piloti, calcolata dal _live_history del monitor).
-            Si aggiorna al tick (1 Hz) tramite _aggiorna_classifica_pannello.
-          - in basso: PROMEMORIA — checklist compatta (le prime righe
-            del file checklist_gara.txt). Solo lettura, niente refresh.
+        """v05.07.06: pannello "ASSISTENZA" SEMPRE visibile sul lato
+        destro del tree turni. Contenuto: CLASSIFICA STIMATA della
+        categoria selezionata (top 10 piloti, calcolata dal
+        _live_history del monitor). Si aggiorna al tick (1 Hz)
+        tramite _aggiorna_classifica_pannello. Il bottone POLE in
+        alto permette di sostituire la stimata con la classifica
+        UFFICIALE MyRCM.
 
-        Prima della v05.07.02 il pannello mostrava solo la checklist
-        e compariva da -15 a -1 min dal turno. Adesso e' sempre li',
-        cosi' la classifica e' sempre a portata d'occhio durante la
-        gara. Idempotente: se gia' montato non ricostruisce."""
+        Cronologia: prima della v05.07.02 il pannello mostrava solo
+        la checklist e compariva da -15 a -1 min dal turno. In
+        v05.07.02 e' diventato sempre visibile con classifica +
+        promemoria. In v05.07.06 abbiamo rimosso la sezione
+        promemoria/checklist: in pista non serviva."""
         if not hasattr(self, "_checklist_pane"):
             return
         if getattr(self, "_checklist_visibile", False):
@@ -3807,30 +3859,10 @@ Edita questa lista col bottone CHECKLIST nell'header.
         except Exception:
             pass
 
-        # ── SEZIONE 2: PROMEMORIA / CHECKLIST COMPATTA ─────────────
-        hdr_ck = tk.Frame(self._checklist_pane, bg="#664400")
-        hdr_ck.pack(fill="x", padx=2, pady=(4, 0))
-        tk.Label(hdr_ck, text="-- PROMEMORIA --",
-                 bg="#664400", fg="#ffaa00",
-                 font=self._f_small, anchor="center").pack(
-            fill="x", padx=4, pady=2)
-        ck_frame = tk.Frame(self._checklist_pane, bg=c["sfondo_celle"])
-        ck_frame.pack(fill="x", padx=4, pady=(0, 4))
-        self._ck_text = tk.Text(
-            ck_frame, font=self._f_small,
-            bg=c["sfondo_celle"], fg=c["stato_avviso"],
-            relief="flat", bd=0, wrap="word", height=6)
-        self._ck_text.pack(side="left", fill="x", expand=True)
-        self._ck_text.bind("<Key>", lambda e: "break")
-        try:
-            contenuto = self._carica_checklist() or ""
-            # Compatta: solo le prime ~8 righe non vuote, prefisso
-            # essenziale. Per la versione completa apri CHECKLIST.
-            righe = [r for r in contenuto.splitlines() if r.strip()][:8]
-            self._ck_text.insert("1.0", "\n".join(righe))
-            self._ck_text.config(state="disabled")
-        except Exception:
-            pass
+        # v05.07.06: la sezione "PROMEMORIA / CHECKLIST COMPATTA" e'
+        # stata rimossa. In pista non serviva, il pannello ora
+        # contiene solo la classifica stimata che e' l'informazione
+        # che davvero conta vedere a colpo d'occhio.
 
         # Aggancia il pannello a destra
         try:
@@ -3849,17 +3881,101 @@ Edita questa lista col bottone CHECKLIST nell'header.
         (es. mostrare/nascondere in base a stati) andranno qui."""
         return
 
+    def _classifiche_disponibili_per_tempo(self, m):
+        """v05.07.12: rispetta il tempo (reale o simulato).
+
+        Ritorna (qualif_passata, finale_passata) confrontando l'ora
+        corrente del monitor (m._now(), che include il clock_offset
+        della simulazione) con gli orari del timetable della categoria.
+
+        In simulazione: anche se MyRCM ha gia' pubblicato la finale
+        nella realta', se nella sim siamo a meta' qualifiche, non
+        mostriamo la classifica finale. La classifica qualif appare
+        solo dopo che almeno una qualifica e' "finita" nella sim.
+
+        Durata stimata: 30 min per qualif, 45 min per finale. Se nel
+        timetable c'e' un orario_gara reale lo useremmo, ma in pratica
+        questa stima e' sufficiente per il filtro temporale."""
+        if m is None:
+            return False, False
+        try:
+            now_sim = m._now()
+        except Exception:
+            from datetime import datetime as _dt
+            now_sim = _dt.now()
+        tt = m.tt_filtrato or m.time_table or []
+        qualif_passata = False
+        finale_passata = False
+        for r in tt:
+            base = r.get("base_date")
+            ora_str = (r.get("ora") or "").strip()
+            if not base or not ora_str:
+                continue
+            try:
+                hh, mm = ora_str.split(":")[:2]
+                dt = base.replace(hour=int(hh), minute=int(mm),
+                                   second=0, microsecond=0)
+            except Exception:
+                continue
+            s_low = ((r.get("gruppo", "") or "") + " " +
+                     (r.get("manche", "") or "")).lower()
+            is_finale = "final" in s_low
+            is_qualif = ("qualif" in s_low or "qualific" in s_low)
+            # v05.07.14: durate corrette per 1/8 Nitro On-Road
+            # (categorie tipiche ENS):
+            #   qualif = 6 min
+            #   finale = 30 min
+            # Cerchiamo prima nel raw del time table un valore HH:MM
+            # con totale <=60 min (Orario gara MyRCM, formato MM:SS
+            # in realta'). Se non trovato, usiamo i default.
+            durata_min = 30 if is_finale else 6
+            try:
+                raw = r.get("raw") or []
+                # idx_ora e' tipicamente in raw, evita di prendere
+                # l'ora-del-giorno (09:17 -> 557 > 60 quindi salta
+                # automaticamente con il check <=60).
+                for v in raw:
+                    v = (v or "").strip()
+                    m_d = re.match(r"^(\d{1,2}):(\d{2})$", v)
+                    if not m_d:
+                        continue
+                    tot = int(m_d.group(1)) * 60 + int(m_d.group(2))
+                    # "06:00" -> 360 ma significa 6 min 0 sec = 6 min.
+                    # "30:00" -> 1800 sec = 30 min.
+                    # Convertiamo: tot in secondi -> minuti
+                    durata_candidata = int(m_d.group(1))
+                    if 1 <= durata_candidata <= 60:
+                        # Plausibile come durata sessione
+                        # ma scartiamo se coincide con l'ora inizio
+                        if v == ora_str:
+                            continue
+                        durata_min = durata_candidata
+                        break
+            except Exception:
+                pass
+            durata = timedelta(minutes=durata_min)
+            if now_sim >= dt + durata:
+                if is_finale:
+                    finale_passata = True
+                elif is_qualif:
+                    qualif_passata = True
+        return qualif_passata, finale_passata
+
     def _aggiorna_classifica_pannello(self):
         """Re-renderizza la sezione CLASSIFICA del pannello laterale.
         Chiamato dal tick listener (1 Hz) e all'apertura del pannello.
 
-        Due modi (controllati da self._cls_modo):
+        Tre modi (controllati da self._cls_modo):
           - 'stimata' (default): calcolata in tempo reale dal recorder
             via classifica_stimata(group). Cambia ad ogni tick coi
             nuovi giri.
           - 'ufficiale': mostra i dati scaricati da MyRCM al click
             del bottone POLE (self._cls_ufficiale_data). Statici
             finche' non si rifa il download o si torna in stimata.
+
+        v05.07.07: se modo='stimata' e non c'e' storico live (sessione
+        non in pista, evento finito, simulazione), fa FALLBACK
+        automatico ai dati ufficiali MyRCM scaricati in background.
         """
         txt = getattr(self, "_cls_text", None)
         if txt is None:
@@ -3872,42 +3988,75 @@ Edita questa lista col bottone CHECKLIST nell'header.
         m = AssistenteGaraMonitor.get(self._top)
         if m is None:
             return
-        modo = getattr(self, "_cls_modo", "stimata")
         nome_io = (m.nome_pilota or "").strip().lower()
         tokens_io = set(t for t in re.split(r"\s+", nome_io) if t)
 
-        # Costruisce lista uniforme di righe da renderizzare:
-        # [{pos, pilota, giri, best_str}, ...]
+        # v05.07.13: rendering unificato. Niente piu' modi
+        # 'stimata' vs 'ufficiale' separati. Una sola logica:
+        # se c'e' dato live (REC attivo, recorder live), mostra
+        # la classifica stimata; altrimenti fallback automatico
+        # alla classifica ufficiale MyRCM, con FILTRO TEMPORALE
+        # (rispetta _now() del monitor, anche in simulazione).
         righe = []
-        titolo = ""
-        if modo == "ufficiale":
-            dati = getattr(self, "_cls_ufficiale_data", None) or []
-            titolo = ">>> POLE UFFICIALE (MyRCM) <<<"
-            for r in dati:
-                righe.append({
-                    "pos": r.get("posizione", 0),
-                    "pilota": r.get("pilota", ""),
-                    "giri": r.get("giri", 0),
-                    "best_str": (r.get("tempo", "") or "")[:8],
-                })
-        else:
-            group = m._ultimo_group_attivo
-            if group:
-                titolo_g = group.split("::")[-1].strip()[:32]
-                titolo = ">>> CLASSIFICA - %s <<<" % titolo_g
-            else:
-                titolo = ">>> CLASSIFICA STIMATA <<<"
-            classifica = (m.classifica_stimata(group)
-                          if group else [])
-            for r in classifica:
-                best = r.get("best")
-                best_str = ("%5.2f" % best) if best else "  --"
-                righe.append({
-                    "pos": r.get("pos", 0),
-                    "pilota": r.get("pilota", ""),
-                    "giri": r.get("giri", 0),
-                    "best_str": best_str,
-                })
+        titolo = ">>> CLASSIFICA STIMATA <<<"
+        group = m._ultimo_group_attivo
+        if group:
+            titolo_g = group.split("::")[-1].strip()[:32]
+            titolo = ">>> CLASSIFICA - %s <<<" % titolo_g
+        classifica = (m.classifica_stimata(group)
+                      if group else [])
+        for r in classifica:
+            best = r.get("best")
+            best_str = ("%5.2f" % best) if best else "  --"
+            righe.append({
+                "pos": r.get("pos", 0),
+                "pilota": r.get("pilota", ""),
+                "giri": r.get("giri", 0),
+                "best_str": best_str,
+            })
+        # v05.07.19 FIX: questo blocco era indentato DENTRO il for,
+        # quindi se la classifica stimata era vuota (nessun dato live,
+        # caso tipico in simulazione su evento finito) il fallback
+        # ufficiale non veniva MAI eseguito -> pannello sempre vuoto
+        # con "Stato inatteso". Ora dedentato al livello giusto.
+        #
+        # FALLBACK con FILTRO TEMPORALE:
+        # In simulazione il pannello segue l'orario simulato:
+        #   - prima che la prima qualifica finisca -> nessuna
+        #     classifica ufficiale visibile
+        #   - dopo qualifiche, prima della finale -> classifica
+        #     qualif (= pole position)
+        #   - dopo la finale -> classifica finale (risultati veri)
+        if not righe:
+            q_passata, f_passata = (
+                self._classifiche_disponibili_per_tempo(m))
+            fallback = []
+            fonte = None
+            if f_passata and getattr(m, "_classifica_finale",
+                                      None):
+                fallback = m._classifica_finale
+                fonte = "FINALE"
+            elif q_passata and getattr(m, "_classifica_qualif",
+                                        None):
+                fallback = m._classifica_qualif
+                fonte = "QUALIF"
+            if fallback:
+                titolo = (">>> CLASSIFICA UFFICIALE %s "
+                          "(MyRCM) <<<" % fonte)
+                for r in fallback:
+                    # Preferenza al miglior giro se disponibile
+                    # (popolato per la finale, vuoto per qualif
+                    # nel formato MyRCM). Fallback al tempo
+                    # finale totale.
+                    best_str = (r.get("best", "") or "").strip()
+                    if not best_str:
+                        best_str = (r.get("tempo", "") or "")[:8]
+                    righe.append({
+                        "pos": r.get("posizione", 0),
+                        "pilota": r.get("pilota", ""),
+                        "giri": r.get("giri", 0),
+                        "best_str": best_str[:8],
+                    })
         # Titolo
         try:
             self._cls_titolo.config(text=titolo)
@@ -3918,18 +4067,70 @@ Edita questa lista col bottone CHECKLIST nell'header.
             txt.config(state="normal")
             txt.delete("1.0", "end")
             if not righe:
-                if modo == "ufficiale":
-                    txt.insert("end",
-                               "\n  (Premi POLE per scaricare la\n"
-                               "  classifica ufficiale da MyRCM)\n",
-                               "header")
+                # v05.07.14: diagnostica verbose nel pannello cosi'
+                # si vede a colpo d'occhio cosa pensa il monitor.
+                q_passata, f_passata = (
+                    self._classifiche_disponibili_per_tempo(m))
+                eid = (m.evento or {}).get("event_id", "")
+                cid = (m.categoria or {}).get("category_id", "")
+                cls_q = bool(getattr(m, "_classifica_qualif", None))
+                cls_f = bool(getattr(m, "_classifica_finale", None))
+                tt_n = len(m.tt_filtrato or m.time_table or [])
+                try:
+                    now_sim = m._now().strftime("%H:%M")
+                except Exception:
+                    now_sim = "?"
+                err_q = getattr(m, "_classifica_qualif_err",
+                                 None)
+                err_f = getattr(m, "_classifica_finale_err",
+                                 None)
+                log_lines = getattr(m, "_classifica_log",
+                                     []) or []
+                # Ultimi 8 messaggi del worker (cronologici)
+                log_display = "\n".join(
+                    "    " + l for l in log_lines[-8:])
+                if not log_display:
+                    log_display = "    (nessun log - worker non partito?)"
+                msg = ("\n  Diagnostica:\n"
+                       "  -> ora corrente: %s\n"
+                       "  -> evento: %r\n"
+                       "  -> categoria: %r\n"
+                       "  -> righe TT: %d\n"
+                       "  -> qualif passata?: %s\n"
+                       "  -> finale passata?: %s\n"
+                       "  -> _classifica_qualif: %s\n"
+                       "  -> _classifica_finale: %s\n"
+                       "  -> err qualif: %s\n"
+                       "  -> err finale: %s\n"
+                       "\n  Log worker (ultime 8):\n%s\n"
+                       "\n"
+                       % (now_sim, eid, cid, tt_n,
+                          q_passata, f_passata, cls_q, cls_f,
+                          str(err_q)[:40] if err_q else "-",
+                          str(err_f)[:40] if err_f else "-",
+                          log_display))
+                if not eid or not cid:
+                    msg += ("  PROBLEMA: evento/categoria mancanti\n"
+                            "  Torna al menu e ri-seleziona.\n")
+                elif not (q_passata or f_passata):
+                    msg += ("  Nessuna sessione ancora 'passata'\n"
+                            "  rispetto all'ora corrente.\n"
+                            "  La classifica appare quando\n"
+                            "  passa almeno la prima qualifica.\n")
+                elif (q_passata and not cls_q
+                      and f_passata and not cls_f):
+                    msg += ("  Sessione passata ma classifica\n"
+                            "  ufficiale NON ancora scaricata\n"
+                            "  da MyRCM. Premi POLE per riprovare.\n")
+                elif q_passata and not cls_q:
+                    msg += ("  Qualif passata ma _classifica_qualif\n"
+                            "  e' None: il download di MyRCM\n"
+                            "  e' fallito o non e' partito.\n"
+                            "  Premi POLE per riprovare.\n")
                 else:
-                    txt.insert("end",
-                               "\n  (in attesa di dati LIVE...)\n"
-                               "  La classifica appare quando una\n"
-                               "  sessione della tua categoria entra\n"
-                               "  in pista (REC acceso).\n",
-                               "header")
+                    msg += ("  Stato inatteso.\n"
+                            "  Premi POLE per ri-scaricare.\n")
+                txt.insert("end", msg, "header")
                 txt.config(state="disabled")
                 return
             # Header colonne
