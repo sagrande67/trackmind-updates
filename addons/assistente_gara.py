@@ -529,18 +529,20 @@ class AssistenteGaraMonitor:
         self._rec_attivo = False
         self._rec_group = None
 
-        # v05.07.01: storico LIVE persistente. Il monitor accumula
-        # giro-per-giro di ogni pilota per la sessione corrente ANCHE
-        # quando la vista LIVE e' chiusa (il LapTimer prima perdeva
-        # tutto a chiusura, quindi rientrando a meta' manche si
-        # vedevano solo i giri dal momento del rientro). Lo stato e'
-        # persistito su file temp con debounce 3s, cosi' un crash o
-        # un riavvio non perde la sessione in corso. A fine sessione,
-        # appena il recorder scarica il report HTML ufficiale, il
-        # temp viene cancellato (dati ormai definitivi in scouting/).
+        # v05.07.02: storico LIVE in-memory. Il monitor accumula
+        # giro-per-giro di ogni pilota della sessione corrente in
+        # `_live_history` (RAM only, niente piu' temp file). A fine
+        # sessione (`on_sessione_salvata` dal recorder) lo storico
+        # viene scritto UNA volta su `dati/scouting/lap_myrcm_live_*`
+        # e poi liberato dalla memoria. Decisione utente: crash =
+        # sessione persa, ok (in cambio: zero stress sulla micro-SD,
+        # niente debounce 3s, niente scritture continue).
         self._live_history = {}            # {group: {pn: state}}
-        self._live_history_dirty = set()   # gruppi con modifiche pendenti
-        self._live_history_last_save = {}  # {group: ts ultimo save}
+        # Group dell'ultima sessione vista dal recorder. Usato dalla
+        # UI per sapere "quale classifica devo mostrare adesso?".
+        # Se un nuovo group inizia, l'ultimo group resta finche'
+        # il nuovo non riceve almeno un evento.
+        self._ultimo_group_attivo = None
 
     def _calcola_state_path(self):
         """Path dove salvare lo stato per la persistenza tra riavvi."""
@@ -1111,18 +1113,25 @@ class AssistenteGaraMonitor:
         Vivendo nel monitor, NON va in conflitto col LapTimer LIVE
         che ha il SUO listener: i due accumulatori girano in
         parallelo. Il monitor e' la fonte di verita' per chi rientra
-        a meta' sessione."""
+        a meta' sessione.
+
+        v05.07.02: storico IN-MEMORY ONLY. La persistenza ogni 3s su
+        temp file e' stata rimossa per risparmiare scritture sulla
+        micro-SD. Il dump finale avviene UNA volta sola a fine
+        sessione (_on_sessione_finalizzata -> _salva_live_history_finale)."""
         if not data:
             return
         group = (meta or {}).get("GROUP", "") or ""
         if not group:
             return
 
-        # Lazy init dello stato per questo group (con load da temp file
-        # se esiste, p.es. dopo un crash/riavvio in mezzo alla sessione)
+        # Lazy init dello stato per questo group (solo memoria).
         if group not in self._live_history:
-            loaded = self._carica_temp_history(group)
-            self._live_history[group] = loaded or {}
+            self._live_history[group] = {}
+        # Traccia l'ultimo group attivo: serve alla UI per sapere
+        # quale classifica mostrare (la corrente se REC, o l'ultima
+        # vista se nessuno in pista al momento).
+        self._ultimo_group_attivo = group
 
         grp_state = self._live_history[group]
         dirty = False
@@ -1197,52 +1206,45 @@ class AssistenteGaraMonitor:
             st["_baseline_abs"] = abs_now
             dirty = True
 
-        if dirty:
-            self._live_history_dirty.add(group)
-            self._maybe_persist_live_history(group)
+        # v05.07.02: niente piu' persistenza al volo. Lo storico vive
+        # in RAM e viene scritto su file UNA volta sola a fine
+        # sessione tramite _salva_live_history_finale.
+        # (variabile `dirty` mantenuta per chiarezza/future estensioni)
+        _ = dirty
 
-    # ---------- persistenza temp file ----------
-    def _path_temp_history(self, group):
-        """Path del file temporaneo per lo storico LIVE di `group`.
-        Usa event_id + slug del group per evitare collisioni e
-        caratteri non validi nel filesystem."""
+    # ---------- persistenza finale (no temp file) ----------
+    def _path_history_finale(self, group):
+        """Path del file di salvataggio FINALE per lo storico LIVE.
+        Scritto UNA volta sola a fine sessione (no temp file durante
+        la sessione). Nome distinto dai file scouting standard del
+        recorder per non confondere (suffix '_monitor.json')."""
         if not group:
             return None
         try:
             eid = str((self.evento or {}).get("event_id", "")
                       or "noevent")
             slug = re.sub(r"[^A-Za-z0-9]+", "_", group)[:60]
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             base = os.path.dirname(
                 os.path.dirname(os.path.abspath(__file__)))
             return os.path.join(
                 base, "dati", "scouting",
-                "live_temp_%s_%s.json" % (eid, slug))
+                "lap_myrcm_live_%s_%s_%s_monitor.json"
+                % (eid, slug, ts))
         except Exception:
             return None
 
-    def _maybe_persist_live_history(self, group):
-        """Debounce 3s sulla persistenza: scrive su disco non piu'
-        di una volta ogni 3 secondi per group, anche se gli eventi
-        WS arrivano fitti. Evita di stressare la micro-SD."""
-        if group not in self._live_history_dirty:
-            return
-        now = time.time()
-        last = self._live_history_last_save.get(group, 0.0)
-        if (now - last) < 3.0:
-            return
-        self._live_history_last_save[group] = now
-        self._live_history_dirty.discard(group)
-        self._persist_live_history(group)
-
-    def _persist_live_history(self, group):
-        """Scrive lo storico di `group` su file temp (atomic write
-        via .tmp + replace)."""
-        path = self._path_temp_history(group)
-        if not path:
-            return
-        state = self._live_history.get(group, {})
+    def _salva_live_history_finale(self, group):
+        """Salva su disco lo storico accumulato in memoria per
+        `group` (UNA volta sola, a fine sessione). Non sovrascrive
+        eventuali file precedenti (nome include timestamp).
+        Ritorna il path scritto, oppure None se nulla da salvare."""
+        state = self._live_history.get(group)
         if not state:
-            return
+            return None
+        path = self._path_history_finale(group)
+        if not path:
+            return None
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
@@ -1251,83 +1253,97 @@ class AssistenteGaraMonitor:
                     "group": group,
                     "event_id": (self.evento or {}).get("event_id", ""),
                     "categoria": (self.categoria or {}).get("nome", ""),
+                    "salvato_il": datetime.now().isoformat(),
                     "piloti": state,
                 }, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
+            print("[ag] live history finalizzata: %s" % os.path.basename(path))
+            return path
         except Exception as e:
-            print("[ag] errore persist temp history:", e)
-
-    def _carica_temp_history(self, group):
-        """Carica lo storico da file temp se esiste. JSON serializza
-        le chiavi int come stringhe: le riconvertiamo a int per
-        coerenza con quelle generate da _myrcm_pilot_num_s."""
-        path = self._path_temp_history(group)
-        if not path or not os.path.exists(path):
-            return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            piloti = d.get("piloti", {})
-            out = {}
-            for k, v in piloti.items():
-                try:
-                    out[int(k)] = v
-                except (ValueError, TypeError):
-                    out[k] = v
-            return out
-        except Exception as e:
-            print("[ag] errore carica temp history:", e)
+            print("[ag] errore salvataggio live history finale:", e)
             return None
 
     # ---------- API pubblica per LapTimer ----------
     def get_live_history(self, group):
-        """Ritorna lo storico accumulato per `group`. Usato dal
-        LapTimer LIVE all'apertura per copiare i giri gia' fatti
-        nei propri `_live_pilots` (cosi' anche rientrando a meta'
-        sessione si vedono tutti i giri da inizio)."""
+        """Ritorna lo storico accumulato in memoria per `group`.
+        Usato dal LapTimer LIVE all'apertura per copiare i giri
+        gia' fatti nei propri `_live_pilots` (anche rientrando a
+        meta' sessione si vedono tutti i giri da inizio)."""
         if not group:
             return {}
-        if group not in self._live_history:
-            loaded = self._carica_temp_history(group)
-            if loaded is not None:
-                self._live_history[group] = loaded
         return self._live_history.get(group, {})
+
+    def classifica_stimata(self, group=None):
+        """Restituisce la classifica STIMATA (calcolata in tempo
+        reale dai tempi LIVE accumulati in memoria) per il group
+        indicato. Se `group` e' None, usa l'ultimo group attivo.
+
+        Ordinamento (come MyRCM): per GIRI desc (chi ha completato
+        piu' giri vince), tie-break per TOTAL asc (a parita' di
+        giri, chi e' arrivato prima).
+
+        Ritorna lista di dict ordinata:
+            [{"pos": 1, "pilota": "Modolo Marco", "giri": 19,
+              "best": 18.45, "total": 360.5, "nr": 0,
+              "country": "ITA", "pn": 100000001}, ...]
+
+        Lista vuota se non ci sono dati."""
+        if not group:
+            group = self._ultimo_group_attivo
+        if not group or group not in self._live_history:
+            return []
+        out = []
+        for pn, st in self._live_history[group].items():
+            laps = st.get("laps", []) or []
+            n = len(laps)
+            best = st.get("best")
+            total = float(st.get("total", 0.0) or 0.0)
+            out.append({
+                "pn": pn,
+                "pilota": st.get("pilota", "") or "",
+                "nr": st.get("nr", 0),
+                "country": st.get("country", ""),
+                "giri": n,
+                "best": best,        # float seconds o None
+                "total": total,      # float seconds
+            })
+        # Ordina: piu' giri prima; a parita' di giri, total minore prima
+        out.sort(key=lambda x: (-x["giri"], x["total"]))
+        for i, r in enumerate(out, start=1):
+            r["pos"] = i
+        return out
 
     def _on_sessione_finalizzata(self, group, n_files):
         """Callback registrato sul recorder (on_sessione_salvata).
         Quando il report HTML ufficiale di `group` e' stato scaricato
-        e salvato in scouting/, i dati sono definitivi: cancelliamo
-        il file temp dello storico LIVE per non lasciare scorie."""
+        e salvato in scouting/, i dati sono definitivi.
+
+        Adesso e' il momento di:
+        1. dumpare lo storico LIVE accumulato in memoria su file
+           (UNICA scrittura per sessione, no debounce a 3s)
+        2. liberare la RAM (la classifica di questa sessione e'
+           ormai chiusa: non serve piu' nella vista live).
+        """
         print("[ag] sessione salvata: %s (%d file)" % (group[:60], n_files))
+        try:
+            self._salva_live_history_finale(group)
+        except Exception as e:
+            print("[ag] errore salva live history finale:", e)
         try:
             self.cleanup_live_history(group)
         except Exception as e:
             print("[ag] errore cleanup live history:", e)
 
     def cleanup_live_history(self, group):
-        """Cancella lo storico (memoria + file temp) per `group`.
-        Chiamato dal callback on_sessione_salvata del recorder
-        quando il report HTML ufficiale e' stato scaricato: a quel
-        punto i dati definitivi sono in scouting/lap_myrcm_*.json
-        e il temp non serve piu'."""
+        """Libera la RAM occupata dallo storico di `group`. Chiamata
+        a fine sessione dopo _salva_live_history_finale (i dati sono
+        ormai su disco). Niente file da cancellare: con la nuova
+        architettura in-memory non ci sono temp file."""
         if not group:
             return
-        # Forza un ultimo persist per chiudere il file in stato
-        # consistente prima di cancellare (anche se cancelliamo
-        # subito dopo: serve se qualcuno guarda i file temp per debug).
-        if (group in self._live_history
-                and group in self._live_history_dirty):
-            self._persist_live_history(group)
         self._live_history.pop(group, None)
-        self._live_history_dirty.discard(group)
-        self._live_history_last_save.pop(group, None)
-        path = self._path_temp_history(group)
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-                print("[ag] temp history rimosso: %s" % group[:50])
-            except Exception:
-                pass
+        if self._ultimo_group_attivo == group:
+            self._ultimo_group_attivo = None
 
     def _parse_time_str(self, s):
         """Parse stringa MyRCM in secondi (int).
@@ -2999,13 +3015,15 @@ class AssistenteGara:
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._apri_ui_live_manuale).pack(
             side="left", padx=(6, 0))
-        # Bottone POLE / CLASSIFICA: scarica la classifica post-
-        # qualifiche da MyRCM e la mostra in un popup. Utile per
-        # vedere il pole + griglia di partenza prima della finale.
+        # Bottone POLE: forza il caricamento della classifica
+        # UFFICIALE da MyRCM (Classifiche :: Qualif) e la mostra
+        # nel pannello laterale al posto della STIMATA. Click
+        # di nuovo per tornare alla stimata. La stimata viene
+        # comunque ricalcolata di continuo dal monitor.
         tk.Button(h, text="POLE", font=self._f_small,
                   bg=c["pulsanti_sfondo"], fg=c["cerca_testo"],
                   relief="ridge", bd=1, cursor="hand2",
-                  command=self._apri_pole_classifica).pack(
+                  command=self._toggle_classifica_ufficiale).pack(
             side="left", padx=(6, 0))
         # Indicatore REC: lampeggia in rosso quando in pista c'e' una
         # sessione della categoria selezionata (il recorder di sfondo
@@ -3139,9 +3157,16 @@ class AssistenteGara:
 
         # Popola le righe (sara' ricolorato ad ogni tick)
         self._tt_rows = []  # [(turno_dict, frame, lbls...)]
-        # Stato switch tree <-> checklist (-15 min)
+        # Stato switch tree <-> checklist (-15 min) — non piu' usato
+        # come "show/hide" dal v05.07.02 (pannello sempre visibile).
         self._checklist_visibile = False
         self._popola_tree_turni(monitor)
+        # v05.07.02: pannello assistenza (classifica + promemoria)
+        # SEMPRE visibile, niente piu' show/hide a -15 min.
+        try:
+            self._mostra_checklist_nel_tree()
+        except Exception:
+            pass
 
         sim_hint = (" | Modalita' SIMULAZIONE attiva"
                     if monitor.in_simulazione else "")
@@ -3275,23 +3300,13 @@ class AssistenteGara:
                 s = (dt - now).total_seconds()
                 if s > 0 and (secs_min is None or s < secs_min):
                     secs_min = s
-        # Range per mostrare la checklist: da -15 min a -1 min.
-        # Sotto -1 min (= AVVIA MOTORE) la checklist sparisce cosi'
-        # il pilota ha tutto lo schermo per il suo turno IN CORSO.
-        in_range_checklist = (
-            secs_min is not None and 60 < secs_min <= 15 * 60)
-        if in_range_checklist:
-            # Mostra pannello affiancato (idempotente)
-            try:
-                self._mostra_checklist_nel_tree()
-            except Exception:
-                pass
-        else:
-            # Nascondi pannello (idempotente)
-            try:
-                self._nascondi_checklist()
-            except Exception:
-                pass
+        # v05.07.02: il pannello laterale (classifica + promemoria)
+        # e' SEMPRE visibile (montato in _schermata_timetable_monitor).
+        # Niente piu' show/hide basato sul range -15..-1 min: la
+        # classifica deve essere sempre a portata d'occhio durante
+        # la gara. `secs_min` resta calcolato per le altre logiche
+        # (alert AVVIA MOTORE, colorazione tree turni).
+        _ = secs_min  # silenziato lint variabile non usata qui
         # ── Colorazione standard del tree turni (sempre) ──
         if not getattr(self, "_tt_rows", None):
             return
@@ -3428,6 +3443,12 @@ class AssistenteGara:
                         lbl_rec.config(text="● REC", fg="#5a0000")
                 else:
                     lbl_rec.config(text="○ REC", fg=c["testo_dim"])
+        except Exception:
+            pass
+        # v05.07.02: refresh CLASSIFICA STIMATA nel pannello laterale
+        # (1 Hz, lo stesso ritmo del tick). Idempotente e veloce.
+        try:
+            self._aggiorna_classifica_pannello()
         except Exception:
             pass
         # Refresh label "Ritardo" (DIVERGENCE puo' cambiare ad
@@ -3586,241 +3607,108 @@ Edita questa lista col bottone CHECKLIST nell'header.
             self._set_status("Errore apertura LapTimer: %s" % e,
                               "errore")
 
-    def _apri_pole_classifica(self):
-        """Scarica e mostra la classifica MyRCM (Pole post-qualifiche
-        o classifica finale) in un popup. Download in thread per non
-        congelare la UI; cache di 30s per non riempire MyRCM di
-        richieste se l'utente apre/chiude il popup ripetutamente.
-
-        Se il pilota loggato e' presente in classifica, la sua riga
-        viene evidenziata in giallo (effetto 'tu sei qui').
-        """
+    def _toggle_classifica_ufficiale(self):
+        """Bottone POLE: alterna il pannello laterale tra
+        classifica STIMATA (calcolata in tempo reale dal recorder)
+        e classifica UFFICIALE scaricata da MyRCM (Classifiche ::
+        Qualif). Il download avviene in thread per non bloccare
+        la UI; un piccolo cache di 30s evita di riempire MyRCM di
+        richieste se l'utente premette POLE ripetutamente."""
         m = AssistenteGaraMonitor.get(self._top)
         if m is None or not m.attivo:
             self._set_status("Monitor non attivo", "errore")
             return
+        # Toggle del modo classifica
+        modo_corrente = getattr(self, "_cls_modo", "stimata")
+        if modo_corrente == "ufficiale":
+            self._cls_modo = "stimata"
+            self._set_status(
+                "Classifica: STIMATA (live)", "ok")
+            try:
+                self._aggiorna_classifica_pannello()
+            except Exception:
+                pass
+            return
+        # Passo a UFFICIALE: scarico da MyRCM
         eid = (m.evento or {}).get("event_id", "")
         cid = (m.categoria or {}).get("category_id", "")
         if not eid or not cid:
             self._set_status(
                 "Evento/categoria non selezionati", "errore")
             return
-        cat_nome = (m.categoria or {}).get("nome", "?")
-
-        # Popup Toplevel sopra TrackMind
-        c = self.c
-        top = tk.Toplevel(self._top)
-        top.title("Pole / Classifica - " + cat_nome[:40])
-        top.configure(bg=c["sfondo"])
-        top.transient(self._top)
-        top.geometry("680x520")
-        top.bind("<Escape>", lambda e: top.destroy())
-        # Disattiva topmost del monitor mentre questo popup e' aperto,
-        # cosi' non viene ricoperto dalla finestra principale.
-        try:
-            top.attributes("-topmost", True)
-        except Exception:
-            pass
-
-        # Header
-        hdr = tk.Frame(top, bg=c["sfondo"])
-        hdr.pack(fill="x", padx=10, pady=(10, 4))
-        # Selettore fase: Qualif (pole post-qualifiche) o Finale
-        fase_var = tk.StringVar(value="qualif")
-        tk.Label(hdr, text="Fase:", bg=c["sfondo"], fg=c["testo_dim"],
-                 font=self._f_small).pack(side="left")
-        tk.Radiobutton(hdr, text="Qualif (Pole)", variable=fase_var,
-                       value="qualif",
-                       bg=c["sfondo"], fg=c["dati"],
-                       selectcolor=c["sfondo_celle"],
-                       activebackground=c["sfondo"],
-                       activeforeground=c["dati"],
-                       font=self._f_small,
-                       command=lambda: ricarica(force=False)).pack(
-            side="left", padx=(6, 0))
-        tk.Radiobutton(hdr, text="Finale", variable=fase_var,
-                       value="finale",
-                       bg=c["sfondo"], fg=c["dati"],
-                       selectcolor=c["sfondo_celle"],
-                       activebackground=c["sfondo"],
-                       activeforeground=c["dati"],
-                       font=self._f_small,
-                       command=lambda: ricarica(force=False)).pack(
-            side="left", padx=(6, 0))
-        tk.Button(hdr, text="AGGIORNA", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=lambda: ricarica(force=True)).pack(
-            side="right")
-        tk.Button(hdr, text="CHIUDI (ESC)", font=self._f_small,
-                  bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
-                  relief="ridge", bd=1, cursor="hand2",
-                  command=top.destroy).pack(side="right", padx=(0, 6))
-
-        tk.Label(top, text="POLE / CLASSIFICA - " + cat_nome[:50],
-                 bg=c["sfondo"], fg=c["dati"],
-                 font=self._f_title).pack(pady=(2, 4))
-        tk.Frame(top, bg=c["linee"], height=1).pack(
-            fill="x", padx=10, pady=(0, 4))
-
-        # Area dati: una Text widget read-only formattata a colonne
-        # (un Treeview retrobello e' un'overkill per N=10-20 righe).
-        body = tk.Frame(top, bg=c["sfondo"])
-        body.pack(fill="both", expand=True, padx=10, pady=(2, 6))
-        text = tk.Text(body, font=("Courier", 10),
-                       bg=c["sfondo_celle"], fg=c["dati"],
-                       insertbackground=c["dati"],
-                       relief="flat", bd=0, wrap="none")
-        text.pack(side="left", fill="both", expand=True)
-        # Disabilita editing (read-only ma con possibilita' selezione)
-        text.bind("<Key>", lambda e: "break")
-        sb = tk.Scrollbar(body, orient="vertical",
-                          command=text.yview, bg=c["sfondo"])
-        sb.pack(side="right", fill="y")
-        text.config(yscrollcommand=sb.set)
-
-        # Tag per evidenziare la riga del pilota loggato
-        text.tag_configure("io",
-                            background="#664400",
-                            foreground="#ffaa00",
-                            font=("Courier", 10, "bold"))
-        text.tag_configure("header",
-                            foreground=c["testo_dim"])
-        text.tag_configure("warn",
-                            foreground=c["stato_errore"])
-        text.tag_configure("ok",
-                            foreground=c["stato_ok"])
-
-        # Status bar in fondo
-        status_var = tk.StringVar(value="")
-        tk.Label(top, textvariable=status_var,
-                 bg=c["sfondo"], fg=c["testo_dim"],
-                 font=self._f_small).pack(fill="x", padx=10,
-                                            pady=(0, 6))
-
-        # Cache della classifica (per fase) con TTL 30s, evita di
-        # ri-scaricare se l'utente fa apri/chiudi/apri rapidi.
+        # Cache 30s per non ri-scaricare se l'utente flipa veloce
         cache = getattr(self, "_pole_cache", None)
         if cache is None:
             cache = {}
             self._pole_cache = cache
+        ck = (eid, cid, "qualif")
+        now = time.time()
+        hit = cache.get(ck)
+        if hit and (now - hit[0]) < 30.0:
+            self._cls_ufficiale_data = hit[1]
+            self._cls_modo = "ufficiale"
+            self._set_status(
+                "Classifica: UFFICIALE (da cache)", "ok")
+            try:
+                self._aggiorna_classifica_pannello()
+            except Exception:
+                pass
+            return
+        # Download in thread
+        self._set_status("Scarico classifica ufficiale...", "info")
 
-        def render(piloti, fase, da_cache=False):
-            text.config(state="normal")
-            text.delete("1.0", "end")
-            if not piloti:
-                text.insert("end",
-                            "Nessun dato disponibile per questa fase.\n"
-                            "\n"
-                            "Possibili motivi:\n"
-                            "  - le qualifiche non sono ancora "
-                            "terminate sul sito MyRCM\n"
-                            "  - questa categoria non ha pubblicato "
-                            "ancora una classifica\n"
-                            "  - problema di rete\n",
-                            "warn")
-                text.config(state="disabled")
-                return
-            # Header
-            text.insert("end",
-                        " POS  PILOTA                          GIRI  "
-                        "  TEMPO     GRUPPO          NAZ\n",
-                        "header")
-            text.insert("end", " " + "-" * 76 + "\n", "header")
-            nome_io = (m.nome_pilota or "").strip().lower()
-            tokens_io = set(t for t in re.split(r"\s+", nome_io) if t)
-            for r in piloti:
-                pilota = r.get("pilota", "")
-                pilota_lower = pilota.lower()
-                # Considera "mio" se almeno 2 token del nome utente
-                # combaciano con la riga (gestisce ordine Nome/Cognome
-                # e LASTNAME maiuscolo)
-                tokens_p = set(t for t in re.split(r"\s+",
-                                                    pilota_lower) if t)
-                e_io = (bool(tokens_io) and bool(tokens_p)
-                        and len(tokens_io & tokens_p) >= 2)
-                riga = " %3d  %-30s  %4d  %10s  %-15s %s\n" % (
-                    r.get("posizione", 0),
-                    pilota[:30],
-                    r.get("giri", 0),
-                    r.get("tempo", "")[:10],
-                    r.get("gruppo", "")[:15],
-                    r.get("stato", "")[:5],
-                )
-                if e_io:
-                    text.insert("end", riga, "io")
-                else:
-                    text.insert("end", riga)
-            text.insert("end", "\n")
-            suffix = " (da cache)" if da_cache else ""
-            text.insert("end",
-                        "Totale: %d piloti%s\n"
-                        % (len(piloti), suffix), "header")
-            text.config(state="disabled")
+        def worker():
+            try:
+                from myrcm_import import scarica_classifica
+                ris = scarica_classifica(
+                    event_id=eid, category_id=cid, fase="qualif")
+            except Exception as e:
+                ris = None
+                err = str(e)
+            else:
+                err = None
 
-        def ricarica(force=False):
-            fase = fase_var.get()
-            ck = (eid, cid, fase)
-            now = time.time()
-            # Usa cache se TTL valida e non e' un refresh forzato
-            if not force:
-                hit = cache.get(ck)
-                if hit and (now - hit[0]) < 30.0:
-                    status_var.set(
-                        "Classifica %s caricata da cache (%.0fs fa)"
-                        % (fase.upper(), now - hit[0]))
-                    render(hit[1], fase, da_cache=True)
+            def finish():
+                if err:
+                    self._set_status(
+                        "Errore download classifica: %s"
+                        % err[:60], "errore")
                     return
-            # Download in thread per non bloccare la UI
-            status_var.set("Scarico classifica %s da MyRCM..."
-                            % fase.upper())
-            text.config(state="normal")
-            text.delete("1.0", "end")
-            text.insert("end", "\n  Caricamento in corso...\n",
-                         "header")
-            text.config(state="disabled")
-
-            def worker():
+                if not ris:
+                    self._set_status(
+                        "Nessuna classifica ufficiale disponibile "
+                        "(qualifiche non ancora terminate?)",
+                        "info")
+                    return
+                cache[ck] = (time.time(), ris)
+                self._cls_ufficiale_data = ris
+                self._cls_modo = "ufficiale"
+                self._set_status(
+                    "Classifica: UFFICIALE (%d piloti) — premi POLE "
+                    "per tornare alla stimata" % len(ris), "ok")
                 try:
-                    from myrcm_import import scarica_classifica
-                    risultati = scarica_classifica(
-                        event_id=eid,
-                        category_id=cid,
-                        fase=fase)
-                except Exception as e:
-                    risultati = None
-                    err = str(e)
-                else:
-                    err = None
-                # Torna su thread Tk per aggiornare UI
-                def finish():
-                    if not top.winfo_exists():
-                        return
-                    if err:
-                        status_var.set("Errore: %s" % err[:80])
-                        render([], fase)
-                        return
-                    if not risultati:
-                        status_var.set(
-                            "Nessun dato per fase '%s'" % fase)
-                        render([], fase)
-                        return
-                    cache[ck] = (time.time(), risultati)
-                    status_var.set(
-                        "Classifica %s aggiornata: %d piloti"
-                        % (fase.upper(), len(risultati)))
-                    render(risultati, fase)
-                try:
-                    self._top.after(0, finish)
+                    self._aggiorna_classifica_pannello()
                 except Exception:
                     pass
 
-            t = threading.Thread(target=worker,
-                                  name="pole_dl", daemon=True)
-            t.start()
+            try:
+                self._top.after(0, finish)
+            except Exception:
+                pass
 
-        # Caricamento iniziale
-        ricarica(force=False)
+        t = threading.Thread(target=worker,
+                              name="pole_dl", daemon=True)
+        t.start()
+
+    # Conservato per compatibilita': in v05.07.02 il popup e' stato
+    # rimosso, ma il metodo viene mantenuto come no-op nel caso
+    # qualcuno tenti di richiamarlo da codice esterno.
+    def _apri_pole_classifica(self):
+        """v05.07.02: il popup e' stato rimosso, la classifica
+        ufficiale ora vive nel pannello laterale. Reindirizziamo
+        al nuovo flusso per non rompere chiamate residue."""
+        self._toggle_classifica_ufficiale()
+        return
 
     def _apri_editor_checklist(self):
         """Apre il PromptEditor (notepad retro) sul file
@@ -3856,17 +3744,24 @@ Edita questa lista col bottone CHECKLIST nell'header.
                              "errore")
 
     def _mostra_checklist_nel_tree(self):
-        """Mostra la checklist pre-gara come pannello AFFIANCATO al
-        tree turni (non lo sostituisce). Layout split a partire da
-        v05.06.17: SX = time table sempre visibile, DX = checklist
-        in zona pre-gara (-15 min..-1 min).
-        Idempotente: se gia' visibile non ricostruisce."""
+        """v05.07.02: pannello "ASSISTENZA" SEMPRE visibile sul lato
+        destro del tree turni. Due sezioni:
+          - in alto: CLASSIFICA STIMATA della categoria selezionata
+            (top 10 piloti, calcolata dal _live_history del monitor).
+            Si aggiorna al tick (1 Hz) tramite _aggiorna_classifica_pannello.
+          - in basso: PROMEMORIA — checklist compatta (le prime righe
+            del file checklist_gara.txt). Solo lettura, niente refresh.
+
+        Prima della v05.07.02 il pannello mostrava solo la checklist
+        e compariva da -15 a -1 min dal turno. Adesso e' sempre li',
+        cosi' la classifica e' sempre a portata d'occhio durante la
+        gara. Idempotente: se gia' montato non ricostruisce."""
         if not hasattr(self, "_checklist_pane"):
             return
         if getattr(self, "_checklist_visibile", False):
             return  # gia' mostrato
         c = self.c
-        # Pulisci eventuali widget precedenti nel pannello
+        # Pulisci eventuali widget precedenti
         try:
             for w in list(self._checklist_pane.winfo_children()):
                 try:
@@ -3875,41 +3770,69 @@ Edita questa lista col bottone CHECKLIST nell'header.
                     pass
         except Exception:
             return
-        # Calcola larghezza ~40% dello schermo come pannello
-        # checklist. Min 280px (uConsole 480px), max 500px (desktop).
+        # Larghezza pannello: ~40% schermo (min 280, max 500)
         try:
             screen_w = self.root.winfo_width() or 800
             ck_w = max(280, min(500, int(screen_w * 0.40)))
         except Exception:
             ck_w = 320
-        # Header riga
-        hr = tk.Frame(self._checklist_pane, bg="#664400")
-        hr.pack(fill="x", padx=2, pady=(2, 4))
-        tk.Label(hr, text=">>> CHECKLIST PRE-GARA <<<",
-                 bg="#664400", fg="#ffaa00",
-                 font=self._f_btn, anchor="center").pack(
-            fill="x", padx=4, pady=4)
-        # Testo della checklist (Text widget readonly + scrollbar
-        # interna per liste lunghe)
-        txt_frame = tk.Frame(self._checklist_pane,
-                             bg=c["sfondo_celle"])
-        txt_frame.pack(fill="both", expand=True, padx=4, pady=4)
-        ck_sb = tk.Scrollbar(txt_frame, bg=c["sfondo"],
-                             troughcolor=c["sfondo"],
-                             activebackground=c["dati"])
-        ck_sb.pack(side="right", fill="y")
-        txt = tk.Text(txt_frame, font=self._f_info,
-                      bg=c["sfondo_celle"], fg=c["stato_avviso"],
-                      relief="flat", bd=0, wrap="word",
-                      yscrollcommand=ck_sb.set)
-        txt.pack(side="left", fill="both", expand=True)
-        ck_sb.config(command=txt.yview)
+
+        # ── SEZIONE 1: CLASSIFICA STIMATA ──────────────────────────
+        hdr_cls = tk.Frame(self._checklist_pane, bg="#003300")
+        hdr_cls.pack(fill="x", padx=2, pady=(2, 0))
+        self._cls_titolo = tk.Label(
+            hdr_cls, text=">>> CLASSIFICA STIMATA <<<",
+            bg="#003300", fg="#39ff14",
+            font=self._f_btn, anchor="center")
+        self._cls_titolo.pack(fill="x", padx=4, pady=4)
+        cls_frame = tk.Frame(self._checklist_pane, bg=c["sfondo_celle"])
+        cls_frame.pack(fill="both", expand=True, padx=4, pady=(2, 4))
+        self._cls_text = tk.Text(
+            cls_frame, font=("Courier", 9),
+            bg=c["sfondo_celle"], fg=c["dati"],
+            relief="flat", bd=0, wrap="none", height=12)
+        self._cls_text.pack(side="left", fill="both", expand=True)
+        # Tag per evidenziare la riga del pilota loggato
+        self._cls_text.tag_configure(
+            "io", background="#664400", foreground="#ffaa00",
+            font=("Courier", 9, "bold"))
+        self._cls_text.tag_configure(
+            "header", foreground=c["testo_dim"])
+        # Disabilita editing
+        self._cls_text.bind("<Key>", lambda e: "break")
+        # Render iniziale (potrebbe gia' esserci storico in memoria
+        # da una sessione corrente del recorder)
         try:
-            txt.insert("1.0", self._carica_checklist())
-            txt.config(state="disabled")
+            self._aggiorna_classifica_pannello()
         except Exception:
             pass
-        # Mostra il pannello a destra del list_frame, larghezza fissa
+
+        # ── SEZIONE 2: PROMEMORIA / CHECKLIST COMPATTA ─────────────
+        hdr_ck = tk.Frame(self._checklist_pane, bg="#664400")
+        hdr_ck.pack(fill="x", padx=2, pady=(4, 0))
+        tk.Label(hdr_ck, text="-- PROMEMORIA --",
+                 bg="#664400", fg="#ffaa00",
+                 font=self._f_small, anchor="center").pack(
+            fill="x", padx=4, pady=2)
+        ck_frame = tk.Frame(self._checklist_pane, bg=c["sfondo_celle"])
+        ck_frame.pack(fill="x", padx=4, pady=(0, 4))
+        self._ck_text = tk.Text(
+            ck_frame, font=self._f_small,
+            bg=c["sfondo_celle"], fg=c["stato_avviso"],
+            relief="flat", bd=0, wrap="word", height=6)
+        self._ck_text.pack(side="left", fill="x", expand=True)
+        self._ck_text.bind("<Key>", lambda e: "break")
+        try:
+            contenuto = self._carica_checklist() or ""
+            # Compatta: solo le prime ~8 righe non vuote, prefisso
+            # essenziale. Per la versione completa apri CHECKLIST.
+            righe = [r for r in contenuto.splitlines() if r.strip()][:8]
+            self._ck_text.insert("1.0", "\n".join(righe))
+            self._ck_text.config(state="disabled")
+        except Exception:
+            pass
+
+        # Aggancia il pannello a destra
         try:
             self._checklist_pane.config(width=ck_w)
             self._checklist_pane.pack_propagate(False)
@@ -3917,20 +3840,122 @@ Edita questa lista col bottone CHECKLIST nell'header.
                                        padx=(8, 0))
         except Exception:
             pass
-        # Marca lo stato per non ricostruire ad ogni tick
         self._checklist_visibile = True
 
     def _nascondi_checklist(self):
-        """Nasconde il pannello checklist. Chiamato quando esciamo
-        dalla zona pre-gara (es. AVVIA MOTORE -1 min, oppure il
-        turno e' passato)."""
-        if not getattr(self, "_checklist_visibile", False):
+        """v05.07.02: no-op. Il pannello adesso e' SEMPRE visibile.
+        Manteniamo il metodo per non rompere chiamate residue da
+        _aggiorna_stato_tree_turni; eventuali ottimizzazioni
+        (es. mostrare/nascondere in base a stati) andranno qui."""
+        return
+
+    def _aggiorna_classifica_pannello(self):
+        """Re-renderizza la sezione CLASSIFICA del pannello laterale.
+        Chiamato dal tick listener (1 Hz) e all'apertura del pannello.
+
+        Due modi (controllati da self._cls_modo):
+          - 'stimata' (default): calcolata in tempo reale dal recorder
+            via classifica_stimata(group). Cambia ad ogni tick coi
+            nuovi giri.
+          - 'ufficiale': mostra i dati scaricati da MyRCM al click
+            del bottone POLE (self._cls_ufficiale_data). Statici
+            finche' non si rifa il download o si torna in stimata.
+        """
+        txt = getattr(self, "_cls_text", None)
+        if txt is None:
             return
         try:
-            self._checklist_pane.pack_forget()
+            if not txt.winfo_exists():
+                return
+        except Exception:
+            return
+        m = AssistenteGaraMonitor.get(self._top)
+        if m is None:
+            return
+        modo = getattr(self, "_cls_modo", "stimata")
+        nome_io = (m.nome_pilota or "").strip().lower()
+        tokens_io = set(t for t in re.split(r"\s+", nome_io) if t)
+
+        # Costruisce lista uniforme di righe da renderizzare:
+        # [{pos, pilota, giri, best_str}, ...]
+        righe = []
+        titolo = ""
+        if modo == "ufficiale":
+            dati = getattr(self, "_cls_ufficiale_data", None) or []
+            titolo = ">>> POLE UFFICIALE (MyRCM) <<<"
+            for r in dati:
+                righe.append({
+                    "pos": r.get("posizione", 0),
+                    "pilota": r.get("pilota", ""),
+                    "giri": r.get("giri", 0),
+                    "best_str": (r.get("tempo", "") or "")[:8],
+                })
+        else:
+            group = m._ultimo_group_attivo
+            if group:
+                titolo_g = group.split("::")[-1].strip()[:32]
+                titolo = ">>> CLASSIFICA - %s <<<" % titolo_g
+            else:
+                titolo = ">>> CLASSIFICA STIMATA <<<"
+            classifica = (m.classifica_stimata(group)
+                          if group else [])
+            for r in classifica:
+                best = r.get("best")
+                best_str = ("%5.2f" % best) if best else "  --"
+                righe.append({
+                    "pos": r.get("pos", 0),
+                    "pilota": r.get("pilota", ""),
+                    "giri": r.get("giri", 0),
+                    "best_str": best_str,
+                })
+        # Titolo
+        try:
+            self._cls_titolo.config(text=titolo)
         except Exception:
             pass
-        self._checklist_visibile = False
+        # Render contenuto
+        try:
+            txt.config(state="normal")
+            txt.delete("1.0", "end")
+            if not righe:
+                if modo == "ufficiale":
+                    txt.insert("end",
+                               "\n  (Premi POLE per scaricare la\n"
+                               "  classifica ufficiale da MyRCM)\n",
+                               "header")
+                else:
+                    txt.insert("end",
+                               "\n  (in attesa di dati LIVE...)\n"
+                               "  La classifica appare quando una\n"
+                               "  sessione della tua categoria entra\n"
+                               "  in pista (REC acceso).\n",
+                               "header")
+                txt.config(state="disabled")
+                return
+            # Header colonne
+            txt.insert("end",
+                       " POS  PILOTA              GIRI   BEST\n",
+                       "header")
+            txt.insert("end", " " + "-" * 38 + "\n", "header")
+            for r in righe[:10]:
+                pilota = r.get("pilota", "")
+                tokens_p = set(t for t in re.split(
+                    r"\s+", pilota.lower()) if t)
+                e_io = (bool(tokens_io) and bool(tokens_p)
+                        and len(tokens_io & tokens_p) >= 2)
+                riga = " %3d  %-19s %4d  %s\n" % (
+                    r.get("pos", 0),
+                    pilota[:19],
+                    r.get("giri", 0),
+                    r.get("best_str", ""),
+                )
+                if e_io:
+                    txt.insert("end", riga, "io")
+                else:
+                    txt.insert("end", riga)
+            txt.config(state="disabled")
+        except Exception:
+            pass
 
     # =================================================================
     #  Chiusura / controllo monitor
