@@ -299,6 +299,85 @@ class _TableParser(HTMLParser):
             self._current_cell += data
 
 
+class _NestedTableParser(HTMLParser):
+    """Parser HTML che estrae tutte le tabelle GESTENDO la nidificazione.
+
+    Differenza con _TableParser:
+      - usa uno stack di livelli, uno per ogni `<table>` aperta, cosi'
+        una tabella interna non sovrascrive la riga in corso di
+        accumulo della tabella esterna;
+      - gestisce i tag autochiusi `<td/>` e `<th/>` che HTMLParser
+        sennò processa solo come start tag (e la cella non si chiude).
+
+    Necessario per la pagina "Classifiche :: Qualif" di MyRCM, dove
+    ogni riga della classifica principale CONTIENE una mini-tabella
+    "Reports Manche" (dettaglio Countato del pilota). Col parser piatto
+    le righe della classifica principale venivano perse.
+
+    Output: `self.tables = [[[row0_cell0, row0_cell1, ...], ...], ...]`
+    Una lista di tabelle, ognuna lista di righe, ogni riga lista di
+    celle (stringhe). Le tabelle vengono aggiunte in ordine di
+    chiusura: prima quelle nidificate, poi le contenitrici.
+    """
+    def __init__(self):
+        super().__init__()
+        self.tables = []
+        # Stack di livelli aperti: ogni livello e' uno stato
+        # indipendente per la tabella in corso a quel livello.
+        self._stack = []
+
+    def _cur(self):
+        return self._stack[-1] if self._stack else None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self._stack.append({
+                "rows": [], "row": [], "cell": [],
+                "in_cell": False, "in_row": False,
+            })
+            return
+        c = self._cur()
+        if c is None:
+            return
+        if tag == "tr":
+            c["in_row"] = True
+            c["row"] = []
+        elif tag in ("td", "th") and c["in_row"]:
+            c["in_cell"] = True
+            c["cell"] = []
+        elif tag == "br" and c["in_cell"]:
+            c["cell"].append(" ")
+
+    def handle_startendtag(self, tag, attrs):
+        # Gestisce <td/> e <th/> autochiusi.
+        c = self._cur()
+        if c is None:
+            return
+        if tag in ("td", "th") and c["in_row"]:
+            c["row"].append("")
+
+    def handle_endtag(self, tag):
+        c = self._cur()
+        if c is None:
+            return
+        if tag in ("td", "th") and c["in_cell"]:
+            c["row"].append("".join(c["cell"]).strip())
+            c["in_cell"] = False
+        elif tag == "tr" and c["in_row"]:
+            if c["row"]:
+                c["rows"].append(c["row"])
+            c["in_row"] = False
+        elif tag == "table":
+            t = self._stack.pop()
+            if t["rows"]:
+                self.tables.append(t["rows"])
+
+    def handle_data(self, data):
+        c = self._cur()
+        if c is not None and c["in_cell"]:
+            c["cell"].append(data)
+
+
 class _EventListParser(HTMLParser):
     """Estrae eventi dalla pagina 'Eventi Online' di MyRCM."""
     def __init__(self):
@@ -1223,6 +1302,143 @@ def scarica_tutti_tempi_evento(event_id, category_id):
 
     print("[MyRCM] Totale batterie con tempi: %d" % len(tutti_risultati))
     return tutti_risultati
+
+
+# =====================================================================
+#  SCARICA CLASSIFICA (pole position post-qualifiche / risultati finali)
+# =====================================================================
+def scarica_classifica(event_id, category_id, fase="qualif"):
+    """Scarica la classifica MyRCM per una categoria.
+
+    MyRCM nella pagina di una categoria pubblica due voci di menu
+    sotto "Classifiche":
+        - "Classifiche :: Qualif"   -> pole post-qualifiche
+        - "Classifiche :: Finale"   -> risultati finali
+
+    Param `fase`:
+        'qualif' o 'q' (default) -> pole position post-qualifiche
+        'finale' o 'f'           -> classifica finale
+
+    La pagina contiene una tabella principale con header
+        Classifica | Nr. | Pilota | Licenza Nr. | Giri | Tempo finale
+        | Gruppo | Stato | Modello | Motore | Carrozzeria | Gomme
+        | Radio | Storico
+    E dentro ogni riga della classifica c'e' annidata una mini-tabella
+    "Reports Manche" coi dettagli per gruppo del pilota. Per questo
+    serve _NestedTableParser e NON il _TableParser piatto.
+
+    Ritorna lista di dict ordinata per posizione, oppure [] se non
+    riesce a scaricare/parsare:
+        [{"posizione": 1, "nr": "",
+          "pilota": "Modolo Marco", "licenza": "",
+          "giri": 19, "tempo": "6:07.223",
+          "gruppo": "2 [1, 3]", "stato": "ITA"}, ...]
+
+    Le righe in cui il pilota non ha completato giri (posizione
+    valida ma giri=0, tempo='0:00.000') vengono comunque incluse:
+    sono i piloti che non hanno girato in qualifica ma fanno parte
+    della categoria.
+    """
+    if not event_id or not category_id:
+        return []
+    fase_norm = (fase or "qualif").strip().lower()
+    if fase_norm in ("qualif", "qualifiche", "q"):
+        titolo_atteso = "Classifiche :: Qualif"
+    elif fase_norm in ("finale", "final", "f"):
+        titolo_atteso = "Classifiche :: Finale"
+    else:
+        return []
+
+    base_url = "https://www.myrcm.ch"
+    main_url = "%s/myrcm/report/it/%s/%s" % (
+        base_url, event_id, category_id)
+    html_main = _http_get(main_url)
+    if not html_main:
+        return []
+
+    # Trova la URL della pagina classifica via regex sul titolo
+    # esatto della voce di menu (case-insensitive per sicurezza).
+    pat = re.compile(
+        r"doAjaxCall\s*\(\s*'([^']+\?reportKey=\d+)'\s*,\s*'"
+        + re.escape(titolo_atteso) + r"'",
+        re.IGNORECASE)
+    m = pat.search(html_main)
+    if not m:
+        return []
+    url_classifica = base_url + m.group(1)
+
+    html_class = _http_get(url_classifica)
+    if not html_class:
+        return []
+
+    parser = _NestedTableParser()
+    try:
+        parser.feed(html_class)
+    except Exception:
+        return []
+
+    # Cerca la tabella principale: header con 'Pilota' + ('Classifica'
+    # oppure 'Giri'). Le mini-tabelle nidificate hanno header diverso
+    # (Gruppo / Countato / ...) quindi non matchano.
+    tab_principale = None
+    for t in parser.tables:
+        if not t:
+            continue
+        head = t[0]
+        if ("Pilota" in head
+                and ("Classifica" in head or "Giri" in head)):
+            tab_principale = t
+            break
+    if not tab_principale:
+        return []
+
+    header = tab_principale[0]
+
+    def idx_of(name):
+        try:
+            return header.index(name)
+        except ValueError:
+            return -1
+
+    i_pos = idx_of("Classifica")
+    i_nr = idx_of("Nr.")
+    i_pil = idx_of("Pilota")
+    i_lic = idx_of("Licenza Nr.")
+    i_gir = idx_of("Giri")
+    i_tmp = idx_of("Tempo finale")
+    i_grp = idx_of("Gruppo")
+    i_stato = idx_of("Stato")
+
+    risultati = []
+    for r in tab_principale[1:]:
+        # Pulisci &nbsp; (\xa0) e spazi multipli
+        r = [(c or "").replace("\xa0", " ").strip() for c in r]
+
+        def get(i):
+            return r[i] if 0 <= i < len(r) else ""
+
+        pos_str = get(i_pos)
+        # Salta righe non-dato (es. sottosezioni "Reports Manche:"
+        # vuote o righe accessorie senza posizione numerica).
+        if not pos_str.isdigit():
+            continue
+        try:
+            giri = int(get(i_gir))
+        except (ValueError, TypeError):
+            giri = 0
+        risultati.append({
+            "posizione": int(pos_str),
+            "nr": get(i_nr),
+            "pilota": get(i_pil),
+            "licenza": get(i_lic),
+            "giri": giri,
+            "tempo": get(i_tmp),
+            "gruppo": get(i_grp),
+            "stato": get(i_stato),
+        })
+
+    risultati.sort(key=lambda x: x["posizione"])
+    return risultati
 
 
 def _risolvi_nome_da_header(header_label, nr_to_nome):

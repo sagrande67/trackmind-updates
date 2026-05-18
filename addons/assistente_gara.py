@@ -420,7 +420,18 @@ def filtra_per_categoria(time_table, categoria_keyword):
     bidirezionale: matcha sia se la kw e' contenuta nella categoria
     della riga, sia viceversa (gestisce il caso in cui la lista
     categorie usa il nome corto e il time table aggiunge il codice
-    in parentesi quadre, o viceversa)."""
+    in parentesi quadre, o viceversa).
+
+    v05.07.01: il fallback su raw e' limitato alle prime 3 celle
+    (categoria, manche, gruppo). NON guardiamo Commento (idx 5) ne'
+    Commissari (idx 6) perche' la cella Commissari contiene SEMPRE
+    il nome di un'altra categoria (quella che fa da commissario per
+    questa sessione), e prima questo causava falsi positivi: ogni
+    sessione di altre categorie in cui noi facevamo da commissari
+    veniva inclusa come se fosse una nostra manche -> time table
+    raddoppiato, con manche "fantasma" che non erano nostre.
+    Diagnosticato in gara reale (ENS round 1).
+    """
     if not categoria_keyword:
         return list(time_table)
     kw = _normalize_ws(categoria_keyword).lower()
@@ -432,8 +443,12 @@ def filtra_per_categoria(time_table, categoria_keyword):
         if kw in cat_n or (cat_n and cat_n in kw):
             out.append(r)
             continue
-        # fallback: match in qualunque cella raw
-        if any(kw in _normalize_ws(c).lower() for c in r.get("raw", [])):
+        # Fallback: cerca solo nelle prime 3 celle (categoria,
+        # manche, gruppo). Salta Commento e Commissari per non
+        # raccogliere le sessioni di altre categorie dove noi
+        # siamo solo commissari.
+        raw = r.get("raw", [])
+        if any(kw in _normalize_ws(c).lower() for c in raw[:3]):
             out.append(r)
     return out
 
@@ -513,6 +528,19 @@ class AssistenteGaraMonitor:
         # silenzio, per vedere il live l'utente preme VEDI LIVE.
         self._rec_attivo = False
         self._rec_group = None
+
+        # v05.07.01: storico LIVE persistente. Il monitor accumula
+        # giro-per-giro di ogni pilota per la sessione corrente ANCHE
+        # quando la vista LIVE e' chiusa (il LapTimer prima perdeva
+        # tutto a chiusura, quindi rientrando a meta' manche si
+        # vedevano solo i giri dal momento del rientro). Lo stato e'
+        # persistito su file temp con debounce 3s, cosi' un crash o
+        # un riavvio non perde la sessione in corso. A fine sessione,
+        # appena il recorder scarica il report HTML ufficiale, il
+        # temp viene cancellato (dati ormai definitivi in scouting/).
+        self._live_history = {}            # {group: {pn: state}}
+        self._live_history_dirty = set()   # gruppi con modifiche pendenti
+        self._live_history_last_save = {}  # {group: ts ultimo save}
 
     def _calcola_state_path(self):
         """Path dove salvare lo stato per la persistenza tra riavvi."""
@@ -628,8 +656,7 @@ class AssistenteGaraMonitor:
                 event_id=eid,
                 scouting_dir=scouting_dir,
                 category_filter_nome=cat_nome,
-                on_sessione_salvata=lambda g, n: print(
-                    "[ag] sessione salvata: %s (%d file)" % (g[:60], n)),
+                on_sessione_salvata=self._on_sessione_finalizzata,
                 on_status=lambda m: print("[ag] %s" % m),
                 tk_root=self.root,
             )
@@ -639,6 +666,10 @@ class AssistenteGaraMonitor:
             # (v05.06.97): il recorder registra in silenzio.
             self._recorder.add_event_listener(
                 self._on_event_rec)
+            # v05.07.01: accumulatore storico LIVE persistente (gira
+            # sempre, anche quando la vista LapTimer e' chiusa).
+            self._recorder.add_event_listener(
+                self._accumula_giri)
             # Listener per riallineare la time table sul tempo reale
             # MyRCM (se cronometraggio in tilt o ritardo non
             # registrato come "delay_min")
@@ -971,32 +1002,332 @@ class AssistenteGaraMonitor:
                 self._rec_group = None
 
             # ── 2. AUTO-CHIUSURA della vista LIVE manuale ─────────
-            # Se non c'e' nessuna vista live aperta, niente da fare.
+            # v05.07.01: feedback gara ENS round 1.
+            # Rimossi i due trigger di chiusura "a fine sessione":
+            #   - REMAININGTIME=0: chiudeva troppo presto, prima
+            #     che i piloti piu' lenti completassero l'ultimo
+            #     giro -> salvataggio con 1 giro in meno rispetto
+            #     ai risultati ufficiali.
+            #   - rsFinished: chiudeva subito dopo la fine, senza
+            #     dare all'utente il tempo di vedere il vincitore
+            #     e le classifiche.
+            # Adesso a fine sessione la vista LIVE resta aperta:
+            # l'utente la chiude da solo con ESC dopo aver letto
+            # i risultati, e a quel punto il salvataggio prende
+            # tutti i giri (la WebSocket nel frattempo ha pushato
+            # anche gli ultimi giri completati nel grace period).
+            # Resta solo l'auto-close su GROUP cambiato come
+            # safety net: se l'utente si distrae e parte la
+            # sessione dopo, evitiamo di mostrare dati misti.
             if (self._ui_live is None
                     or not self._ui_live_attiva_per_group):
                 return
-            rem = (meta or {}).get("REMAININGTIME", "") or ""
-            rem_zero = rem.strip() in ("0:00:00", "00:00:00",
-                                       "0:00", "00:00", "")
             grp_aperto = self._ui_live_attiva_per_group
-            if (state in ("rsFinished", "rsClosed")
-                    and grp_aperto == group):
-                print("[ag] auto-close LapTimer: sessione "
-                      "finita (rsFinished)")
-                self._chiudi_ui_live()
-                return
             if grp_aperto and grp_aperto != group:
                 print("[ag] auto-close LapTimer: GROUP cambiato "
                       "(%r -> %r)" % (grp_aperto[:40], group[:40]))
                 self._chiudi_ui_live()
                 return
-            if (rem_zero and state in ("rsRunning", "rsStarted")
-                    and grp_aperto == group):
-                print("[ag] auto-close LapTimer: REMAININGTIME=0")
-                self._chiudi_ui_live()
-                return
         except Exception as e:
             print("[ag] errore _on_event_rec:", e)
+
+    # =================================================================
+    #  STORICO LIVE PERSISTENTE  (v05.07.01)
+    # =================================================================
+    # Il monitor accumula giro-per-giro per ogni pilota della sessione
+    # corrente in `self._live_history[group][pn]`. Il listener
+    # `_accumula_giri` ricalca la stessa logica del LapTimer in modo
+    # MyRCM (baseline al primo evento, poi diff su LAPS/ABSOLUTTIME),
+    # ma vive nel monitor singleton: gira sempre, anche quando il
+    # LapTimer LIVE e' chiuso. Cosi' rientrando a meta' sessione si
+    # vedono TUTTI i giri da inizio, non solo quelli post-riapertura.
+
+    @staticmethod
+    def _parse_myrcm_time_s(s):
+        """Parse formato MyRCM 'M:SS.mmm' / 'H:MM:SS.mmm' / '23.551'
+        a secondi float. Stesso algoritmo di LapTimer._parse_myrcm_time
+        (replicato per evitare import circolare addons->addons)."""
+        if s is None:
+            return 0.0
+        s = str(s).strip()
+        if not s:
+            return 0.0
+        try:
+            if ":" in s:
+                parts = s.split(":")
+                if len(parts) == 2:
+                    return int(parts[0]) * 60 + float(parts[1])
+                if len(parts) == 3:
+                    return (int(parts[0]) * 3600
+                            + int(parts[1]) * 60
+                            + float(parts[2]))
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
+    @staticmethod
+    def _myrcm_pilot_num_s(p):
+        """Identificativo univoco pilota (stessa logica di
+        LapTimer._myrcm_pilot_num): PILOTNUMBER>0, TRANSPONDER,
+        INDEX+offset. Necessario per usare la stessa chiave di
+        `_live_pilots` quando il LapTimer copia dal monitor."""
+        if not isinstance(p, dict):
+            return None
+        try:
+            v = str(p.get("PILOTNUMBER", "")).strip()
+            if v:
+                num = int(v)
+                if num > 0:
+                    return num
+        except (ValueError, TypeError):
+            pass
+        try:
+            t = str(p.get("TRANSPONDER", "")).strip()
+            digits = "".join(ch for ch in t if ch.isdigit())
+            if digits:
+                return int(digits[-7:])
+        except (ValueError, TypeError):
+            pass
+        try:
+            idx = int(str(p.get("INDEX", "")).strip())
+            if idx >= 0:
+                return 100000000 + idx
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _accumula_giri(self, meta, data):
+        """Listener registrato sul recorder: per ogni evento WS,
+        accumula i giri completati di ogni pilota della sessione
+        corrente in `self._live_history[group][pn]`.
+
+        Logica baseline (uguale al LapTimer): il PRIMO evento per
+        un pilota e' solo riferimento (registra laps e abs come
+        baseline, NON genera giro). Dal secondo evento in poi calcola
+        i giri come differenza di LAPS e ABSOLUTTIME tra eventi
+        consecutivi. Se LAPS aumenta di N tra due eventi (raro), si
+        registrano N giri con tempo medio uguale.
+
+        Vivendo nel monitor, NON va in conflitto col LapTimer LIVE
+        che ha il SUO listener: i due accumulatori girano in
+        parallelo. Il monitor e' la fonte di verita' per chi rientra
+        a meta' sessione."""
+        if not data:
+            return
+        group = (meta or {}).get("GROUP", "") or ""
+        if not group:
+            return
+
+        # Lazy init dello stato per questo group (con load da temp file
+        # se esiste, p.es. dopo un crash/riavvio in mezzo alla sessione)
+        if group not in self._live_history:
+            loaded = self._carica_temp_history(group)
+            self._live_history[group] = loaded or {}
+
+        grp_state = self._live_history[group]
+        dirty = False
+
+        for p in data:
+            pn = self._myrcm_pilot_num_s(p)
+            if pn is None:
+                continue
+            try:
+                laps_now = int(p.get("LAPS", 0) or 0)
+            except (ValueError, TypeError):
+                continue
+            abs_now = self._parse_myrcm_time_s(p.get("ABSOLUTTIME"))
+            nome = (p.get("PILOT", "") or "").strip()
+
+            if pn not in grp_state:
+                grp_state[pn] = {
+                    "pn": pn,
+                    "pilota": nome,
+                    "nr": p.get("PILOTNUMBER", 0),
+                    "country": p.get("COUNTRY", ""),
+                    "club": p.get("CLUB", ""),
+                    "transponder": p.get("TRANSPONDER", ""),
+                    "laps": [],
+                    "best": None,
+                    "total": 0.0,
+                    "_baseline_done": False,
+                    "_baseline_laps": 0,
+                    "_baseline_abs": 0.0,
+                }
+                dirty = True
+
+            st = grp_state[pn]
+            if not st.get("pilota") and nome:
+                st["pilota"] = nome
+                dirty = True
+
+            # Primo evento per il pilota: solo baseline, niente giro
+            if not st["_baseline_done"]:
+                st["_baseline_done"] = True
+                st["_baseline_laps"] = laps_now
+                st["_baseline_abs"] = abs_now
+                dirty = True
+                continue
+
+            laps_prev = st["_baseline_laps"]
+            if laps_now <= laps_prev:
+                continue
+
+            abs_prev = st["_baseline_abs"]
+            n_nuovi = laps_now - laps_prev
+            if abs_now > abs_prev > 0:
+                delta_tot = abs_now - abs_prev
+                lt_per_giro = (delta_tot / n_nuovi
+                               if n_nuovi > 0 else 0.0)
+            else:
+                lt_per_giro = self._parse_myrcm_time_s(p.get("LAPTIME"))
+            if lt_per_giro <= 0:
+                continue
+
+            for _ in range(n_nuovi):
+                st["laps"].append({
+                    "giro": len(st["laps"]) + 1,
+                    "tempo": round(lt_per_giro, 3),
+                    "stato": "valido",
+                })
+                st["total"] += lt_per_giro
+                if st["best"] is None or lt_per_giro < st["best"]:
+                    st["best"] = lt_per_giro
+
+            st["_baseline_laps"] = laps_now
+            st["_baseline_abs"] = abs_now
+            dirty = True
+
+        if dirty:
+            self._live_history_dirty.add(group)
+            self._maybe_persist_live_history(group)
+
+    # ---------- persistenza temp file ----------
+    def _path_temp_history(self, group):
+        """Path del file temporaneo per lo storico LIVE di `group`.
+        Usa event_id + slug del group per evitare collisioni e
+        caratteri non validi nel filesystem."""
+        if not group:
+            return None
+        try:
+            eid = str((self.evento or {}).get("event_id", "")
+                      or "noevent")
+            slug = re.sub(r"[^A-Za-z0-9]+", "_", group)[:60]
+            base = os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))
+            return os.path.join(
+                base, "dati", "scouting",
+                "live_temp_%s_%s.json" % (eid, slug))
+        except Exception:
+            return None
+
+    def _maybe_persist_live_history(self, group):
+        """Debounce 3s sulla persistenza: scrive su disco non piu'
+        di una volta ogni 3 secondi per group, anche se gli eventi
+        WS arrivano fitti. Evita di stressare la micro-SD."""
+        if group not in self._live_history_dirty:
+            return
+        now = time.time()
+        last = self._live_history_last_save.get(group, 0.0)
+        if (now - last) < 3.0:
+            return
+        self._live_history_last_save[group] = now
+        self._live_history_dirty.discard(group)
+        self._persist_live_history(group)
+
+    def _persist_live_history(self, group):
+        """Scrive lo storico di `group` su file temp (atomic write
+        via .tmp + replace)."""
+        path = self._path_temp_history(group)
+        if not path:
+            return
+        state = self._live_history.get(group, {})
+        if not state:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({
+                    "group": group,
+                    "event_id": (self.evento or {}).get("event_id", ""),
+                    "categoria": (self.categoria or {}).get("nome", ""),
+                    "piloti": state,
+                }, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            print("[ag] errore persist temp history:", e)
+
+    def _carica_temp_history(self, group):
+        """Carica lo storico da file temp se esiste. JSON serializza
+        le chiavi int come stringhe: le riconvertiamo a int per
+        coerenza con quelle generate da _myrcm_pilot_num_s."""
+        path = self._path_temp_history(group)
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            piloti = d.get("piloti", {})
+            out = {}
+            for k, v in piloti.items():
+                try:
+                    out[int(k)] = v
+                except (ValueError, TypeError):
+                    out[k] = v
+            return out
+        except Exception as e:
+            print("[ag] errore carica temp history:", e)
+            return None
+
+    # ---------- API pubblica per LapTimer ----------
+    def get_live_history(self, group):
+        """Ritorna lo storico accumulato per `group`. Usato dal
+        LapTimer LIVE all'apertura per copiare i giri gia' fatti
+        nei propri `_live_pilots` (cosi' anche rientrando a meta'
+        sessione si vedono tutti i giri da inizio)."""
+        if not group:
+            return {}
+        if group not in self._live_history:
+            loaded = self._carica_temp_history(group)
+            if loaded is not None:
+                self._live_history[group] = loaded
+        return self._live_history.get(group, {})
+
+    def _on_sessione_finalizzata(self, group, n_files):
+        """Callback registrato sul recorder (on_sessione_salvata).
+        Quando il report HTML ufficiale di `group` e' stato scaricato
+        e salvato in scouting/, i dati sono definitivi: cancelliamo
+        il file temp dello storico LIVE per non lasciare scorie."""
+        print("[ag] sessione salvata: %s (%d file)" % (group[:60], n_files))
+        try:
+            self.cleanup_live_history(group)
+        except Exception as e:
+            print("[ag] errore cleanup live history:", e)
+
+    def cleanup_live_history(self, group):
+        """Cancella lo storico (memoria + file temp) per `group`.
+        Chiamato dal callback on_sessione_salvata del recorder
+        quando il report HTML ufficiale e' stato scaricato: a quel
+        punto i dati definitivi sono in scouting/lap_myrcm_*.json
+        e il temp non serve piu'."""
+        if not group:
+            return
+        # Forza un ultimo persist per chiudere il file in stato
+        # consistente prima di cancellare (anche se cancelliamo
+        # subito dopo: serve se qualcuno guarda i file temp per debug).
+        if (group in self._live_history
+                and group in self._live_history_dirty):
+            self._persist_live_history(group)
+        self._live_history.pop(group, None)
+        self._live_history_dirty.discard(group)
+        self._live_history_last_save.pop(group, None)
+        path = self._path_temp_history(group)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                print("[ag] temp history rimosso: %s" % group[:50])
+            except Exception:
+                pass
 
     def _parse_time_str(self, s):
         """Parse stringa MyRCM in secondi (int).
@@ -1060,8 +1391,19 @@ class AssistenteGaraMonitor:
         registrando, quindi REC deve lampeggiare.
 
         Il GROUP MyRCM ha forma 'CAT_TAG :: Fase :: Manche'; estraiamo
-        il cat_tag con parse_group_live e lo confrontiamo (in modo
-        tollerante a spazi/underscore/maiuscole) col nome categoria."""
+        il cat_tag con parse_group_live.
+
+        v05.07.01: matching a TOKEN invece che a substring. In gara
+        reale (ENS) si e' visto che il cat_tag e' la forma corta
+        (es. 'GT_Nitro') mentre il nome categoria scelto dall'utente
+        e' la forma estesa MyRCM (es. '1/8 GT Cardans Nitro [GT_Nitro]').
+        Il vecchio match `substring` falliva perche' 'gtnitro' non
+        compare come stringa continua dentro '1/8gtcardansnitro'
+        (in mezzo c'e' 'Cardans'). Risultato: REC restava sempre
+        spento. Adesso spezziamo entrambe in token e diciamo 'match'
+        se tutti i token del cat_tag compaiono tra quelli del nome
+        categoria. Cosi' {gt, nitro} c {1/8, gt, cardans, nitro} → OK.
+        """
         if not group:
             return False
         try:
@@ -1074,13 +1416,28 @@ class AssistenteGaraMonitor:
         cat_sel = (self.categoria or {}).get("nome", "") or ""
         if not cat_sel:
             return False
-        def _norm(s):
-            return str(s).strip().lower().replace(" ", "").replace("_", "")
-        a = _norm(cat_tag)
-        b = _norm(cat_sel)
-        if not a or not b:
+
+        def _tokens(s):
+            # Spezza su spazi, underscore, slash, punti, parentesi,
+            # trattini, virgole. Tutti i caratteri "rumore" che
+            # separano parti significative dei nomi categoria.
+            return set(t for t in re.split(r"[\s_/.,\[\]()\-]+",
+                                            str(s).lower()) if t)
+
+        tok_tag = _tokens(cat_tag)
+        tok_sel = _tokens(cat_sel)
+        if not tok_tag or not tok_sel:
             return False
-        return a == b or a in b or b in a
+        # Match: tutti i token del tag devono comparire nel nome
+        # categoria. La direzione inversa (sel ⊆ tag) la accettiamo
+        # solo se non vuota, per coprire il caso in cui l'utente
+        # selezioni proprio una categoria con nome cortissimo
+        # uguale al tag.
+        if tok_tag.issubset(tok_sel):
+            return True
+        if tok_sel.issubset(tok_tag):
+            return True
+        return False
 
     def _apri_ui_live_pilota(self, group, mid_session=False):
         """Apre il LapTimer in modalita' MyRCM live. Riusa la
@@ -2642,6 +2999,14 @@ class AssistenteGara:
                   relief="ridge", bd=1, cursor="hand2",
                   command=self._apri_ui_live_manuale).pack(
             side="left", padx=(6, 0))
+        # Bottone POLE / CLASSIFICA: scarica la classifica post-
+        # qualifiche da MyRCM e la mostra in un popup. Utile per
+        # vedere il pole + griglia di partenza prima della finale.
+        tk.Button(h, text="POLE", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["cerca_testo"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=self._apri_pole_classifica).pack(
+            side="left", padx=(6, 0))
         # Indicatore REC: lampeggia in rosso quando in pista c'e' una
         # sessione della categoria selezionata (il recorder di sfondo
         # sta salvando i tempi). NON apre nulla: per vedere il live si
@@ -3220,6 +3585,242 @@ Edita questa lista col bottone CHECKLIST nell'header.
         except Exception as e:
             self._set_status("Errore apertura LapTimer: %s" % e,
                               "errore")
+
+    def _apri_pole_classifica(self):
+        """Scarica e mostra la classifica MyRCM (Pole post-qualifiche
+        o classifica finale) in un popup. Download in thread per non
+        congelare la UI; cache di 30s per non riempire MyRCM di
+        richieste se l'utente apre/chiude il popup ripetutamente.
+
+        Se il pilota loggato e' presente in classifica, la sua riga
+        viene evidenziata in giallo (effetto 'tu sei qui').
+        """
+        m = AssistenteGaraMonitor.get(self._top)
+        if m is None or not m.attivo:
+            self._set_status("Monitor non attivo", "errore")
+            return
+        eid = (m.evento or {}).get("event_id", "")
+        cid = (m.categoria or {}).get("category_id", "")
+        if not eid or not cid:
+            self._set_status(
+                "Evento/categoria non selezionati", "errore")
+            return
+        cat_nome = (m.categoria or {}).get("nome", "?")
+
+        # Popup Toplevel sopra TrackMind
+        c = self.c
+        top = tk.Toplevel(self._top)
+        top.title("Pole / Classifica - " + cat_nome[:40])
+        top.configure(bg=c["sfondo"])
+        top.transient(self._top)
+        top.geometry("680x520")
+        top.bind("<Escape>", lambda e: top.destroy())
+        # Disattiva topmost del monitor mentre questo popup e' aperto,
+        # cosi' non viene ricoperto dalla finestra principale.
+        try:
+            top.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        # Header
+        hdr = tk.Frame(top, bg=c["sfondo"])
+        hdr.pack(fill="x", padx=10, pady=(10, 4))
+        # Selettore fase: Qualif (pole post-qualifiche) o Finale
+        fase_var = tk.StringVar(value="qualif")
+        tk.Label(hdr, text="Fase:", bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(side="left")
+        tk.Radiobutton(hdr, text="Qualif (Pole)", variable=fase_var,
+                       value="qualif",
+                       bg=c["sfondo"], fg=c["dati"],
+                       selectcolor=c["sfondo_celle"],
+                       activebackground=c["sfondo"],
+                       activeforeground=c["dati"],
+                       font=self._f_small,
+                       command=lambda: ricarica(force=False)).pack(
+            side="left", padx=(6, 0))
+        tk.Radiobutton(hdr, text="Finale", variable=fase_var,
+                       value="finale",
+                       bg=c["sfondo"], fg=c["dati"],
+                       selectcolor=c["sfondo_celle"],
+                       activebackground=c["sfondo"],
+                       activeforeground=c["dati"],
+                       font=self._f_small,
+                       command=lambda: ricarica(force=False)).pack(
+            side="left", padx=(6, 0))
+        tk.Button(hdr, text="AGGIORNA", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_ok"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=lambda: ricarica(force=True)).pack(
+            side="right")
+        tk.Button(hdr, text="CHIUDI (ESC)", font=self._f_small,
+                  bg=c["pulsanti_sfondo"], fg=c["stato_errore"],
+                  relief="ridge", bd=1, cursor="hand2",
+                  command=top.destroy).pack(side="right", padx=(0, 6))
+
+        tk.Label(top, text="POLE / CLASSIFICA - " + cat_nome[:50],
+                 bg=c["sfondo"], fg=c["dati"],
+                 font=self._f_title).pack(pady=(2, 4))
+        tk.Frame(top, bg=c["linee"], height=1).pack(
+            fill="x", padx=10, pady=(0, 4))
+
+        # Area dati: una Text widget read-only formattata a colonne
+        # (un Treeview retrobello e' un'overkill per N=10-20 righe).
+        body = tk.Frame(top, bg=c["sfondo"])
+        body.pack(fill="both", expand=True, padx=10, pady=(2, 6))
+        text = tk.Text(body, font=("Courier", 10),
+                       bg=c["sfondo_celle"], fg=c["dati"],
+                       insertbackground=c["dati"],
+                       relief="flat", bd=0, wrap="none")
+        text.pack(side="left", fill="both", expand=True)
+        # Disabilita editing (read-only ma con possibilita' selezione)
+        text.bind("<Key>", lambda e: "break")
+        sb = tk.Scrollbar(body, orient="vertical",
+                          command=text.yview, bg=c["sfondo"])
+        sb.pack(side="right", fill="y")
+        text.config(yscrollcommand=sb.set)
+
+        # Tag per evidenziare la riga del pilota loggato
+        text.tag_configure("io",
+                            background="#664400",
+                            foreground="#ffaa00",
+                            font=("Courier", 10, "bold"))
+        text.tag_configure("header",
+                            foreground=c["testo_dim"])
+        text.tag_configure("warn",
+                            foreground=c["stato_errore"])
+        text.tag_configure("ok",
+                            foreground=c["stato_ok"])
+
+        # Status bar in fondo
+        status_var = tk.StringVar(value="")
+        tk.Label(top, textvariable=status_var,
+                 bg=c["sfondo"], fg=c["testo_dim"],
+                 font=self._f_small).pack(fill="x", padx=10,
+                                            pady=(0, 6))
+
+        # Cache della classifica (per fase) con TTL 30s, evita di
+        # ri-scaricare se l'utente fa apri/chiudi/apri rapidi.
+        cache = getattr(self, "_pole_cache", None)
+        if cache is None:
+            cache = {}
+            self._pole_cache = cache
+
+        def render(piloti, fase, da_cache=False):
+            text.config(state="normal")
+            text.delete("1.0", "end")
+            if not piloti:
+                text.insert("end",
+                            "Nessun dato disponibile per questa fase.\n"
+                            "\n"
+                            "Possibili motivi:\n"
+                            "  - le qualifiche non sono ancora "
+                            "terminate sul sito MyRCM\n"
+                            "  - questa categoria non ha pubblicato "
+                            "ancora una classifica\n"
+                            "  - problema di rete\n",
+                            "warn")
+                text.config(state="disabled")
+                return
+            # Header
+            text.insert("end",
+                        " POS  PILOTA                          GIRI  "
+                        "  TEMPO     GRUPPO          NAZ\n",
+                        "header")
+            text.insert("end", " " + "-" * 76 + "\n", "header")
+            nome_io = (m.nome_pilota or "").strip().lower()
+            tokens_io = set(t for t in re.split(r"\s+", nome_io) if t)
+            for r in piloti:
+                pilota = r.get("pilota", "")
+                pilota_lower = pilota.lower()
+                # Considera "mio" se almeno 2 token del nome utente
+                # combaciano con la riga (gestisce ordine Nome/Cognome
+                # e LASTNAME maiuscolo)
+                tokens_p = set(t for t in re.split(r"\s+",
+                                                    pilota_lower) if t)
+                e_io = (bool(tokens_io) and bool(tokens_p)
+                        and len(tokens_io & tokens_p) >= 2)
+                riga = " %3d  %-30s  %4d  %10s  %-15s %s\n" % (
+                    r.get("posizione", 0),
+                    pilota[:30],
+                    r.get("giri", 0),
+                    r.get("tempo", "")[:10],
+                    r.get("gruppo", "")[:15],
+                    r.get("stato", "")[:5],
+                )
+                if e_io:
+                    text.insert("end", riga, "io")
+                else:
+                    text.insert("end", riga)
+            text.insert("end", "\n")
+            suffix = " (da cache)" if da_cache else ""
+            text.insert("end",
+                        "Totale: %d piloti%s\n"
+                        % (len(piloti), suffix), "header")
+            text.config(state="disabled")
+
+        def ricarica(force=False):
+            fase = fase_var.get()
+            ck = (eid, cid, fase)
+            now = time.time()
+            # Usa cache se TTL valida e non e' un refresh forzato
+            if not force:
+                hit = cache.get(ck)
+                if hit and (now - hit[0]) < 30.0:
+                    status_var.set(
+                        "Classifica %s caricata da cache (%.0fs fa)"
+                        % (fase.upper(), now - hit[0]))
+                    render(hit[1], fase, da_cache=True)
+                    return
+            # Download in thread per non bloccare la UI
+            status_var.set("Scarico classifica %s da MyRCM..."
+                            % fase.upper())
+            text.config(state="normal")
+            text.delete("1.0", "end")
+            text.insert("end", "\n  Caricamento in corso...\n",
+                         "header")
+            text.config(state="disabled")
+
+            def worker():
+                try:
+                    from myrcm_import import scarica_classifica
+                    risultati = scarica_classifica(
+                        event_id=eid,
+                        category_id=cid,
+                        fase=fase)
+                except Exception as e:
+                    risultati = None
+                    err = str(e)
+                else:
+                    err = None
+                # Torna su thread Tk per aggiornare UI
+                def finish():
+                    if not top.winfo_exists():
+                        return
+                    if err:
+                        status_var.set("Errore: %s" % err[:80])
+                        render([], fase)
+                        return
+                    if not risultati:
+                        status_var.set(
+                            "Nessun dato per fase '%s'" % fase)
+                        render([], fase)
+                        return
+                    cache[ck] = (time.time(), risultati)
+                    status_var.set(
+                        "Classifica %s aggiornata: %d piloti"
+                        % (fase.upper(), len(risultati)))
+                    render(risultati, fase)
+                try:
+                    self._top.after(0, finish)
+                except Exception:
+                    pass
+
+            t = threading.Thread(target=worker,
+                                  name="pole_dl", daemon=True)
+            t.start()
+
+        # Caricamento iniziale
+        ricarica(force=False)
 
     def _apri_editor_checklist(self):
         """Apre il PromptEditor (notepad retro) sul file

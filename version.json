@@ -1,8 +1,8 @@
 {
-  "version": "05.07.00",
-  "date": "2026-05-16",
+  "version": "05.07.01",
+  "date": "2026-05-18",
   "time": "00:00:00",
-  "note": "Rilascio minore con bugfix e nuova tabella. tm_field: i campi FLAG ora mostrano il puntino di posto quando sono OFF (prima si vedeva una cella vuota e 'rotta'). Nuova tabella setup_IF15_2.def per Infinity IF15-2 1/10 200mm nitro on-road. Riepilogo dalla 05.06.95: 05.07.00 (fix flag display + setup IF15-2), 05.06.99 (fix rescan WiFi che staccava la rete), 05.06.98 (roaming proattivo WiFi), 05.06.97 (Assistente Gara senza auto-apertura LIVE, label REC), 05.06.96 (Bluetooth forzato all'avvio + flag topmost_attivo).",
+  "note": "Bugfix dalla gara ENS round 1 + nuove feature. ASSISTENTE GARA: (1) fix filtra_per_categoria — il fallback su raw ora ignora le celle Commento e Commissari, niente piu' sessioni-fantasma di altre categorie. (2) Match cat_tag a token: la label REC ora si accende davvero (prima il match a substring falliva su nomi composti tipo '1/8 GT Cardans Nitro' vs 'GT_Nitro'). (3) Rimossa auto-chiusura della vista LIVE a fine sessione: niente piu' salvataggio prematuro con 1 giro in meno; l'utente chiude lui con ESC. (4) STORICO LIVE PERSISTENTE: il monitor accumula giro-per-giro di tutti i piloti anche quando la vista LIVE e' chiusa, persistito su file temp con debounce 3s; il LapTimer all'apertura fa SEED dal monitor cosi' rientrando a meta' manche si vedono tutti i giri da inizio sessione. File temp cancellato a fine sessione quando il report HTML ufficiale arriva. (5) Nuovo bottone POLE: scarica e mostra la classifica MyRCM (Qualif / Finale) in popup, evidenza la riga del pilota loggato, cache 30s, download in thread. Aggiunto _NestedTableParser per HTML annidati (parsing classifica MyRCM). Riepilogo precedente: 05.07.00 (FLAG display puntino + setup_IF15_2.def), 05.06.99 (fix rescan WiFi), 05.06.98 (roaming WiFi), 05.06.97 (REC label senza auto-LIVE), 05.06.96 (BT auto-on + topmost_attivo).",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

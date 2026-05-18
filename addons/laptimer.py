@@ -1949,7 +1949,84 @@ class LapTimer:
                 self._myrcm_garantisci_colonna(p)
         except Exception as e:
             print("[laptimer] errore creazione colonne myrcm:", e)
-        # Abbonati al recorder
+        # v05.07.01: SEED dal monitor. AssistenteGaraMonitor accumula
+        # i giri di tutti i piloti ANCHE quando la vista LIVE e'
+        # chiusa. Se l'utente apre/riapre LIVE a meta' manche, qui
+        # copiamo lo storico nel nostro stato locale cosi' vede TUTTI
+        # i giri da inizio sessione, non solo quelli post-apertura.
+        # La baseline viene impostata coi valori dell'ultimo evento
+        # visto dal monitor, cosi' il prossimo EVENT WS genera solo
+        # i giri NUOVI senza duplicati.
+        try:
+            from assistente_gara import AssistenteGaraMonitor
+            monitor = AssistenteGaraMonitor.get()
+            if monitor is not None:
+                meta = recorder.metadata_live() or {}
+                group = (meta.get("GROUP", "") or "")
+                history = (monitor.get_live_history(group)
+                           if group else {})
+                n_seed = 0
+                for pn, st in (history or {}).items():
+                    if pn is None:
+                        continue
+                    # Crea colonna se non c'era gia'
+                    if pn not in self._live_pilots:
+                        self._live_pilots[pn] = {
+                            "laps": [], "best": None, "total": 0.0,
+                        }
+                        nome = st.get("pilota", "") or ""
+                        if nome:
+                            self._live_mapping[pn] = nome
+                        try:
+                            self._live_crea_colonna(pn)
+                        except Exception:
+                            pass
+                    # Copia stato dei giri accumulati dal monitor
+                    laps_seed = list(st.get("laps", []) or [])
+                    self._live_pilots[pn]["laps"] = laps_seed
+                    self._live_pilots[pn]["best"] = st.get("best")
+                    try:
+                        self._live_pilots[pn]["total"] = float(
+                            st.get("total", 0.0) or 0.0)
+                    except (ValueError, TypeError):
+                        self._live_pilots[pn]["total"] = 0.0
+                    # Inizializza baseline con l'ultimo snapshot del
+                    # monitor: il prossimo on_event partira' da qui
+                    # e generera' solo i giri davvero nuovi.
+                    self._myrcm_baseline_done.add(pn)
+                    try:
+                        self._myrcm_prev_laps[pn] = int(
+                            st.get("_baseline_laps", 0) or 0)
+                    except (ValueError, TypeError):
+                        self._myrcm_prev_laps[pn] = 0
+                    try:
+                        self._myrcm_prev_abs[pn] = float(
+                            st.get("_baseline_abs", 0.0) or 0.0)
+                    except (ValueError, TypeError):
+                        self._myrcm_prev_abs[pn] = 0.0
+                    # Aggiorna colonna coi dati appena copiati
+                    try:
+                        self._live_aggiorna_colonna(pn)
+                    except Exception:
+                        pass
+                    n_seed += 1
+                if n_seed > 0:
+                    try:
+                        self._live_riordina_colonne()
+                    except Exception:
+                        pass
+                    print("[laptimer MyRCM] SEED da monitor: %d piloti "
+                          "ripristinati con giri storici (group=%r)"
+                          % (n_seed, group[:60]))
+        except ImportError:
+            # AssistenteGaraMonitor non disponibile (uso standalone
+            # del LapTimer): si gira come prima, senza seed.
+            pass
+        except Exception as e:
+            print("[laptimer] errore seed da monitor (non critico):", e)
+        # Abbonati al recorder (DOPO il seed: cosi' il primo evento
+        # post-seed parte gia' dalla baseline corretta, niente giri
+        # duplicati o mancanti).
         try:
             recorder.add_event_listener(self._myrcm_on_event)
         except Exception as e:
