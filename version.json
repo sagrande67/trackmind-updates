@@ -1,8 +1,8 @@
 {
-  "version": "05.07.19",
-  "date": "2026-05-18",
+  "version": "05.07.20",
+  "date": "2026-05-19",
   "time": "00:00:00",
-  "note": "05.07.19: HOTFIX indentazione del fallback classifica. Il blocco 'if not righe -> usa fallback ufficiale' era INDENTATO DENTRO il for della classifica stimata. Risultato: se la stimata era vuota (caso normale: nessun dato live), il for non partiva mai e il fallback non veniva eseguito -> pannello sempre vuoto con 'Stato inatteso' nonostante i dati MyRCM fossero correttamente scaricati. Dedentato al livello giusto.",
+  "note": "05.07.20: shim per la compilazione Nuitka. Aggiunto in cima a retrodb.py un controllo: se il binario e' compilato da Nuitka (esiste __compiled__), imposta sys.frozen=True cosi' tutto il codice esistente che gia' controlla getattr(sys,'frozen') usa sys.executable per trovare i file. Innocuo in modalita' script normale. Primo passo verso la distribuzione compilata e protetta. Nessun cambiamento funzionale per l'utente.",
   "files": {
     "conf_manager.py": "root",
     "config_colori.py": "root",

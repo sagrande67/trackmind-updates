@@ -23,6 +23,18 @@ def _nome_base(nome_db):
 import sys
 sys.dont_write_bytecode = True  # No .pyc cache
 
+# v05.07.20: shim per la compilazione Nuitka. Nuitka NON imposta
+# sys.frozen (a differenza di PyInstaller), ma TUTTO il codice di
+# TrackMind controlla `getattr(sys, 'frozen', False)` per decidere
+# dove stanno i file (sys.executable se compilato, __file__ se
+# script). Quando il binario e' compilato da Nuitka esiste la
+# variabile globale `__compiled__`: se c'e', dichiariamoci "frozen"
+# cosi' tutto il resto del codice usa sys.executable e trova i file
+# accanto al binario. In modalita' script normale __compiled__ non
+# esiste, quindi questa riga non fa nulla (innocua).
+if "__compiled__" in globals():
+    sys.frozen = True
+
 import tkinter as tk
 from tkinter import font as tkfont, ttk, filedialog as _filedialog
 import json, os, sys, uuid, shutil, zipfile, subprocess, threading
