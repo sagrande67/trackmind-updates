@@ -1,15 +1,9 @@
 {
   "version": "05.07.23",
-  "date": "2026-05-24",
-  "time": "hh:mm:ss",
-  "note": "05.07.23: versione di collaudo del nuovo aggiornamento OTA ...",
-  "files": {},
+  "note": "Collaudo aggiornamento OTA",
   "binari": {
     "aarch64": {
-      "url": "https://github.com/sagrande67/trackmind-updates/releases/download/v05.07.23/trackmind-05.07.23-aarch64.tar.gz",
-      "sha256": "<lo calcola lo script dal tuo .tar.gz>",
-      "size": <byte del tuo .tar.gz, li mette lo script>
+      "url": "https://github.com/sagrande67/trackmind-updates/releases/download/v05.07.23/trackmind-05.07.23-aarch64.tar.gz"
     }
-  },
-  "revoche": []
+  }
 }
