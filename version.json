@@ -1,9 +1,9 @@
 {
-  "version": "05.07.28",
+  "version": "05.07.29",
   "note": "Collaudo aggiornamento OTA",
   "binari": {
     "aarch64": {
-      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-05.07.28-aarch64.tar.gz"
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-05.07.29-aarch64.tar.gz"
     }
   }
 }
