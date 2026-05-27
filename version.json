@@ -1,9 +1,0 @@
-{
-  "version": "05.07.32",
-  "note": "Collaudo aggiornamento OTA",
-  "binari": {
-    "aarch64": {
-      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-05.07.32-aarch64.tar.gz"
-    }
-  }
-}
