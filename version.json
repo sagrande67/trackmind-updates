@@ -1,0 +1,14 @@
+{
+  "version": "05.07.33",
+  "date": "2026-05-27",
+  "note": "05.07.32: Ripristinate le priorità statiche di NetworkManager per evitare il ciclo continuo di disconnessione causato dal modify reload. Ottimizzata la stabilità introducendo un controllo di roaming aggressivo e prioritario con cooldown ridotto (15s invece di 150s) quando la rete corrente ha segnale debole (< 45%).",
+  "files": {},
+  "time": "11:41:50",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-05.07.32-aarch64.tar.gz",
+      "sha256": "49306db1c06009b973d372c2e5b6c4a056377a1eb1d49d6321f6895468f4920a",
+      "size": 22786988
+    }
+  }
+}
