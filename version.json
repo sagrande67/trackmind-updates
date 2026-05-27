@@ -6,7 +6,7 @@
   "time": "11:41:50",
   "binari": {
     "aarch64": {
-      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-05.07.33-aarch64.tar.gz",
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.33-aarch64.tar.gz",
       "sha256": "49306db1c06009b973d372c2e5b6c4a056377a1eb1d49d6321f6895468f4920a",
       "size": 22786988
     }
