@@ -1,6 +1,0 @@
-{
-  "version": "05.07.32",
-  "date": "2026-05-27",
-  "note": "05.07.32: Ripristinate le priorità statiche di NetworkManager per evitare il ciclo continuo di disconnessione causato dal modify reload. Ottimizzata la stabilità introducendo un controllo di roaming aggressivo e prioritario con cooldown ridotto (15s invece di 150s) quando la rete corrente ha segnale debole (< 45%).",
-  "files": {}
-}
