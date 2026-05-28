@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.38",
+  "date": "2026-05-28",
+  "note": "v05.07.38: Fix freeze del software alla disconnessione USB della bilancia.",
+  "files": {},
+  "time": "14:43:10",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.38-aarch64.tar.gz",
+      "sha256": "30cf0ebf5583c05a5fecb411ee3b0337f92a656e6a60fc079b13d1d603e014f6",
+      "size": 22929019
+    }
+  }
+}
