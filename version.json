@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.35",
+  "date": "2026-05-28",
+  "note": "v05.07.35: Aggiunto supporto alla precisione decimale (decimi di grammo) per la bilancia (sia nei file di calibrazione Pico che nell'addon GUI e nella stampa Bluetooth).",
+  "files": {},
+  "time": "08:41:37",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.35-aarch64.tar.gz",
+      "sha256": "f7d21822f22a2fa21ebdc2805e9402a2c174d71cc8adb5b9c63cec158468a93f",
+      "size": 22791453
+    }
+  }
+}
