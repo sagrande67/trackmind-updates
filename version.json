@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.40",
+  "date": "2026-05-28",
+  "note": "v05.07.40: Risolto deadlock all'unplug USB per evitare il freeze totale.",
+  "files": {},
+  "time": "16:11:36",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.40-aarch64.tar.gz",
+      "sha256": "9af0791120023548aa78cb75ab0c849f248fdd1c4b30573c9b5bb3a0d2699aeb",
+      "size": 22926929
+    }
+  }
+}
