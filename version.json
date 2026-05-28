@@ -7,7 +7,7 @@
   "binari": {
     "aarch64": {
       "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.35-aarch64.tar.gz",
-      "sha256": "337fc232b4021699902bf83d73b43c12e14c1542ca86d46038022e2949e87401",
+      "sha256": "63d2a9114e57f5556ff34d7fa4c23868afe4a558e6c703cf5df42ebbde9457cc",
       "size": 22791048
     }
   }
