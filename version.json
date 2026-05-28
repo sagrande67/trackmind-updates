@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.39",
+  "date": "2026-05-28",
+  "note": "v05.07.39: Fix riconnessione USB della bilancia dopo scollegamento fisico.",
+  "files": {},
+  "time": "15:18:10",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.39-aarch64.tar.gz",
+      "sha256": "f3f2dd4ffcb3d3ca816659b9b1745588e18abc3e99cc8f9d316347fea26418f4",
+      "size": 22927563
+    }
+  }
+}
