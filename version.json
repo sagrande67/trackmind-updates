@@ -1,7 +1,7 @@
 {
   "version": "v05.07.35",
   "date": "2026-05-27",
-  "note": "v05.07.34: Risolto bug del roaming automatico che causava disconnessioni involontarie dall'hotspot Galaxy. Implementato rilevamento segnale preciso tramite iw link/proc e aumentato l'intervallo di monitoraggio a 30s per risparmio energetico e CPU.",
+  "note": "v05.07.35: Risolto bug del roaming automatico che causava disconnessioni involontarie dall'hotspot Galaxy. Implementato rilevamento segnale preciso tramite iw link/proc e aumentato l'intervallo di monitoraggio a 30s per risparmio energetico e CPU.",
   "files": {},
   "time": "13:51:34",
   "binari": {
