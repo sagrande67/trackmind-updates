@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.43",
+  "date": "2026-05-29",
+  "note": "v05.07.43: Risolto bug sul congelamento del tree turni orari forzando l'aggiornamento grafico anche quando la manche selezionata non è attiva o non ci sono turni futuri.",
+  "files": {},
+  "time": "16:59:20",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.43-aarch64.tar.gz",
+      "sha256": "c9f4303aa3be0ea4903d0eee23f2d5a26850a37fd536db50a88458cd1368374b",
+      "size": 22994139
+    }
+  }
+}
