@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.45",
+  "date": "2026-06-01",
+  "note": "v05.07.45: Aggiornamento versione.",
+  "files": {},
+  "time": "09:10:08",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.45-aarch64.tar.gz",
+      "sha256": "8c6f28ee7f4cb966fd8a5cf40ca9ac9ccb3bc052919ad06c6db4a2b364a2d76f",
+      "size": 23022250
+    }
+  }
+}
