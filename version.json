@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.47",
+  "date": "2026-06-02",
+  "note": "v05.07.47: Ottimizzazione filtri orari e inattivita' SpeedHive.",
+  "files": {},
+  "time": "08:54:10",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.47-aarch64.tar.gz",
+      "sha256": "f58a6b75153ed0e994fbc0d56e54fbf8c803b7e320c073add21cee4c96737fe5",
+      "size": 23030405
+    }
+  }
+}
