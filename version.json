@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.49",
+  "date": "2026-06-03",
+  "note": "v05.07.49: Compilazione versione 49.",
+  "files": {},
+  "time": "10:56:40",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.49-aarch64.tar.gz",
+      "sha256": "f8c3d74055c2a8f908c3db93ae163b6d0695bf49fa128006a11ff9db6597ac19",
+      "size": 23103693
+    }
+  }
+}
