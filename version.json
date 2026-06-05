@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.56",
+  "date": "2026-06-05",
+  "note": "v05.07.56: Attivazione e integrazione modulo bluetooth (bleak) per LapMonitor.",
+  "files": {},
+  "time": "08:13:32",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.56-aarch64.tar.gz",
+      "sha256": "6b1d301ab7ce7eee3057a7741258166f6d5230aeaeca895b687384899319bb3f",
+      "size": 25193153
+    }
+  }
+}
