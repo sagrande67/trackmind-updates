@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.71",
+  "date": "2026-06-16",
+  "note": "v05.07.71: Aggiunto autoscroll lento e continuo per colonne piloti in LIVE quando superano la larghezza dello schermo.",
+  "files": {},
+  "time": "12:55:13",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.71-aarch64.tar.gz",
+      "sha256": "4ab410662bac7ddf6237aa62d57dd89512e20ffe8e1fffed8c5d7fb3cd803ce0",
+      "size": 25300293
+    }
+  }
+}
