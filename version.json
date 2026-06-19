@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.77",
+  "date": "2026-06-19",
+  "note": "v05.07.77: Risolto AttributeError su _status che impediva la stampa termica nella schermata record (tabelle).",
+  "files": {},
+  "time": "13:31:56",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.77-aarch64.tar.gz",
+      "sha256": "92a9dbd5157ac7038bf64fc1cdd91af7a0f819bb929a0426edaa40842827f5a9",
+      "size": 25375560
+    }
+  }
+}
