@@ -1,0 +1,14 @@
+{
+  "version": "v05.07.74",
+  "date": "2026-06-19",
+  "note": "v05.07.74: Corretto problema creazione video in simulazione su uConsole e aggiunto invio video via e-mail.",
+  "files": {},
+  "time": "08:12:40",
+  "binari": {
+    "aarch64": {
+      "url": "https://raw.githubusercontent.com/sagrande67/trackmind-updates/main/trackmind-v05.07.74-aarch64.tar.gz",
+      "sha256": "8d35204bb38465dbf95b68b41b63551c06fbff4de571c4a34a9954e0dad4e0ca",
+      "size": 25323507
+    }
+  }
+}
